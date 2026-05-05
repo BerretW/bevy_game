@@ -1,0 +1,198 @@
+# =============================================================================
+# server.toml — bevy_game dedicated server configuration
+# =============================================================================
+#
+# Tento soubor čte `host_server` na startu. Když chybí, server jede
+# s defaulty (viz log). Stačí mít platné [server], [net], [gameplay] —
+# zbytek volitelné a má rozumný default.
+#
+# Spuštění s alternativní cestou:    cargo run -p host_server -- my_config.toml
+#
+# Schéma odpovídá `host_server::config::ServerConfig`. Neznámá pole
+# server odmítne (deny_unknown_fields) — překlepy se tak hned ukážou.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# [server] — identita a metadata pro server browser
+# -----------------------------------------------------------------------------
+[server]
+
+# Display name v server browseru. Posílá se klientům v ServerHello.
+name = "bevy_game dedicated server"
+
+# Volný popis / MOTD. Multiline string ok ('''…''').
+description = "A FiveM-style modular Bevy multiplayer server."
+
+# Tagy pro filtrování (žánr, region, mód).
+tags = ["dev", "vanilla"]
+
+# Ikonka v server browseru — relative path k PNG (doporučeně 64×64).
+# icon = "assets/server_icon.png"
+
+# Public listing v master serveru (Phase 4: master-list integration).
+public = false
+
+
+# -----------------------------------------------------------------------------
+# [gameplay] — sloty, queue, gamemode
+# -----------------------------------------------------------------------------
+[gameplay]
+
+# Maximum simultánně připojených hráčů.
+max_players = 32
+
+# Velikost čekací fronty nad rámec max_players. 0 = fronta vypnutá.
+queue_max = 0
+
+# Kořenový gamemode resource (Phase 3+). Když uvedený, server ho ohlásí
+# v ServerHello, klient si tak může zkontrolovat, že má správný build.
+# gamemode = "modes/extraction"
+
+# Po jaké době nečinnosti (gameplay-level) hráče kickneme. Tohle není
+# netcode timeout — ten řídí [net].connection_timeout_sec.
+idle_kick_sec = 600
+
+
+# -----------------------------------------------------------------------------
+# [net] — síťová konfigurace (lightyear UDP + Axum HTTP)
+# -----------------------------------------------------------------------------
+[net]
+
+# Bind addr lightyear UDP socketu (game traffic).
+# "0.0.0.0:5000" = všechna rozhraní; "127.0.0.1:5000" jen localhost.
+udp_bind = "0.0.0.0:5000"
+
+# Bind addr HTTP file serveru (resource sync). UDP a HTTP používají
+# různé porty, aby šel HTTP klidně schovat za reverse proxy / CDN.
+http_bind = "0.0.0.0:8081"
+
+# Public-facing URL HTTP serveru. Dostane ho klient v ServerHello a
+# používá jako base pro download souborů. Když server běží za NATem
+# nebo reverse proxy, sem dej veřejnou adresu.
+http_public_url = "http://127.0.0.1:8081"
+
+# Tickrate ECS simulace (Hz). Musí ladit s klientovou simulací,
+# jinak prediction/rollback přestane fungovat.
+tick_hz = 60.0
+
+# Netcode protocol ID. Klient/server s rozdílným ID se nespárují —
+# bumpni při breaking change protokolu, aby staré buildy odpadly.
+# Default = ASCII "bevy_gam".
+protocol_id = 0x6265_7679_5f67_616d
+
+# Cesta k 32-bytovému netcode privátnímu klíči. Když nezadán, použije
+# se all-zero klíč (insecure, jen dev). Generování: `openssl rand 32`
+# nebo libovolných 32 bytes. Klient musí mít stejný klíč.
+# private_key_path = "secrets/netcode.key"
+
+# Po jak dlouho bez keepalive server klienta dropne na netcode úrovni (sec).
+connection_timeout_sec = 15
+
+
+# -----------------------------------------------------------------------------
+# [resources] — VFS root + hot-reload watcher
+# -----------------------------------------------------------------------------
+[resources]
+
+# Adresář, který server skenuje. Cesta relativní k CWD.
+root = "resources"
+
+# Hot-reload: při změně souboru pod `root` server rescanuje VFS a obnoví
+# Lua sandboxy. V dev buildu má smysl true, v production false.
+hot_reload = true
+
+# Debounce window pro filesystem eventy (ms). Editor často při uložení
+# vystřelí 3–5 eventů během pár desítek ms; tahle hodnota určuje, jak
+# dlouho čekáme po posledním eventu, než provedeme rescan.
+watcher_debounce_ms = 150
+
+
+# -----------------------------------------------------------------------------
+# [handshake] — limity Phase 2 connection sekvence
+# -----------------------------------------------------------------------------
+[handshake]
+
+# Po jaké době od poslání ServerHello musí klient odpovědět ClientReady,
+# jinak ho odpojíme. Zatím se nenutkavě enforcuje (Phase 3 dodá).
+ready_timeout_sec = 30
+
+# Timeout pro samotný lightyear connect (Phase 3 follow-up).
+connect_timeout_sec = 10
+
+# Hard limit velikosti jednoho souboru v digestu. Brání DoS scénářům,
+# kdy někdo vrazí do /resources/ 4GB obrázek a server se ho pokusí
+# zahashovat za běhu (Phase 3 enforce).
+max_file_size_mb = 64
+
+
+# -----------------------------------------------------------------------------
+# [auth] — autentikace klientů (Phase 4 plně zapojené)
+# -----------------------------------------------------------------------------
+[auth]
+
+# "open"      = kdokoli s platným protocol_id se připojí (LAN dev).
+# "token"     = klient musí poslat token (Phase 4: master-list / Steam).
+# "whitelist" = client_id musí být v whitelist_path.
+mode = "open"
+
+# whitelist_path = "config/whitelist.json"
+
+
+# -----------------------------------------------------------------------------
+# [logging] — tracing-subscriber konfigurace
+# -----------------------------------------------------------------------------
+[logging]
+
+# Globální úroveň: trace / debug / info / warn / error
+level = "info"
+
+# Per-modul filtr (skládá se přes `level`). Stejná syntaxe jako
+# RUST_LOG. Užitečné: `lightyear=debug,wgpu=warn,host_server=trace`
+filter = "wgpu=warn,naga=warn"
+
+
+# -----------------------------------------------------------------------------
+# [admin] — HTTP admin / metrics endpoint (Phase 4)
+# -----------------------------------------------------------------------------
+[admin]
+
+# Bind addr admin API. Když nezadán, admin endpoint je vypnutý.
+# bind = "127.0.0.1:9090"
+
+# Bearer token pro autorizaci. Musí být uveden, když je `bind` nastavený.
+# token = "supersecret"
+
+
+# -----------------------------------------------------------------------------
+# [database] — sqlx pool (Phase 4)
+# -----------------------------------------------------------------------------
+[database]
+
+# Connection string. SQLite pro dev, Postgres pro prod.
+# url = "sqlite://server.db?mode=rwc"
+# url = "postgres://bevy:bevy@localhost/bevy_game"
+
+# Velikost connection poolu (default 8).
+pool_size = 8
+
+# Cesta ke složce s SQL migracemi.
+# migrations_path = "migrations"
+
+
+# -----------------------------------------------------------------------------
+# [dev] — debug / profiling toggles (jen pro development!)
+# -----------------------------------------------------------------------------
+[dev]
+
+# Server po přijetí klienta okamžitě "potvrdí" jeho ready bez čekání.
+# Užitečné pro headless integration testy. Bypassuje validaci — NIKDY
+# nezapínat v produkci.
+auto_acknowledge_clients = false
+
+# Na startu zaloguje plný digest všech resources. Užitečné pro porovnání
+# mezi server / client buildy, když debugujete handshake mismatch.
+print_digest_on_startup = false
+
+# Po N frame se server sám ukončí. 0 = neomezený. Pro mikrobenchmarky.
+profile_first_n_frames = 0

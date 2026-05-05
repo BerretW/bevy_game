@@ -4,61 +4,117 @@
 //! přes `ScheduleRunnerPlugin`. Vedle ECS držíme samostatný
 //! Tokio runtime pro asynchronní operace (sqlx queries, VFS scan,
 //! resource HTTP serving), abychom **nikdy neblokovali ECS loop**.
+//!
+//! Konfigurace přichází z [`server.toml`](../../server.toml) v CWD;
+//! detaily v [`config`].
 
+mod config;
 mod http_server;
 
-use std::time::Duration;
+use std::path::PathBuf;
 
 use bevy::app::ScheduleRunnerPlugin;
-use bevy::log::{Level, LogPlugin};
+use bevy::log::LogPlugin;
 use bevy::prelude::*;
 
-use core_net::{DigestPlugin, ServerHandshakePlugin, ServerLuaRpcPlugin, ServerNetPlugin};
+use core_net::{
+    DigestPlugin, ServerHandshakeConfig, ServerHandshakePlugin, ServerLuaRpcPlugin,
+    ServerNetConfig, ServerNetPlugin,
+};
 use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
 
+use crate::config::{ConfigError, ServerConfig, DEFAULT_CONFIG_PATH};
 use crate::http_server::{HttpFileServerPlugin, HttpServerConfig};
 
-const SERVER_TICK_HZ: f64 = 60.0;
-const RESOURCES_ROOT: &str = "resources";
-
 fn main() {
-    // Tokio runtime žije celou dobu života procesu jako Bevy Resource.
-    // ECS systémy ho používají přes `runtime.spawn(...)` (fire-and-forget)
-    // nebo přes `bevy::tasks::IoTaskPool`, který umí přemostit budoucnost
-    // do Bevy `AsyncComputeTaskPool` výsledků.
+    // 1. Konfigurační soubor — `server.toml` v CWD. Když chybí, jedeme s defaulty.
+    let cfg_path = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
+    let cfg = ServerConfig::load_or_default(&cfg_path);
+
+    // 2. Validace network/key vstupů — když je tu chyba, raději spadneme
+    //    s pochopitelnou hláškou než až runtime panic v lightyearu.
+    let udp_bind = cfg
+        .net
+        .udp_bind_addr()
+        .unwrap_or_else(|e| panic!("[host_server] {}", e));
+    let http_bind = cfg
+        .net
+        .http_bind_addr()
+        .unwrap_or_else(|e| panic!("[host_server] {}", e));
+    let private_key = cfg
+        .load_private_key()
+        .unwrap_or_else(|e: ConfigError| panic!("[host_server] {}", e))
+        .unwrap_or([0u8; 32]);
+
+    // Banner — ať admin v logu hned vidí, co serveru běží.
+    eprintln!(
+        "[host_server] {} — \"{}\" (max_players={}, udp={}, http={}, gamemode={})",
+        cfg.server.name,
+        cfg.server.description.lines().next().unwrap_or(""),
+        cfg.gameplay.max_players,
+        udp_bind,
+        http_bind,
+        cfg.gameplay.gamemode.as_deref().unwrap_or("<none>"),
+    );
+
+    // 3. Tokio runtime žije celou dobu života procesu jako Bevy Resource.
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("host-server-tokio")
         .build()
         .expect("failed to build Tokio runtime for host_server");
 
+    let tick_duration = cfg.net.tick_duration();
+
+    let server_net_config = ServerNetConfig {
+        bind: udp_bind,
+        tick_duration,
+        protocol_id: cfg.net.protocol_id,
+        private_key,
+        client_timeout_sec: cfg.net.connection_timeout_sec,
+    };
+
+    let http_config = HttpServerConfig {
+        bind: http_bind,
+        vfs_root: cfg.resources.root.clone(),
+    };
+
+    let handshake_config = ServerHandshakeConfig {
+        http_base_url: cfg.net.http_public_url.clone(),
+    };
+
     App::new()
         .insert_resource(TokioRuntime(tokio_runtime))
-        .insert_resource(HttpServerConfig::new(RESOURCES_ROOT))
+        .insert_resource(http_config)
+        .insert_resource(server_net_config)
+        .insert_resource(handshake_config)
+        .insert_resource(ServerInfoResource(cfg.server.clone()))
+        .insert_resource(GameplayResource(cfg.gameplay.clone()))
+        .insert_resource(DevResource(cfg.dev.clone()))
         .add_plugins((
-            MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
-                1.0 / SERVER_TICK_HZ,
-            ))),
+            MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(tick_duration)),
             LogPlugin {
-                level: Level::INFO,
-                filter: "wgpu=warn,naga=warn".into(),
+                level: cfg.logging.level.to_bevy(),
+                filter: cfg.logging.filter.clone(),
                 ..default()
             },
             SharedPlugin,
-            ResourcesPlugin::new(RESOURCES_ROOT, Side::Server),
+            ResourcesPlugin::new(cfg.resources.root.clone(), Side::Server)
+                .with_watch(cfg.resources.hot_reload),
             // Phase 2 — server část: digest cache (předpočítané hashe pro
             // `ServerHello`) a HTTP file server (klientský download endpoint).
             DigestPlugin,
             HttpFileServerPlugin,
             // Lightyear server (UDP netcode) + sdílená protocol registrace.
-            // Pořadí matters: ServerNetPlugin dovnitř přidá ServerPlugins
-            // a ProtocolPlugin v jednom kroku.
             ServerNetPlugin,
             // Handshake — observer na Add<Connected>, posílá ServerHello
             // s digestem manifestů. Konzumuje ResourceDigestCache.
             ServerHandshakePlugin,
-            // Lua RPC bridge — drainuje outgoing TriggerClientEvent z
+            // Lua RPC bridge — drainuje outgoing TriggerClientEvent ze
             // serverových sandboxů a posílá je klientům; routuje příchozí
             // TriggerServerEvent k handlerům RegisterEvent v sandboxech.
             ServerLuaRpcPlugin,
@@ -68,9 +124,6 @@ fn main() {
 }
 
 /// Wrapper kolem Tokio runtime, aby šel uložit jako Bevy `Resource`.
-///
-/// Runtime je `!Sync` na okrajích, ale `tokio::runtime::Runtime` samotný
-/// `Send + Sync` je — můžeme ho z systémů sahat přes `Res<TokioRuntime>`.
 #[derive(Resource)]
 pub struct TokioRuntime(pub tokio::runtime::Runtime);
 
@@ -80,8 +133,20 @@ impl TokioRuntime {
     }
 }
 
-/// Server-specifická logika. Phase 2 sem přidá `lightyear::ServerPlugin`,
-/// Phase 3 universal ECS API, Phase 4 sqlx pool jako další Resource.
+/// Read-only resource exposing parsed `[server]` sekci configu — gameplay
+/// systémy si můžou přečíst název, MOTD atd. pro broadcast / UI.
+#[derive(Resource, Clone, Debug)]
+pub struct ServerInfoResource(pub config::ServerInfo);
+
+/// Read-only resource exposing parsed `[gameplay]` sekci.
+#[derive(Resource, Clone, Debug)]
+pub struct GameplayResource(pub config::GameplayConfig);
+
+/// Read-only resource exposing parsed `[dev]` sekci.
+#[derive(Resource, Clone, Debug)]
+pub struct DevResource(pub config::DevConfig);
+
+/// Server-specifická logika. Phase 3 přinese ECS bridge, Phase 4 sqlx pool.
 pub struct ServerCorePlugin;
 
 impl Plugin for ServerCorePlugin {
@@ -90,9 +155,22 @@ impl Plugin for ServerCorePlugin {
     }
 }
 
-fn on_server_start(_runtime: Res<TokioRuntime>) {
+fn on_server_start(
+    _runtime: Res<TokioRuntime>,
+    info: Res<ServerInfoResource>,
+    gameplay: Res<GameplayResource>,
+    net: Res<ServerNetConfig>,
+) {
+    let tick_hz = if net.tick_duration.as_secs_f64() > 0.0 {
+        1.0 / net.tick_duration.as_secs_f64()
+    } else {
+        0.0
+    };
     info!(
-        "[host_server] online — headless mode, tick {} Hz, tokio runtime ready",
-        SERVER_TICK_HZ
+        "[host_server] online — \"{}\", tick {:.0} Hz, slots {} (queue {})",
+        info.0.name, tick_hz, gameplay.0.max_players, gameplay.0.queue_max
     );
+    if !info.0.tags.is_empty() {
+        info!("[host_server] tags: {:?}", info.0.tags);
+    }
 }

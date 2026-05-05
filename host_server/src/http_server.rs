@@ -27,22 +27,12 @@ use bevy::prelude::*;
 
 use crate::TokioRuntime;
 
-const DEFAULT_HTTP_PORT: u16 = 8081;
-
-/// Bevy resource — vkládá se z `main.rs` před přidáním pluginu.
+/// Bevy resource — vkládá se z `main.rs` před přidáním pluginu, hodnoty
+/// přicházejí z `server.toml` (`[net].http_bind` + `[resources].root`).
 #[derive(Resource, Clone)]
 pub struct HttpServerConfig {
     pub bind: SocketAddr,
     pub vfs_root: PathBuf,
-}
-
-impl HttpServerConfig {
-    pub fn new(vfs_root: impl Into<PathBuf>) -> Self {
-        Self {
-            bind: SocketAddr::from(([0, 0, 0, 0], DEFAULT_HTTP_PORT)),
-            vfs_root: vfs_root.into(),
-        }
-    }
 }
 
 #[derive(Clone)]

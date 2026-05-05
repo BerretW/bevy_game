@@ -21,7 +21,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use bevy::prelude::*;
-use lightyear::netcode::Key;
 use lightyear::prelude::client::{
     Client, ClientPlugins, NetcodeClient, NetcodeConfig as ClientNetcodeConfig,
 };
@@ -105,11 +104,19 @@ impl Plugin for ProtocolPlugin {
 // ServerNetPlugin
 // ---------------------------------------------------------------------------
 
-/// Konfigurace server-side networkingu.
+/// Konfigurace server-side networkingu. Hodnoty obvykle vkládá `host_server`
+/// po načtení `server.toml` před přidáním pluginu.
 #[derive(Resource, Clone, Debug)]
 pub struct ServerNetConfig {
     pub bind: SocketAddr,
     pub tick_duration: Duration,
+    /// Netcode protocol ID. Klient s rozdílným ID se nepřipojí.
+    pub protocol_id: u64,
+    /// 32-bytový privátní klíč netcode tokenů. Default = all-zeros (insecure,
+    /// dev only); produkce by měla mít unikátní klíč ze `private_key_path`.
+    pub private_key: [u8; 32],
+    /// Po jak dlouhé nečinnosti se klient odpojí (sec).
+    pub client_timeout_sec: i32,
 }
 
 impl Default for ServerNetConfig {
@@ -117,6 +124,9 @@ impl Default for ServerNetConfig {
         Self {
             bind: DEFAULT_SERVER_BIND,
             tick_duration: Duration::from_secs_f64(1.0 / FIXED_TIMESTEP_HZ),
+            protocol_id: NETCODE_PROTOCOL_ID,
+            private_key: [0u8; 32],
+            client_timeout_sec: 15,
         }
     }
 }
@@ -147,15 +157,23 @@ impl Plugin for ServerNetPlugin {
 }
 
 fn spawn_server(mut commands: Commands, config: Res<ServerNetConfig>) {
+    let netcode = ServerNetcodeConfig::default()
+        .with_protocol_id(config.protocol_id)
+        .with_key(config.private_key)
+        .with_client_timeout_secs(config.client_timeout_sec);
+
     let entity = commands
         .spawn((
-            NetcodeServer::new(ServerNetcodeConfig::default().with_protocol_id(NETCODE_PROTOCOL_ID)),
+            NetcodeServer::new(netcode),
             LocalAddr(config.bind),
             ServerUdpIo::default(),
         ))
         .id();
     commands.trigger(Start { entity });
-    info!("[core_net::server] netcode server spawned on {}", config.bind);
+    info!(
+        "[core_net::server] netcode server spawned on {} (protocol_id=0x{:016x}, timeout={}s)",
+        config.bind, config.protocol_id, config.client_timeout_sec
+    );
 }
 
 fn log_client_connected(trigger: On<Add, Connected>, peers: Query<&PeerAddr>) {
@@ -180,6 +198,10 @@ pub struct ClientNetConfig {
     pub local: SocketAddr,
     pub client_id: u64,
     pub tick_duration: Duration,
+    /// Musí ladit s `ServerNetConfig::protocol_id`.
+    pub protocol_id: u64,
+    /// Musí ladit s `ServerNetConfig::private_key`.
+    pub private_key: [u8; 32],
 }
 
 impl Default for ClientNetConfig {
@@ -192,6 +214,8 @@ impl Default for ClientNetConfig {
             local: DEFAULT_CLIENT_LOCAL,
             client_id: 0,
             tick_duration: Duration::from_secs_f64(1.0 / FIXED_TIMESTEP_HZ),
+            protocol_id: NETCODE_PROTOCOL_ID,
+            private_key: [0u8; 32],
         }
     }
 }
@@ -224,8 +248,8 @@ fn spawn_client(
     let auth = Authentication::Manual {
         server_addr: config.server,
         client_id: config.client_id,
-        private_key: Key::default(),
-        protocol_id: NETCODE_PROTOCOL_ID,
+        private_key: config.private_key,
+        protocol_id: config.protocol_id,
     };
 
     let entity = commands
