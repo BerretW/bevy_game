@@ -93,6 +93,57 @@ impl Vfs {
         report.loaded.sort();
         report
     }
+
+    /// Phase 3.4 — Projde `stream/` složku každého resource a vrátí mapu
+    /// `model_name → absolute_path`. Volá se z `plugin.rs::rebuild`.
+    ///
+    /// Konvence: soubory ve `stream/` bez přípony (nebo s .glb/.obj/.fbx)
+    /// jsou modely. Klíč = název souboru bez přípony.
+    pub fn scan_stream_models(&self) -> std::collections::HashMap<String, std::path::PathBuf> {
+        let mut map = std::collections::HashMap::new();
+
+        for manifest in self.manifests.values() {
+            let stream_dir = manifest.root.join("stream");
+            if !stream_dir.is_dir() {
+                continue;
+            }
+            for entry in WalkDir::new(&stream_dir)
+                .max_depth(2)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = entry.path().to_path_buf();
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                // Zahrnout 3D modely a kolizni soubory
+                if !matches!(ext, "glb" | "gltf" | "obj" | "fbx" | "col" | "mesh") {
+                    continue;
+                }
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                if map.contains_key(&name) {
+                    bevy::log::warn!(
+                        "[vfs] stream/ model conflict: '{}' already registered (new: {:?})",
+                        name,
+                        path
+                    );
+                } else {
+                    map.insert(name, path);
+                }
+            }
+        }
+
+        map
+    }
 }
 
 #[derive(Debug, Default)]

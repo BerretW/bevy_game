@@ -10,6 +10,7 @@
 
 mod cmd_queue;
 mod manifest;
+mod model_registry;
 mod plugin;
 mod resolver;
 mod sandbox;
@@ -18,12 +19,14 @@ mod vfs;
 mod watcher;
 
 pub use cmd_queue::{
-    CommandQueue, LocalObjectMarker, LuaCommand, LuaWorldState, PendingDamageEvent,
+    CommandQueue, LocalObjectMarker, LuaCommand, LuaWorldState, NetworkedObjectMarker,
+    PendingDamageEvent,
 };
 pub use manifest::{Manifest, ManifestError, ResourceKind};
+pub use model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands};
 pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry};
 pub use resolver::{resolve_load_order, ResolveError};
-pub use sandbox::{LuaEventDirection, LuaEventOut, LuaSandbox, SandboxError};
+pub use sandbox::{LocalEvent, LocalEventBus, LuaEventDirection, LuaEventOut, LuaSandbox, RaycastBridge, SandboxError};
 pub use types::{IdError, ResourceId, Side};
 pub use vfs::{ScanError, ScanReport, Vfs};
 pub use watcher::{ResourcesDirty, VfsWatcher, WatcherError};

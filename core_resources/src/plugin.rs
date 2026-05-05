@@ -1,4 +1,4 @@
-//! `ResourcesPlugin` — Bevy plugin, který drží VFS, watcher a sandbox registry.
+﻿//! `ResourcesPlugin` — Bevy plugin, ktery drzi VFS, watcher a sandbox registry.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,19 +8,17 @@ use bevy::prelude::*;
 use crate::cmd_queue::{
     process_lua_commands, CommandQueue, LuaWorldState, PendingDamageEvent,
 };
+use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegistry};
 use crate::resolver::resolve_load_order;
-use crate::sandbox::LuaSandbox;
+use crate::sandbox::{LocalEventBus, LuaSandbox, RaycastBridge};
 use crate::types::{ResourceId, Side};
 use crate::vfs::Vfs;
 use crate::watcher::{drain_watcher, ResourcesDirty, VfsWatcher};
 
-/// Konfigurace plug-inu — předá se z `host_server` / `host_client`.
 #[derive(Clone)]
 pub struct ResourcesPlugin {
     pub root: PathBuf,
     pub side: Side,
-    /// Když true, plugin spustí `notify` watcher a hot-reloaduje při změnách.
-    /// V produkci na serveru chceme typicky false, v dev/playtest true.
     pub watch: bool,
 }
 
@@ -39,16 +37,12 @@ impl ResourcesPlugin {
     }
 }
 
-/// NonSend kontejner Lua sandboxů. Lua je `!Send`, takže musíme držet
-/// na main threadu — Bevy `NonSend` resource to zařídí.
 #[derive(Default)]
 pub struct SandboxRegistry {
     pub sandboxes: HashMap<ResourceId, LuaSandbox>,
-    /// Pořadí, ve kterém byly sandboxy nahrané (dep-resolved load order).
     pub order: Vec<ResourceId>,
 }
 
-/// `Side` jako Bevy `Resource`, aby ho viděly všechny systémy.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ResourcesSide(pub Side);
 
@@ -59,13 +53,24 @@ impl Plugin for ResourcesPlugin {
         app.insert_non_send_resource(SandboxRegistry::default());
         app.add_message::<ResourcesDirty>();
 
-        // Phase 3.2 — Command Queue & World state.
+        // Phase 3.2 - Command Queue
         app.init_resource::<CommandQueue>();
         app.init_resource::<LuaWorldState>();
         app.add_message::<PendingDamageEvent>();
         app.add_systems(PostUpdate, process_lua_commands);
 
-        // Initial load běží jednou v Startup.
+        // Phase 3.4 - Model Registry
+        app.init_resource::<ModelRegistry>();
+        app.init_resource::<ModelCommandQueue>();
+        app.add_systems(PostUpdate, process_model_commands);
+
+        // Phase 3.8 - Cross-sandbox local event bus
+        app.init_resource::<LocalEventBus>();
+        app.add_systems(PostUpdate, dispatch_local_events);
+
+        // Phase 3.7 - Raycast bridge (klient ho aktualizuje; server je no-op)
+        app.init_resource::<RaycastBridge>();
+
         app.add_systems(Startup, initial_load);
 
         if self.watch {
@@ -80,8 +85,7 @@ impl Plugin for ResourcesPlugin {
                 }
                 Err(e) => {
                     error!(
-                        "[core_resources] watcher disabled — failed to start: {e}; \
-                         hot-reload will not work for this run"
+                        "[core_resources] watcher disabled — failed to start: {e}"
                     );
                 }
             }
@@ -94,8 +98,21 @@ fn initial_load(
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
     cmd_queue: Res<CommandQueue>,
+    local_bus: Res<LocalEventBus>,
+    model_cmds: Res<ModelCommandQueue>,
+    mut model_registry: ResMut<ModelRegistry>,
+    raycast: Res<RaycastBridge>,
 ) {
-    rebuild(&mut vfs, side.0, &mut registry, cmd_queue.clone());
+    rebuild(
+        &mut vfs,
+        side.0,
+        &mut registry,
+        cmd_queue.clone(),
+        local_bus.clone(),
+        model_cmds.clone(),
+        &mut model_registry,
+        raycast.clone(),
+    );
 }
 
 fn hot_reload_on_dirty(
@@ -104,22 +121,41 @@ fn hot_reload_on_dirty(
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
     cmd_queue: Res<CommandQueue>,
+    local_bus: Res<LocalEventBus>,
+    model_cmds: Res<ModelCommandQueue>,
+    mut model_registry: ResMut<ModelRegistry>,
+    raycast: Res<RaycastBridge>,
 ) {
     if events.is_empty() {
         return;
     }
-    // Drain všechny pending eventy — chceme jen jeden rebuild za frame
-    // bez ohledu na to, kolik souborů se najednou změnilo.
     let count = events.read().count();
     info!(
-        "[core_resources] filesystem change detected ({count} event{}), reloading resources",
+        "[core_resources] filesystem change ({count} event{}), reloading",
         if count == 1 { "" } else { "s" }
     );
-    rebuild(&mut vfs, side.0, &mut registry, cmd_queue.clone());
+    rebuild(
+        &mut vfs,
+        side.0,
+        &mut registry,
+        cmd_queue.clone(),
+        local_bus.clone(),
+        model_cmds.clone(),
+        &mut model_registry,
+        raycast.clone(),
+    );
 }
 
-fn rebuild(vfs: &mut Vfs, side: Side, registry: &mut SandboxRegistry, cmd_queue: CommandQueue) {
-    // 1. Rescan VFS
+fn rebuild(
+    vfs: &mut Vfs,
+    side: Side,
+    registry: &mut SandboxRegistry,
+    cmd_queue: CommandQueue,
+    local_bus: LocalEventBus,
+    model_cmds: ModelCommandQueue,
+    model_registry: &mut ModelRegistry,
+    raycast: RaycastBridge,
+) {
     let report = vfs.rescan();
     for err in &report.errors {
         error!("[core_resources] scan error: {err}");
@@ -130,18 +166,19 @@ fn rebuild(vfs: &mut Vfs, side: Side, registry: &mut SandboxRegistry, cmd_queue:
         vfs.root().display()
     );
 
-    // 2. Resolve dependencies → load order
+    // Rebuild Model Registry ze stream/ slozek
+    let stream_models = vfs.scan_stream_models();
+    model_registry.rebuild_from_scan(stream_models);
+
+    // Resolve load order
     let order = match resolve_load_order(vfs.manifests()) {
         Ok(o) => o,
         Err(e) => {
             error!("[core_resources] dependency resolution failed: {e}");
-            // Necháme staré sandboxy běžet, neshodíme proces.
             return;
         }
     };
 
-    // 3. Drop staré sandboxy a postav nové.
-    //    (Phase 1 = full rebuild. Phase 2 si dovolíme inkrementální.)
     registry.sandboxes.clear();
     registry.order.clear();
 
@@ -150,7 +187,14 @@ fn rebuild(vfs: &mut Vfs, side: Side, registry: &mut SandboxRegistry, cmd_queue:
             Some(m) => m,
             None => continue,
         };
-        match LuaSandbox::create(manifest, side, cmd_queue.clone()) {
+        match LuaSandbox::create(
+            manifest,
+            side,
+            cmd_queue.clone(),
+            local_bus.clone(),
+            model_cmds.clone(),
+            raycast.clone(),
+        ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);
                 registry.sandboxes.insert(id.clone(), sandbox);
@@ -168,4 +212,35 @@ fn rebuild(vfs: &mut Vfs, side: Side, registry: &mut SandboxRegistry, cmd_queue:
         side.label(),
         registry.order
     );
+}
+
+/// Phase 3.8 — Drain LocalEventBus a dispatch do vsech sandboxu.
+/// Bezi v PostUpdate po process_lua_commands.
+fn dispatch_local_events(
+    local_bus: Res<LocalEventBus>,
+    registry: NonSend<SandboxRegistry>,
+) {
+    let events = local_bus.drain();
+    if events.is_empty() {
+        return;
+    }
+    for evt in &events {
+        let mut delivered = 0usize;
+        for sandbox in registry.sandboxes.values() {
+            match sandbox.dispatch_incoming(&evt.name, &evt.payload, None) {
+                Ok(n) => delivered += n,
+                Err(e) => warn!(
+                    "[local_bus] handler error in '{}' for event '{}': {}",
+                    sandbox.id, evt.name, e
+                ),
+            }
+        }
+        if delivered == 0 {
+            trace!(
+                "[local_bus] no handler for '{}' (payload {} bytes)",
+                evt.name,
+                evt.payload.len()
+            );
+        }
+    }
 }

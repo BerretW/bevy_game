@@ -2277,6 +2277,7 @@ dependencies = [
  "lightyear",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -2290,6 +2291,7 @@ dependencies = [
  "mlua",
  "notify",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "walkdir",
 ]

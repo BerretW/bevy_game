@@ -21,6 +21,7 @@ core_resources = { workspace = true }
 core_shared = { workspace = true }
 
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
 crossbeam-channel = { workspace = true }

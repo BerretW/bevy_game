@@ -40,6 +40,14 @@ pub enum LuaCommand {
         amount: f32,
         source_handle: Option<u64>,
     },
+    /// Phase 3.5 — replikovana entita spawnovana serverem, klienti ji dostanou
+    /// pres lightyear replication. Server-only.
+    SpawnNetworkedObject {
+        handle: u64,
+        model: String,
+        pos: [f32; 3],
+        rot: [f32; 3],
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -118,9 +126,15 @@ impl LuaWorldState {
 // ---------------------------------------------------------------------------
 
 /// Marker component na entitách spawnutých přes `World.SpawnLocalObject`.
-/// Phase 3.4 Model Registry bude tento komponent číst pro načtení meshe.
 #[derive(Component, Debug, Clone)]
 pub struct LocalObjectMarker {
+    pub model: String,
+}
+
+/// Marker component na replikovanych entitách (`World.SpawnNetworkedObject`).
+/// Phase 3.5 — lightyear Replicate je pridan pri process_lua_commands.
+#[derive(Component, Debug, Clone)]
+pub struct NetworkedObjectMarker {
     pub model: String,
 }
 
@@ -208,6 +222,31 @@ pub fn process_lua_commands(
                         target_handle
                     ),
                 }
+            }
+
+            LuaCommand::SpawnNetworkedObject { handle, model, pos, rot } => {
+                // Spawneme entitu s NetworkedObjectMarker. core_net observer
+                // (Add<NetworkedObjectMarker>) automaticky prida lightyear Replicate.
+                let entity = commands
+                    .spawn((
+                        NetworkedObjectMarker { model: model.clone() },
+                        Transform {
+                            translation: Vec3::new(pos[0], pos[1], pos[2]),
+                            rotation: Quat::from_euler(
+                                EulerRot::XYZ,
+                                rot[0].to_radians(),
+                                rot[1].to_radians(),
+                                rot[2].to_radians(),
+                            ),
+                            scale: Vec3::ONE,
+                        },
+                    ))
+                    .id();
+                world_state.register(handle, entity);
+                info!(
+                    "[cmd_queue] queued networked object '{}' (handle={}, entity={:?})",
+                    model, handle, entity
+                );
             }
         }
     }

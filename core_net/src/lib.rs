@@ -30,7 +30,10 @@ pub use handshake::{
     ServerHandshakeConfig, ServerHandshakePlugin,
 };
 pub use lua_rpc::{ClientLuaRpcPlugin, ServerLuaRpcPlugin};
-pub use sim::{ServerSimPlugin, PLAYER_MOVE_SPEED};
+pub use sim::{
+    collect_last_inputs, Health, LastPlayerInputs, ServerSimPlugin, WeaponConfig, WeaponType,
+    PLAYER_MOVE_SPEED,
+};
 pub use net_plugin::{
     ClientNetConfig, ClientNetPlugin, HandshakeChannel, InputChannel, LuaRpcChannel,
     ProtocolPlugin, ServerNetConfig, ServerNetPlugin, FIXED_TIMESTEP_HZ, NETCODE_PROTOCOL_ID,
