@@ -51,6 +51,10 @@ pub struct Manifest {
     pub client_scripts: Vec<String>,
     pub server_scripts: Vec<String>,
     pub files: Vec<String>,
+    /// Relativní cesta k hlavní HTML stránce NUI overlay (Phase 4).
+    /// Příklad: `'ui/index.html'`
+    /// Pokud je nastaveno, klient vytvoří transparentní iframe pro tento resource.
+    pub ui_page: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -64,6 +68,7 @@ struct ManifestBuilder {
     client_scripts: Vec<String>,
     server_scripts: Vec<String>,
     files: Vec<String>,
+    ui_page: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,6 +160,7 @@ pub fn parse_manifest(id: ResourceId, resource_root: &Path) -> Result<Manifest, 
         client_scripts: builder.client_scripts,
         server_scripts: builder.server_scripts,
         files: builder.files,
+        ui_page: builder.ui_page,
     })
 }
 
@@ -169,6 +175,7 @@ fn install_dsl(lua: &Lua) -> mlua::Result<()> {
     install_string_setter(lua, &globals, "author", |b, v| b.author = Some(v))?;
     install_string_setter(lua, &globals, "version", |b, v| b.version = Some(v))?;
     install_string_setter(lua, &globals, "description", |b, v| b.description = Some(v))?;
+    install_string_setter(lua, &globals, "ui_page", |b, v| b.ui_page = Some(v))?;
 
     install_list_setter(lua, &globals, "dependencies", |b| &mut b.dependencies)?;
     install_list_setter(lua, &globals, "shared_scripts", |b| &mut b.shared_scripts)?;

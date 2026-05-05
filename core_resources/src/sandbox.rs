@@ -24,6 +24,7 @@ use crate::cmd_queue::{CommandQueue, EntityStateCache, LuaCommand, PlayerStatsCa
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
 use crate::model_registry::{ModelCommand, ModelCommandQueue};
+use crate::nui_bridge::{NuiOutMsg, NuiOutQueue, resource_id_to_host};
 use crate::types::{ResourceId, Side};
 
 // ---------------------------------------------------------------------------
@@ -191,6 +192,8 @@ pub struct LuaSandbox {
     /// Phase 4 — pending DB callbacks: callback_id → RegistryKey funkce.
     db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: Rc<RefCell<u64>>,
+    /// Phase 4 — NUI callbacks: callback_name → list of handler RegistryKeys.
+    nui_callbacks: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
 }
 
 impl LuaSandbox {
@@ -204,6 +207,7 @@ impl LuaSandbox {
         stats_cache: PlayerStatsCache,
         entity_cache: EntityStateCache,
         db_bridge: Option<DbBridge>,
+        nui_out: Option<NuiOutQueue>,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -217,6 +221,13 @@ impl LuaSandbox {
         let db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let db_counter: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+        let nui_callbacks: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+
+        // Pokud má resource ui_page, ihned enqueujeme AddFrame → NuiPlugin přidá iframe.
+        if let (Some(ref nq), Some(_)) = (&nui_out, &manifest.ui_page) {
+            nq.push(NuiOutMsg::AddFrame { resource_host: resource_id_to_host(&manifest.id) });
+        }
 
         install_runtime_api(
             &lua,
@@ -233,6 +244,8 @@ impl LuaSandbox {
             &db_bridge,
             &db_callbacks,
             &db_counter,
+            &nui_out,
+            &nui_callbacks,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -245,7 +258,7 @@ impl LuaSandbox {
             run_script(&lua, &manifest.id, rel, &abs)?;
         }
 
-        Ok(Self { id: manifest.id.clone(), side, lua, outgoing, handlers, db_callbacks, db_counter })
+        Ok(Self { id: manifest.id.clone(), side, lua, outgoing, handlers, db_callbacks, db_counter, nui_callbacks })
     }
 
     pub fn drain_outgoing(&self) -> Vec<LuaEventOut> {
@@ -289,6 +302,38 @@ impl LuaSandbox {
 
     pub fn lua(&self) -> &Lua {
         &self.lua
+    }
+
+    /// Phase 4 — zavolá všechny Lua handlery registrované přes `RegisterNUICallback`.
+    /// `data` jsou JSON bytes z těla POST requestu (`[]` = prázdné / `{}`).
+    pub fn invoke_nui_callback(&self, callback_name: &str, data: &[u8]) {
+        let callbacks = self.nui_callbacks.borrow();
+        let Some(keys) = callbacks.get(callback_name) else { return };
+        let lua_payload: mlua::Value = if data.is_empty() {
+            mlua::Value::Nil
+        } else if let Ok(json) = serde_json::from_slice::<Json>(data) {
+            match json_to_lua_value(&self.lua, json) {
+                Ok(v) => v,
+                Err(e) => {
+                    bevy::log::warn!("[nui:{}] json_to_lua error for cb '{}': {}", self.id, callback_name, e);
+                    mlua::Value::Nil
+                }
+            }
+        } else {
+            mlua::Value::Nil
+        };
+        for key in keys.iter() {
+            let f: mlua::Function = match self.lua.registry_value(key) {
+                Ok(f) => f,
+                Err(e) => {
+                    bevy::log::warn!("[nui:{}] registry_value error for cb '{}': {}", self.id, callback_name, e);
+                    continue;
+                }
+            };
+            if let Err(e) = f.call::<()>(lua_payload.clone()) {
+                bevy::log::warn!("[nui:{}] callback '{}' error: {}", self.id, callback_name, e);
+            }
+        }
     }
 
     /// Phase 4 — zavolá Lua callback registrovaný pro DB dotaz `callback_id`.
@@ -427,8 +472,10 @@ fn install_runtime_api(
     db_bridge: &Option<DbBridge>,
     db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: &Rc<RefCell<u64>>,
+    nui_out: &Option<NuiOutQueue>,
+    nui_callbacks: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, nui_out, nui_callbacks)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -448,6 +495,8 @@ fn install_runtime_api_inner(
     db_bridge: &Option<DbBridge>,
     db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: &Rc<RefCell<u64>>,
+    nui_out: &Option<NuiOutQueue>,
+    nui_callbacks: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -1011,6 +1060,64 @@ fn install_runtime_api_inner(
             })?)?;
         }
         globals.set("Database", db_ns)?;
+    }
+
+    // -- NUI namespace (Phase 4) — client only --------------------------------
+    // Napodobuje FiveM NUI API:
+    //   SendNUIMessage(data)               — odešle JSON zprávu do ui_page iframe
+    //   RegisterNUICallback(name, handler) — zaregistruje handler pro JS fetch callback
+    //   SetNUIFocus(hasFocus, hasCursor?)  — přepne zachycování vstupu
+    if side == Side::Client {
+        let resource_host = resource_id_to_host(id);
+
+        // SendNUIMessage(data) — dispatch do iframe přes window.postMessage
+        if let Some(nq) = nui_out.clone() {
+            let rh = resource_host.clone();
+            globals.set("SendNUIMessage", lua.create_function(move |_, data: mlua::Value| {
+                let json = serde_json::to_string(&lua_value_to_json(data))
+                    .unwrap_or_else(|_| "null".to_string());
+                nq.push(NuiOutMsg::Dispatch { resource_host: rh.clone(), json });
+                Ok(())
+            })?)?;
+        } else {
+            globals.set("SendNUIMessage", lua.create_function(|_, _: mlua::Value| -> mlua::Result<()> {
+                bevy::log::warn!("[nui] SendNUIMessage called but NUI is not active");
+                Ok(())
+            })?)?;
+        }
+
+        // RegisterNUICallback(name, handler) — handler(data) volán z JS fetch
+        let nui_cbs = nui_callbacks.clone();
+        globals.set("RegisterNUICallback", lua.create_function(
+            move |lua, (name, f): (String, mlua::Function)| {
+                let key = lua.create_registry_value(f)?;
+                nui_cbs.borrow_mut().entry(name).or_default().push(key);
+                Ok(())
+            },
+        )?)?;
+
+        // SetNUIFocus(hasFocus, hasCursor?) — přepne overlay input routing
+        if let Some(nq) = nui_out.clone() {
+            globals.set("SetNUIFocus", lua.create_function(
+                move |_, (has_focus, has_cursor): (bool, Option<bool>)| {
+                    nq.push(NuiOutMsg::SetFocus {
+                        has_focus,
+                        has_cursor: has_cursor.unwrap_or(false),
+                    });
+                    Ok(())
+                },
+            )?)?;
+        } else {
+            globals.set("SetNUIFocus", lua.create_function(|_, _: mlua::MultiValue| Ok(()))?)?;
+        }
+    } else {
+        // Server stubs — tyto API jsou client-only
+        for name in &["SendNUIMessage", "RegisterNUICallback", "SetNUIFocus"] {
+            let n = name.to_string();
+            globals.set(*name, lua.create_function(move |_, _: MultiValue| -> mlua::Result<()> {
+                Err(mlua::Error::RuntimeError(format!("{} is client-only", n)))
+            })?)?;
+        }
     }
 
     Ok(())

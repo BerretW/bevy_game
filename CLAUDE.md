@@ -244,6 +244,516 @@ files {
 
 ---
 
+### Phase 5 — FPS Core Systems
+
+**Filosofie Phase 5:** Rust Core implementuje fyzikální engine, datové kontrakty a autoritativní simulaci. Lua Resources definují vše herně specifické — zbraně, munici, hitboxy, herní módy. Žádná konkrétní zbraň nebo herní pravidlo se nesmí hardcodovat do Rustu.
+
+---
+
+#### 5.1 — Weapon & Ammo Registry
+
+Datové schéma zbraní, munice a doplňků definované v Lua, uložené v Rust Bevy Resources.
+
+**Rust side:**
+- [ ] `WeaponDef` struct — kompletní definice zbraně (viz schéma níže)
+- [ ] `AmmoDef` struct — balistická data náboje (viz schéma níže)
+- [ ] `AttachmentDef` struct — modifikátory doplňků
+- [ ] `MaterialDef` struct — vlastnosti materiálu pro penetraci
+- [ ] `WeaponRegistry(HashMap<String, WeaponDef>)` Bevy Resource
+- [ ] `AmmoRegistry(HashMap<String, AmmoDef>)` Bevy Resource
+- [ ] `AttachmentRegistry(HashMap<String, AttachmentDef>)` Bevy Resource
+- [ ] `MaterialRegistry(HashMap<String, MaterialDef>)` Bevy Resource
+- [ ] Lua API: `Weapon.Register(id, def)`, `Ammo.Register(id, def)`, `Attachment.Register(id, def)`, `Material.Register(id, def)`
+- [ ] Lua API: `Weapon.Get(id)` → readonly tabulka, `Ammo.Get(id)` → readonly tabulka
+
+**WeaponDef schéma (Lua resource definuje):**
+```lua
+Weapon.Register('ak47', {
+    display_name        = 'AK-47',
+    category            = 'rifle',      -- pistol|smg|rifle|shotgun|lmg|sniper|launcher|melee
+
+    -- Náboj a hlaveň
+    caliber             = '7.62x39',
+    default_ammo        = '7.62x39_fmj',
+    barrel_length_mm    = 415,          -- ovlivňuje úsťovou rychlost přes AmmoDef.velocity_per_mm
+    twist_rate_inches   = 9.45,         -- stabilizace (1 otáčka za N palců) — vliv na těžké střely
+
+    -- Střelba
+    fire_modes          = { 'semi', 'full' },
+    default_fire_mode   = 'full',
+    rpm                 = 600,
+    fire_from_open_bolt = false,        -- open-bolt zbraně (SMG) mají jiný delay
+
+    -- Zásobník
+    mag_capacity        = 30,
+    reload_empty_sec    = 3.2,          -- bez náboje v komoře (bolt lock open)
+    reload_tactical_sec = 2.6,          -- náboj v komoře zůstává
+
+    -- Přesnost — spread ve stupních
+    spread = {
+        base         = 0.15,
+        moving       = 0.45,
+        sprinting    = 1.20,
+        crouch       = 0.08,
+        prone        = 0.04,
+        ads          = 0.05,
+        ads_moving   = 0.18,
+        per_shot     = 0.06,           -- nárůst spreadu za výstřel (tepelné roztahování)
+        recovery_rps = 3.5,            -- recovery stupeň/sekundu po přestání střelby
+    },
+
+    -- Recoil pattern — seznam {x, y} offsetů (stupeň/výstřel), aplikuje se postupně
+    recoil_pattern = {
+        {x =  0.00, y = 0.28}, {x =  0.05, y = 0.26}, {x = -0.08, y = 0.25},
+        {x =  0.06, y = 0.24}, {x = -0.04, y = 0.23}, {x =  0.09, y = 0.22},
+        -- pattern se po vyčerpání opakuje od indexu recoil_loop_from
+    },
+    recoil_loop_from    = 4,            -- od tohoto indexu se pattern opakuje (plateau fáze)
+    recoil_recovery_dps = 8.0,          -- stupeň/sekundu recovery po uvolnění spouště
+
+    -- Mířidla
+    ads_fov_mult        = 0.75,         -- FOV multiplikátor při ADS
+    ads_time_sec        = 0.22,         -- čas přechodu do/z ADS
+
+    -- Fyzické vlastnosti
+    mass_kg             = 3.47,         -- ovlivňuje pohybový postih
+    length_folded_mm    = 645,
+    length_extended_mm  = 875,
+
+    -- Doplňky
+    slots = {
+        optic        = true,
+        muzzle       = true,            -- závit: definuje kompatibilní doplňky
+        barrel       = false,           -- AK nemá swappable barrel
+        underbarrel  = true,
+        stock        = true,
+        magazine     = true,
+        pistol_grip  = false,
+    },
+    muzzle_thread       = 'M14x1LH',
+
+    -- Brokovnicové shotguny
+    pellet_count        = 1,            -- > 1 pro buckshot (každý pellet má vlastní balistiku)
+    choke               = 'none',       -- none|improved_cylinder|modified|full
+})
+```
+
+**AmmoDef schéma:**
+```lua
+Ammo.Register('7.62x39_fmj', {
+    display_name            = '7.62×39mm FMJ',
+    caliber                 = '7.62x39',
+
+    -- Střela
+    bullet_mass_g           = 8.0,
+    bullet_diameter_mm      = 7.92,
+
+    -- Balistika (referenční hodnoty)
+    muzzle_velocity_mps     = 715,      -- při reference_barrel_mm
+    reference_barrel_mm     = 415,
+    velocity_per_mm         = 0.55,     -- Δm/s na mm hlavně nad/pod referenci
+                                        -- (záporné = kratší hlaveň ztrácí rychlost)
+    -- Odpor vzduchu
+    ballistic_model         = 'G7',     -- G1|G7|custom
+    ballistic_coeff         = 0.255,    -- G7 BC — vyšší = méně odporu
+    -- nebo zjednodušený model:
+    -- drag_coefficient     = 0.47,
+
+    -- Poškození
+    base_damage             = 42.0,     -- při dopadu s plnou energií (muzzle velocity)
+    damage_velocity_ref_mps = 715,      -- rychlost při které je base_damage platné
+    -- Damage se škáluje: dmg = base_damage * (impact_vel / damage_velocity_ref)^1.5
+
+    -- Penetrace
+    penetration_class       = 3,        -- 1=FMJ nízký, 2=FMJ std, 3=FMJ těžký, 4=AP, 5=AP+, 6=API
+    armor_penetration       = 0.45,     -- frakce poškození procházející skrz brnění (0=žádná, 1=full)
+    penetration_energy_j    = 2100,     -- kinetická energie [J] potřebná k průniku materiálem
+    after_penetration_mult  = 0.65,     -- multiplikátor velocity po průniku (zbytek energie)
+
+    -- Efekty střely
+    fragmentation_vel_mps   = 600,      -- pod touto rychlostí střela nefragmentuje
+    fragmentation_factor    = 0.0,      -- 0=žádná expanze (FMJ), 1=plná expanze (hollow point)
+    wound_mult              = 1.0,      -- násobič wound kanálu
+
+    -- Speciální
+    tracer                  = false,
+    incendiary              = false,
+    explosive               = false,
+    subsonic                = false,    -- nemá sonic crack, jiný zvukový podpis při tlumení
+    bleed_chance            = 0.0,      -- 0..1 šance na krvácení (hollow point > 0)
+    bleed_dps               = 0.0,      -- HP/s ztracené krvácením
+
+    -- Zvuk
+    crack_range_m           = 400,      -- nadzvukový crack slyšitelný do N metrů od trajektorie
+    thump_range_m           = 1500,     -- úsťový tlak slyšitelný do N metrů od ústí
+})
+
+-- Příklady dalších typů
+Ammo.Register('7.62x39_hp', {
+    -- ... stejná balistika jako FMJ, ale:
+    fragmentation_vel_mps   = 400,
+    fragmentation_factor    = 0.85,    -- hollow point se plně expanduje
+    wound_mult              = 1.6,
+    armor_penetration       = 0.10,    -- špatná penetrace pancíře
+    bleed_chance            = 0.65,
+    bleed_dps               = 3.5,
+})
+
+Ammo.Register('7.62x39_ap', {
+    penetration_class       = 5,
+    armor_penetration       = 0.85,
+    penetration_energy_j    = 3800,
+    base_damage             = 36.0,    -- AP náboje mívají nižší wound damage
+})
+
+Ammo.Register('7.62x39_subsonic', {
+    muzzle_velocity_mps     = 295,     -- pod 343 m/s (rychlost zvuku)
+    subsonic                = true,
+    crack_range_m           = 0,       -- žádný sonic crack
+    base_damage             = 28.0,    -- méně kinetické energie
+    bullet_mass_g           = 12.5,    -- těžší střela kompenzuje nízkou rychlost
+})
+```
+
+**AttachmentDef schéma:**
+```lua
+Attachment.Register('suppressor_ak_pbs4', {
+    display_name            = 'PBS-4 Suppressor',
+    slot                    = 'muzzle',
+    compatible_threads      = { 'M14x1LH' },
+
+    -- Balistické modifikátory
+    velocity_mult           = 0.96,    -- ztráta rychlosti díky prodloužení cesty plynu
+    barrel_length_delta_mm  = 215,     -- prodloužení efektivní délky hlavně
+
+    -- Zvukové modifikátory
+    db_reduction            = 28,      -- snížení hladiny akustického tlaku [dB]
+    changes_sonic_signature = true,    -- mění směrovost zvuku
+
+    -- Handling
+    ads_time_delta_sec      = 0.04,    -- zpomalení ADS kvůli hmotnosti
+    recoil_mult             = 0.90,    -- tlumič snižuje zpětný ráz
+    mass_kg                 = 0.55,
+
+    -- Vizuál
+    model                   = 'suppressor_pbs4',
+})
+
+Attachment.Register('acog_ta31', {
+    slot                    = 'optic',
+    display_name            = 'ACOG TA31 4×32',
+    ads_fov_mult_override   = 0.25,    -- přepíše ads_fov_mult zbraně
+    ads_time_delta_sec      = 0.06,    -- těžší optika zpomaluje ADS
+    zero_range_m            = 300,     -- nastavení nulového bodu
+    model                   = 'optic_acog_ta31',
+})
+```
+
+**MaterialDef schéma (pro penetraci):**
+```lua
+Material.Register('steel_3mm', {
+    display_name        = 'Ocel 3mm',
+    thickness_mm        = 3.0,
+    hardness_brinell    = 200,
+    required_energy_j   = 900,         -- minimální kinetická energie J pro průnik
+    velocity_retention  = 0.58,        -- frakce velocity zachovaná po průniku (0..1)
+    ricochet_angle_deg  = 15,          -- pod tímto úhlem dopadu se střela odráží
+})
+
+Material.Register('wood_25mm',  { thickness_mm=25, required_energy_j=120, velocity_retention=0.85 })
+Material.Register('concrete_100mm', { thickness_mm=100, required_energy_j=4000, velocity_retention=0.10 })
+Material.Register('glass_5mm',  { thickness_mm=5, required_energy_j=80, velocity_retention=0.92 })
+```
+
+---
+
+#### 5.2 — Balistický engine
+
+Fyzikálně přesná simulace letu střely na serveru. Klient dostane výsledky přes eventi.
+
+**Rust side:**
+- [ ] `BallisticsPlugin` — registruje systémy a resources
+- [ ] `BulletProjectile` component — fyzikální stav střely v letu:
+  - `position: Vec3`, `velocity: Vec3` (m/s), `remaining_energy_j: f32`
+  - `ammo_id: String`, `source_entity: Entity`, `team: u8`
+  - `spawn_tick: u32` (pro lag compensation)
+- [ ] `ProjectileSimulator` systém (FixedUpdate) — integruje pozici, aplikuje drag a gravitaci:
+  - Drag model: `F_drag = 0.5 * rho * Cd * A * v²` (nebo G1/G7 BC výpočet)
+  - Gravity: `v.y -= 9.81 * dt`
+  - Energie: `E = 0.5 * mass_kg * v²` — aktualizuje se každý tick
+- [ ] `MuzzleVelocityCalc` utility: `effective_muzzle_vel(ammo, barrel_mm, attachments) -> f32`
+  - Vzorec: `v = ammo.muzzle_velocity + (barrel_mm - ammo.reference_barrel_mm) * ammo.velocity_per_mm`
+  - Doplněk na ústí (tlumič) přidá svůj `velocity_mult` a `barrel_length_delta_mm`
+- [ ] Hitscan vs. projectile rozhodnutí:
+  - `v_muzzle > 700 m/s` → hitscan raycast s lag compensací (instantní, serveru autoritativní)
+  - `v_muzzle ≤ 700 m/s` nebo `explosive=true` → skutečný `BulletProjectile` entity
+- [ ] `PenetrationResolver` — při průniku materiálu vypočte výstupní velocity ze `MaterialDef`
+- [ ] `RicochetResolver` — odraz střely od tvrdého povrchu pod plochým úhlem
+- [ ] Lua event `onBulletImpact`: `{shooter, position, normal, material, velocity_mps, penetrated}`
+- [ ] Lua event `onBulletFlyby`: `{listener_entity, distance_m, velocity_mps}` — sonic crack pro blízké hráče
+
+---
+
+#### 5.3 — Hitbox systém a server-side hit detection
+
+Autoritativní detekce zásahu na serveru s lag compensací.
+
+**Rust side:**
+- [ ] `HitboxDef` struct — definice hitboxů pro model (kapsle na kostech)
+- [ ] `HitboxRegistry(HashMap<String, HitboxDef>)` Bevy Resource
+- [ ] `PlayerHitbox` component — reference na `HitboxDef` podle aktivního modelu hráče
+- [ ] `PositionHistory` component — ring buffer posledních N ticků pozic/rotací hráče (lag compensation)
+- [ ] `LagCompensator` systém — při hit check "přetočí" pozice ostatních hráčů na tick kdy byl výstřel vyslán
+- [ ] `HitResolver` systém — pro každý dopadlý raycast / projectile:
+  1. Rewind pozice (lag comp)
+  2. Test kapsle všech hitboxů
+  3. Vrátí zasaženou kost + frakci depth (pro průnik)
+  4. Vyvolá `DamageEvent` s hitzone
+- [ ] Lua API: `Hitbox.Register(model_id, def)`
+
+**HitboxDef schéma:**
+```lua
+Hitbox.Register('player_default', {
+    -- Každá kost: {mult, armor_bypass, capsule = {radius, half_height, offset_y}}
+    bones = {
+        head      = { mult = 4.0, armor_bypass = 0.5,  capsule = {r=0.12, hh=0.10, oy=1.75} },
+        neck      = { mult = 2.5, armor_bypass = 0.8,  capsule = {r=0.07, hh=0.06, oy=1.55} },
+        chest     = { mult = 1.0, armor_bypass = 0.0,  capsule = {r=0.22, hh=0.18, oy=1.30} },
+        stomach   = { mult = 0.9, armor_bypass = 0.1,  capsule = {r=0.18, hh=0.12, oy=1.05} },
+        pelvis    = { mult = 0.8, armor_bypass = 0.2,  capsule = {r=0.18, hh=0.10, oy=0.90} },
+        upper_arm = { mult = 0.7, armor_bypass = 1.0,  capsule = {r=0.07, hh=0.14, oy=1.35} },
+        lower_arm = { mult = 0.6, armor_bypass = 1.0,  capsule = {r=0.06, hh=0.12, oy=1.10} },
+        upper_leg = { mult = 0.75,armor_bypass = 1.0,  capsule = {r=0.09, hh=0.18, oy=0.60} },
+        lower_leg = { mult = 0.65,armor_bypass = 1.0,  capsule = {r=0.07, hh=0.18, oy=0.28} },
+    },
+    -- Zóna chráněná přilbou / vestou (pro armor_bypass override)
+    armor_zones = {
+        helmet = { bones = {'head','neck'} },
+        vest   = { bones = {'chest','stomach','pelvis'} },
+    },
+})
+```
+
+---
+
+#### 5.4 — Weapon State & Equipment per hráč
+
+**Rust side:**
+- [ ] `WeaponSlots` component — 4 sloty: `[primary, secondary, melee, throwable]` — každý `Option<EquippedWeapon>`
+- [ ] `EquippedWeapon` struct: `weapon_id, ammo_in_mag, ammo_type_id, attachments: HashMap<slot, id>`
+- [ ] `AmmoReserve` component: `HashMap<caliber_id, u32>` — zásoby munice v kapsách
+- [ ] `ActiveSlot` component: `u8` — aktuálně držená zbraň (0–3)
+- [ ] `ReloadState` component — FSM: `Idle | Reloading { elapsed, duration, reload_type }`
+- [ ] `FireState` component — `Ready | Firing { shots_fired } | Cooling { remaining_sec }`
+- [ ] `WeaponSwapState` component — `Ready | Swapping { elapsed, duration }`
+- [ ] `reload_system` (FixedUpdate) — tickuje `ReloadState`, na dokončení přeplní zásobník
+- [ ] `fire_system` (FixedUpdate) — čte PRIMARY_FIRE z `LastPlayerInputs`, kontroluje `FireState` + `ReloadState`, spawne střelu / provede hitscan
+- [ ] Lua API — čtení/mutace equipment:
+  - `Weapon.GetEquipped(player_id)` → `{weapon_id, ammo_in_mag, ammo_type, attachments}`
+  - `Weapon.SetEquipped(player_id, slot, weapon_id, ammo_type?)`
+  - `Weapon.GetAmmoReserve(player_id, caliber)` → `integer`
+  - `Weapon.SetAmmoReserve(player_id, caliber, count)`
+  - `Weapon.GetActiveSlot(player_id)` → `0..3`
+  - `Weapon.ForceReload(player_id)`
+- [ ] Nové `PlayerInput` bity: `RELOAD` (bit 2), `WEAPON_SLOT_1..4` (bity 13–16), `ADS` (bit 12)
+
+---
+
+#### 5.5 — Armor & rozšířený damage pipeline
+
+**Rust side:**
+- [ ] `ArmorComponent` component:
+  ```rust
+  pub struct ArmorComponent {
+      pub helmet:   Option<ArmorPiece>,  // { class: u8, durability: f32, max_durability: f32 }
+      pub vest:     Option<ArmorPiece>,
+  }
+  ```
+- [ ] `ArmorClass` enum: `I | II | IIIa | III | IV` (NIJ standard) — mapuje na `absorption_table`
+- [ ] `absorption_table` — 2D lookup: `[armor_class][penetration_class] → frakce pohlceného poškození`
+- [ ] `ArmorDurabilitySystem` — snižuje `durability` při každém zásahu (degradace pancíře)
+- [ ] Rozšířený damage pipeline (nahrazuje prostý `health.current -= damage`):
+  1. `impact_velocity` z `BulletProjectile` nebo hitscan (vzdálenost→velocity přes drag model)
+  2. `kinetic_energy_j = 0.5 * mass_kg * v²`
+  3. Penetrace armoru: porovnej `penetration_energy_j` vs `armor.durability` pro daný armor_class
+  4. Pokud nepenetrovalo: `damage *= (1.0 - armor_absorption)` + degraduj brnění
+  5. Pokud penetrovalo: plné poškození + degraduj brnění (`after_penetration_mult`)
+  6. Aplikuj hitbox multiplikátor (`hitzone_mult`)
+  7. Aplikuj `wound_mult` z AmmoDef
+  8. `health.current -= final_damage`
+- [ ] Status efekty komponent: `BleedEffect { dps, remaining_sec }`, `BurnEffect { dps, remaining_sec }`
+- [ ] `status_effect_system` (FixedUpdate) — tickuje efekty, aplikuje poškození z krvácení/hoření
+- [ ] Lua event `onPlayerDamage` (bohatší než současný `onPlayerHit`):
+  ```json
+  {
+    "attacker": "12345", "victim": "67890",
+    "weapon": "ak47", "ammo": "7.62x39_ap",
+    "hitzone": "chest", "final_damage": 38.4,
+    "raw_damage": 42.0, "armor_absorbed": 3.6,
+    "penetrated_armor": true, "distance_m": 45.2,
+    "impact_velocity_mps": 698.3, "headshot": false,
+    "through_wall": false
+  }
+  ```
+- [ ] Lua API: `Player.GetArmor(player_id)` → `{helmet, vest}`, `Player.SetArmor(player_id, slot, class, durability)`
+
+---
+
+#### 5.6 — Rozšířená fyzika hráče
+
+**Rust side — nové `PlayerInput` bity:**
+- `LEAN_LEFT` (bit 8), `LEAN_RIGHT` (bit 9)
+- `PRONE` (bit 10)
+- `VAULT` (bit 11)
+- `ADS` (bit 12)
+
+**Nové komponenty:**
+- [ ] `PlayerStance` component: `Standing | Crouching | Prone | Vaulting`
+- [ ] `LeanState` component: `None | Left(f32) | Right(f32)` — frakce náklonu (0..1 lerp)
+- [ ] `StaminaComponent` component: `current: f32, max: f32` (sprint/skok čerpá, regeneruje)
+- [ ] `AdsState` component: `Idle | Entering { progress } | Ads | Leaving { progress }` + `fov_mult: f32`
+- [ ] `VaultState` component — FSM pro mantle přes překážku
+
+**Nové systémy:**
+- [ ] `stance_system` (FixedUpdate) — přechody Standing↔Crouching↔Prone, kolizní výška capsule
+- [ ] `lean_system` (FixedUpdate) — aplikuje horizontální offset + roll kamery, zachovává hitbox
+- [ ] `stamina_system` (FixedUpdate) — čerpá při sprint/jump, regeneruje jinak
+- [ ] `ads_system` (FixedUpdate) — lerp FOV multiplier (posílán klientovi jako `onAdsStateChange` event)
+- [ ] `vault_system` (FixedUpdate) — detekce nízké překážky (raycast dopředu + nahoru), arc pohyb
+
+**Kolizní výška dle stance:**
+| Stance | Capsule height | Camera offset Y |
+|--------|---------------|-----------------|
+| Standing | 1.80 m | 1.65 m |
+| Crouching | 1.10 m | 0.95 m |
+| Prone | 0.40 m | 0.30 m |
+
+**Vliv staminy na balistiku:**
+- `stamina < 30%` → spread `+0.3°`, ADS sway `×1.5`
+- `stamina == 0` → nelze sprintovat, spread `+0.8°`
+
+---
+
+#### 5.7 — Recoil, Spread & ADS na serveru
+
+- [ ] `RecoilAccumulator` component: `offset: Vec2, shot_index: usize`
+- [ ] `recoil_system` (FixedUpdate):
+  - Při výstřelu: přidej `recoil_pattern[shot_index % loop_from + wrapping]` do `offset`
+  - Každý tick bez střelby: `offset → ZERO` rychlostí `recoil_recovery_dps * dt`
+  - Recoil offset se přidává k `PlayerInput.look` před simulací pohybu
+- [ ] `spread_calculator` utility: vrátí aktuální spread zbraně dle stance + ADS + pohybu + staminy
+- [ ] Server posílá klientovi `onRecoilUpdate` event → klient animuje vizuální zpětný ráz (odděleno od autoritativního)
+- [ ] Shotgun pellet fan: pro `pellet_count > 1` server spawne N hitscanů s equal-angle rozptylem v choke kuželi
+
+---
+
+#### 5.8 — Audio Events Bridge
+
+Rust emituje zvukové události do LocalEventBus; Lua resource `core/audio` rozhodne, kteří hráči slyší co.
+
+- [ ] `onGunfire` event (server):
+  ```json
+  {
+    "shooter": "12345", "position": {x,y,z}, "direction": {x,y,z},
+    "weapon": "ak47", "ammo": "7.62x39_fmj", "suppressed": false,
+    "muzzle_velocity_mps": 715, "crack_range_m": 400, "thump_range_m": 1500
+  }
+  ```
+- [ ] `onFootstep` event (server):
+  ```json
+  { "entity": "12345", "position": {x,y,z}, "surface": "concrete", "stance": "standing", "speed": 4.5 }
+  ```
+- [ ] `onExplosion` event: `{ position, radius_m, sound_range_m, visual_radius_m }`
+- [ ] `onReload` event: `{ player, weapon, type }` — `type = "empty"|"tactical"`
+- [ ] `FootstepDetector` systém (FixedUpdate) — porovná pohyb hráčů, emituje footstep event každých N metrů
+- [ ] Lua resource `core/audio` zodpovídá za proximitu výpočet a `TriggerClientEvent` příslušným hráčům
+
+---
+
+#### 5.9 — Kill Feed & Hit Confirmation
+
+- [ ] `onHitConfirm` unicast k útočníkovi po každém zásahu:
+  ```json
+  { "victim": "67890", "hitzone": "head", "damage": 150.0, "kill": true, "headshot": true }
+  ```
+- [ ] `onPlayerKill` broadcast (nebo Lua resource posílá kill feed):
+  ```json
+  {
+    "killer": "12345", "victim": "67890",
+    "weapon": "ak47", "ammo": "7.62x39_fmj",
+    "headshot": true, "distance_m": 87.3, "through_wall": false
+  }
+  ```
+- [ ] `KillStreak` component per hráč: `current_streak: u32, best_streak: u32`
+- [ ] `kill_streak_system` — inkrementuje při kill, resetuje při smrti
+- [ ] Lua event `onKillStreak`: `{ player, streak }` — každých 5 killů nebo na milnících
+
+---
+
+#### 5.10 — Spawn System
+
+Spawn logic zůstává plně v Lua resources; Rust poskytuje primitivy.
+
+- [ ] `SpawnPoint` component: `team: Option<u8>, active: bool`
+- [ ] `Spawn.Register(id, pos, rot, opts?)` Lua API — spawne `SpawnPoint` entitu do ECS
+- [ ] `Spawn.GetFree(team?)` Lua API → `{id, pos, rot}` nebo `nil` — vrátí spawn point s nejmenší nepřátelskou hrozbou (vzdálenosti hráčů)
+- [ ] `Spawn.SetActive(id, bool)` Lua API — aktivace/deaktivace spawn pointu
+- [ ] `Spawn.GetAll()` Lua API → tabulka všech spawn pointů
+- [ ] `RespawnTimer` component per hráč: `remaining_sec: f32` (tickuje v FixedUpdate, emituje `onRespawnReady`)
+- [ ] Lua event `onRespawnReady`: `{ player }` — Lua resource zavolá respawn logiku
+- [ ] Server Lua resource `core/spawns` → implementuje respawn delay, výběr bodu, team balance
+
+---
+
+#### 5.11 — Round State & Game Mode Foundation
+
+Rust poskytuje jen časovač a eventy; herní logika je v Lua.
+
+- [ ] `RoundState` Bevy Resource: `enum { WarmUp, Active { elapsed_sec }, PostRound { winner_team } }`
+- [ ] `round_timer_system` (FixedUpdate) — tickuje `RoundState::Active.elapsed_sec`
+- [ ] Lua API: `Round.GetState()` → `{ phase, elapsed, time_limit }`
+- [ ] Lua API: `Round.SetTimeLimit(sec)`, `Round.End(winner_team?)`
+- [ ] Lua event `onRoundStart`, `onRoundEnd { winner_team, scores }`, `onRoundTick { elapsed, remaining }`
+- [ ] `TeamAssignment` component per hráč: `team: u8` (0 = unassigned)
+- [ ] Lua API: `Player.GetTeam(player_id)` → `u8`, `Player.SetTeam(player_id, team)`
+- [ ] `ScoreBoard` Bevy Resource: `HashMap<u64, PlayerScore>` (`kills, deaths, assists, score`)
+- [ ] Lua API: `Score.Add(player_id, kills?, deaths?, assists?, score?)`, `Score.Get(player_id)`, `Score.GetAll()`
+
+---
+
+#### Phase 5 — Nová Lua API (přehled)
+
+| Namespace | Funkce | Strana | Popis |
+|-----------|--------|--------|-------|
+| `Weapon.Register(id, def)` | server | Zaregistruje WeaponDef do registry |
+| `Weapon.Get(id)` | both | Vrátí readonly def nebo nil |
+| `Weapon.GetEquipped(pid)` | server | Equipped weapon state hráče |
+| `Weapon.SetEquipped(pid, slot, wid)` | server | Vybaví hráče zbraní |
+| `Weapon.GetAmmoReserve(pid, cal)` | server | Počet nábojů daného kalibru |
+| `Weapon.SetAmmoReserve(pid, cal, n)` | server | Nastaví zásobu munice |
+| `Weapon.ForceReload(pid)` | server | Vynutí přebíjení |
+| `Ammo.Register(id, def)` | server | Zaregistruje AmmoDef |
+| `Attachment.Register(id, def)` | server | Zaregistruje AttachmentDef |
+| `Material.Register(id, def)` | server | Zaregistruje MaterialDef |
+| `Hitbox.Register(model, def)` | server | Zaregistruje hitbox definition |
+| `Player.GetArmor(pid)` | server | Stav brnění hráče |
+| `Player.SetArmor(pid, slot, cls, dur)` | server | Nastaví brnění |
+| `Player.GetTeam(pid)` | both | Team assignment |
+| `Player.SetTeam(pid, team)` | server | Přiřadí hráče do týmu |
+| `Player.GetStamina(pid)` | server | Aktuální stamina |
+| `Player.GetStance(pid)` | server | standing\|crouching\|prone |
+| `Spawn.Register(id, pos, rot, opts)` | server | Zaregistruje spawn point |
+| `Spawn.GetFree(team?)` | server | Vrátí volný spawn point |
+| `Spawn.SetActive(id, bool)` | server | Aktivace spawn pointu |
+| `Round.GetState()` | both | Stav kola |
+| `Round.SetTimeLimit(sec)` | server | Nastaví délku kola |
+| `Round.End(winner?)` | server | Ukončí kolo |
+| `Score.Add(pid, opts)` | server | Přidá body hráči |
+| `Score.Get(pid)` | both | Skóre jednoho hráče |
+| `Score.GetAll()` | both | Celý scoreboard |
+
+---
+
 ## Project Layout
 
 ```text
