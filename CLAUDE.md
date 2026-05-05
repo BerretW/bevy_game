@@ -134,13 +134,68 @@ files {
 - [x] Klient přepnutý na cache mode (`cache/resources/`); `ResourcesPlugin` watcher hot-reloaduje stažené soubory
 - [x] Lua RPC bridge: `TriggerServerEvent`, `TriggerClientEvent`, `RegisterEvent` přes lightyear `LuaEventMessage` kanál
 
-### Phase 3 — Universal ECS API (Rust → Lua Bridge)
+### Phase 3 — Universal ECS Bridge & World Streaming
 
-- [ ] Vystavit komponenty `Stats`, `Transform`, `Inventory` do Lua
-- [ ] Vytvořit generický Action/Intent systém (Lua žádá akci, Rust Server validuje)
-- [ ] Cross-sandbox event bus (`TriggerEvent` na druhý resource v stejném procesu)
-- [ ] Per-target unicast pro `TriggerClientEvent(name, player_id, ...)` (Phase 2 zatím broadcastuje)
-- [ ] Strukturovaný payload (LuaTable ↔ MessagePack) místo dnešního string-only payloadu
+**Hlavní filozofie:** Rust (Core) = slepý sval (rendering, kolize, netcode, paměť). Lua (Resources) = mozek (pravidla, logika, inventář, ukládání). Vše komunikuje asynchronně přes Intents a Events.
+
+#### 3.1 — Gameplay Foundations ✅
+
+- [x] `PlayerInput` struct (move_dir, look, actions bitfield, client_tick)
+- [x] `InputChannel` — sequenced unreliable, 60 Hz tick stream
+- [x] `ReplicationSender` attach observer (`Add<LinkOf>`) na transport entitu
+- [x] Server-side player spawn observer (`spawn_player_on_connect` při `Add<Connected>`)
+- [x] `NetTransform`, `NetVelocity`, `PlayerMarker` s lightyear prediction
+- [x] `apply_inputs_to_velocity` + `integrate_velocity` v `FixedUpdate` (`sim.rs`)
+- [x] Klientský renderer replikovaných hráčů (Sprite per `PlayerMarker`) + WASD input collection (`gameplay.rs`)
+
+#### 3.2 — Command Queue & Bezpečný Lua Bridge
+
+- [ ] `LuaCommand` enum: `SpawnLocalObject`, `DespawnEntity`, `SetTransform`, `ApplyDamage`, …
+- [ ] Sdílený `CommandQueue` buffer (`Arc<Mutex<Vec<LuaCommand>>>`) ve `LuaSandbox`
+- [ ] Bevy systém `process_lua_commands` (FixedUpdate) — bezpečně aplikuje příkazy na ECS svět
+- [ ] Lua API: `World.SpawnLocalObject(model, pos, rot)` → handle, `World.DeleteObject(handle)`
+
+#### 3.3 — Data-Driven Combat & Akce
+
+- [ ] `WeaponConfig` Bevy resource (fire_rate, range, type) — Lua dodá konfiguraci, Rust ji připne na entitu hráče
+- [ ] Rust-side raycast exekuce: čte `actions` bitfield + `WeaponConfig`, provádí fyzikální raycast bez Lua latence
+- [ ] Vizuální efekty (jiskry, muzzle flash) a cooldown management na Rust vrstvě
+- [ ] Event `onPlayerHit` zpět do Lua event busu (kdo, koho, hit position, zbraň)
+- [ ] Server autoritativní validace v Lua: munice, brnění, buffy → `ApplyDamage` intent → `onPlayerDeath`
+
+#### 3.4 — Global Model Registry
+
+- [ ] Rozšíření VFS Scanneru: projití složky `stream/` v každém resource automaticky
+- [ ] Slovník `model_name → absolute_path` (konflikty: logovat + first-wins)
+- [ ] Reference counting — Rust drží model v RAM/VRAM jen pokud `refcount > 0`
+- [ ] Lua API: `Engine.RequestModel(name)` (async load), `Engine.HasModelLoaded(name) -> bool`, `Engine.SetModelAsNoLongerNeeded(name)`
+
+#### 3.5 — YMAP World Objects
+
+- [ ] YMAP JSON formát: `[{"model": "prop_name", "pos": [x,y,z], "rot": [x,y,z]}]`
+- [ ] `World.SpawnNetworkedObject(model, pos, rot)` — replikovaná entita (server autoritativní)
+- [ ] Mapper/Spooner tool — Lua in-game editor využívající lokální entity + Raycast API
+- [ ] Oddělit práci Modellera (`stream/prop.glb` + `prop.col`) od Mappera (YMAP instance JSON)
+
+#### 3.6 — YMAP Streaming & Culling
+
+- [ ] AABB bounding box per-YMAP (dopočítaný při načtení JSON)
+- [ ] Klientský streaming: Load/Unload radius → async YMAP load → GPU Instancing (jeden draw call per model)
+- [ ] Serverový culling: fyzika YMAPu se načte jen pokud je v AABB živý hráč nebo AI
+- [ ] Server Physics Instancing: `.col` soubory, jeden `Shape` per model type → N instancí (šetří RAM)
+
+#### 3.7 — Raycasting API
+
+- [ ] `Raycast.GetMouseHitPosition() -> {x, y, z}` Lua bridge
+- [ ] Klientská implementace: screen-to-world ray → Bevy/Rapier raycast → výsledek do Lua callback
+
+#### 3.8 — Zbývající ECS Bridge položky
+
+- [ ] Cross-sandbox `TriggerEvent` bus (uvnitř jednoho procesu) — nahradit Phase 2 no-op stub
+- [ ] Per-target unicast `TriggerClientEvent(name, player_id, ...)` — Phase 2 broadcastuje všem
+- [ ] Strukturovaný payload (LuaTable ↔ MessagePack) místo string-only
+- [ ] Vystavit `Stats`, `Inventory` komponenty do Lua přes bridge
+- [ ] `sender` player_id v handlerech (`dispatch_incoming` zatím předává `nil`)
 
 ### Phase 4 — WebUI, DB & QOL
 
@@ -252,7 +307,7 @@ Sekce ([`host_client::config::ClientConfig`](host_client/src/config.rs), `deny_u
 | `[advanced]`        | log level/filter, debug/profile overlaye, dev console, GPU validation, preload toggle    |
 
 Phase 2 wire-up: graphics → `RenderPlugin` + `WgpuSettings` + `WindowPlugin`,
-advanced.log_* → `LogPlugin`, network.* → `ClientNetConfig`,
+`advanced.log_*` → `LogPlugin`, `network.*` → `ClientNetConfig`,
 paths.cache_dir → `ClientHandshakeConfig`. Ostatní pole jsou dostupná
 jako `ClientConfigResource` pro Phase 3+ konzumenty (audio mixer, action
 mapper, …).
@@ -286,7 +341,7 @@ Sekce (vše má defaulty):
 | `[logging]`   | tracing level + per-modul filter                                                   |
 | `[admin]`     | Phase 4: bind + bearer token pro admin API                                         |
 | `[database]`  | Phase 4: sqlx connection string + pool size + migrations                           |
-| `[dev]`       | Debug toggles (`auto_acknowledge_clients`, `print_digest_on_startup`, …)          |
+| `[dev]`       | Debug toggles (`auto_acknowledge_clients`, `print_digest_on_startup`, ...)       |
 
 Strukturu definuje [`host_server::config::ServerConfig`](host_server/src/config.rs) — přidat
 volbu = přidat pole + popsat v `server.toml`. Neznámá pole odmítáme (`deny_unknown_fields`),
