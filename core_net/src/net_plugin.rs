@@ -32,7 +32,9 @@ use lightyear::prelude::server::{
 // (re-exporty z lightyear_netcode/prelude, lightyear_udp/prelude atd.).
 use lightyear::prelude::*;
 
-use crate::protocol::{ClientReady, LuaEventMessage, ServerHello};
+use core_shared::{NetTransform, NetVelocity, PlayerMarker};
+
+use crate::protocol::{ClientReady, LuaEventMessage, PlayerInput, ServerHello};
 
 /// Tickrate pro lightyear (musí ladit s herní simulací).
 pub const FIXED_TIMESTEP_HZ: f64 = 60.0;
@@ -67,6 +69,11 @@ pub struct HandshakeChannel;
 /// eventy (movement, particles), ale Phase 2 default je reliable.
 pub struct LuaRpcChannel;
 
+/// Phase 3 — sequenced unreliable kanál pro `PlayerInput` (60 Hz tick stream).
+/// Zastaralé pakety se na příjmu zahodí (latest wins), nikdy se neretransmituje
+/// → konzistentní latency. Vhodné pro tick-rate inputy, ne pro reliable RPC.
+pub struct InputChannel;
+
 // ---------------------------------------------------------------------------
 // ProtocolPlugin — sdílený
 // ---------------------------------------------------------------------------
@@ -77,15 +84,22 @@ pub struct ProtocolPlugin;
 
 impl Plugin for ProtocolPlugin {
     fn build(&self, app: &mut App) {
-        // Messages.
+        // -----------------------------------------------------------------
+        // Messages
+        // -----------------------------------------------------------------
         app.register_message::<ServerHello>()
             .add_direction(NetworkDirection::ServerToClient);
         app.register_message::<ClientReady>()
             .add_direction(NetworkDirection::ClientToServer);
         app.register_message::<LuaEventMessage>()
             .add_direction(NetworkDirection::Bidirectional);
+        // Phase 3 — tick-rate input messages.
+        app.register_message::<PlayerInput>()
+            .add_direction(NetworkDirection::ClientToServer);
 
-        // Channels.
+        // -----------------------------------------------------------------
+        // Channels
+        // -----------------------------------------------------------------
         app.add_channel::<HandshakeChannel>(ChannelSettings {
             mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
             ..default()
@@ -97,6 +111,26 @@ impl Plugin for ProtocolPlugin {
             ..default()
         })
         .add_direction(NetworkDirection::Bidirectional);
+
+        // Inputs — sequenced unreliable: zastaralé pakety dropujeme,
+        // čerstvý tick state nahradí starší.
+        app.add_channel::<InputChannel>(ChannelSettings {
+            mode: ChannelMode::SequencedUnreliable,
+            ..default()
+        })
+        .add_direction(NetworkDirection::ClientToServer);
+
+        // -----------------------------------------------------------------
+        // Replicated components (Phase 3)
+        // -----------------------------------------------------------------
+        // `add_prediction()` zapne client-side prediction + rollback pro
+        // komponentu — server posílá authoritativní stav, klient predikuje
+        // lokálně, lightyear porovnává a rollbacka když se rozcházejí.
+        // Interpolation pro remote entity přidáme později (vyžaduje `Ease`
+        // impl nebo custom lerp fn pro `NetTransform`).
+        app.register_component::<NetTransform>().add_prediction();
+        app.register_component::<NetVelocity>().add_prediction();
+        app.register_component::<PlayerMarker>();
     }
 }
 

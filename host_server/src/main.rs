@@ -20,7 +20,7 @@ use bevy::prelude::*;
 
 use core_net::{
     DigestPlugin, ServerHandshakeConfig, ServerHandshakePlugin, ServerLuaRpcPlugin,
-    ServerNetConfig, ServerNetPlugin,
+    ServerNetConfig, ServerNetPlugin, ServerSimPlugin,
 };
 use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
@@ -132,6 +132,11 @@ fn main() {
             // serverových sandboxů a posílá je klientům; routuje příchozí
             // TriggerServerEvent k handlerům RegisterEvent v sandboxech.
             ServerLuaRpcPlugin,
+            // Phase 3 — gameplay simulace: spawn hráče na Add<Connected>,
+            // FixedUpdate čte PlayerInput → NetVelocity → integrace do
+            // NetTransform. Replikace přes lightyear `Replicate` zajistí,
+            // že klienti vidí pohyb.
+            ServerSimPlugin,
             ServerCorePlugin,
         ))
         .run();

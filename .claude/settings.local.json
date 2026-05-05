@@ -30,7 +30,19 @@
       "Bash(grep -rn \"UdpSocket\\\\|socket2\\\\|set_nonblocking\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_udp-0.26.4/src\" 2>&1 | head -20)",
       "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_udp-0.26.4/src/**)",
       "Bash(grep -nE \"custom_layer|BoxedLayer|Layer<S>\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\bevy_log-0.18.1/src/lib.rs\" 2>&1 | head -30)",
-      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_log-0.18.1/src/**)"
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_log-0.18.1/src/**)",
+      "Bash(grep -rnE \"register_component|add_prediction|add_interpolation|ComponentSyncMode\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_replication-0.26.4/src\" 2>&1 | head -30)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_replication-0.26.4/src/**)",
+      "Bash(grep -rn \"pub enum PredictionMode\\\\|pub enum InterpolationMode\\\\|pub use.*PredictionMode\\\\|pub use.*InterpolationMode\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_replication-0.26.4\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_prediction-0.26.4\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_interpolation-0.26.4\" 2>&1 | head -20)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_replication-0.26.4/**)",
+      "Bash(grep -rn \"fn add_prediction\\\\|fn add_interpolation\\\\|pub fn add_prediction\\\\|pub fn add_interpolation\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_prediction-0.26.4/src\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_interpolation-0.26.4/src\" 2>&1 | head -10)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_prediction-0.26.4/src/**)",
+      "Bash(grep -rnE \"trait SyncComponent\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_core-0.26.4\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_replication-0.26.4\" 2>&1 | head -5)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_core-0.26.4/**)",
+      "Bash(grep -rnE \"pub struct Replicate|pub struct PeerId|pub struct RemoteId|pub struct ReplicationGroup\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_replication-0.26.4/src\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_connection-0.26.4/src\" 2>&1 | head -10)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_connection-0.26.4/src/**)",
+      "Bash(grep -rnE \"pub fn delta_secs|pub fn delta_seconds\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\bevy_time-0.18.1/src\" 2>&1 | head -5)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_time-0.18.1/src/**)"
     ]
   }
 }

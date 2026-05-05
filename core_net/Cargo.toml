@@ -18,6 +18,7 @@ bevy = { workspace = true, default-features = false, features = [
     "serialize",
 ] }
 core_resources = { workspace = true }
+core_shared = { workspace = true }
 
 serde = { workspace = true }
 thiserror = { workspace = true }

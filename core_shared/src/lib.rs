@@ -6,6 +6,7 @@
 //!
 //! Herní logika do tohoto crate **nepatří** — ta žije v Lua resources.
 
+use bevy::math::{Quat, Vec3};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -68,5 +69,49 @@ impl LuaEventRegistry {
 struct LuaHandlerEntry {
     pub event_name: String,
     pub script_id: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — replicated game-state components
+// ---------------------------------------------------------------------------
+//
+// Komponenty, které lightyear replikuje server → klient. Záměrně držíme
+// úzké, sériově-deterministické tvary (ne plný `Transform` z Bevy s globální
+// matrixí a scale), aby:
+//
+// * client-side prediction měl deterministickou simulaci (rollback potřebuje
+//   bit-shodný state na obou stranách),
+// * delta compression byla efektivní (málo bitů za zprávu),
+// * `Reflect` derive nebyl povinný (lightyear bere `Component + Serde`).
+
+/// Minimální transform pro replikaci. `translation` je world-space pozice,
+/// `rotation` je orientace; scale držíme zvlášť (typicky se nemění a netřeba
+/// posílat každý tick).
+#[derive(Component, Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct NetTransform {
+    pub translation: Vec3,
+    pub rotation: Quat,
+}
+
+impl Default for NetTransform {
+    fn default() -> Self {
+        Self {
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+        }
+    }
+}
+
+/// Lineární rychlost pro deterministickou simulaci pohybu.
+/// Phase 3 simulace: `translation += velocity.0 * dt` v `FixedUpdate`.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetVelocity(pub Vec3);
+
+/// Marker pro entitu reprezentující hráče. `client_id` odpovídá netcode
+/// `client_id` z `Authentication::Manual` — server tak ví, který input
+/// patří ke které autoritativní entitě.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerMarker {
+    pub client_id: u64,
 }
 

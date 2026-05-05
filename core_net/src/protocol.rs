@@ -61,3 +61,40 @@ pub struct LuaEventMessage {
     pub target: Option<u64>,
     pub payload: Vec<u8>,
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Player input & action intents
+// ---------------------------------------------------------------------------
+
+/// **Klient → Server** každý FixedUpdate (~60 Hz).
+///
+/// Server validuje a aplikuje na autoritativní entitu hráče. Klient si
+/// stejnou simulaci pouští lokálně (client-side prediction); když se
+/// odpovědi rozcházejí, lightyear `prediction` udělá rollback + replay.
+///
+/// `client_tick` je **client tick**, kdy byl input zachycen — server
+/// ho použije pro lag-compensation hit-testu (rewind cílů na ten tick).
+/// 32-bit stačí na ~24 dní souvislého běhu při 60 Hz.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlayerInput {
+    /// Normalized 2D move vektor (typicky WASD → x,y in [-1.0, 1.0]).
+    pub move_dir: [f32; 2],
+    /// Look direction (yaw, pitch ve stupních).
+    pub look: [f32; 2],
+    /// Bitfield aktivních akcí — viz [`PlayerAction`] konstanty.
+    pub actions: u32,
+    pub client_tick: u32,
+}
+
+/// Konstanty pro `PlayerInput::actions` bitfield. Phase 3+ scripty
+/// (Lua weapon definice) si je můžou číst přes Bevy resource registry.
+pub mod player_action {
+    pub const PRIMARY_FIRE: u32 = 1 << 0;
+    pub const SECONDARY_FIRE: u32 = 1 << 1;
+    pub const RELOAD: u32 = 1 << 2;
+    pub const JUMP: u32 = 1 << 3;
+    pub const CROUCH: u32 = 1 << 4;
+    pub const SPRINT: u32 = 1 << 5;
+    pub const INTERACT: u32 = 1 << 6;
+    pub const USE_ITEM: u32 = 1 << 7;
+}

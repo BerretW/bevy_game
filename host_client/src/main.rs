@@ -8,6 +8,7 @@
 //! (`%APPDATA%\bevy_game\client.toml` na Windows). Detaily v [`config`].
 
 mod config;
+mod gameplay;
 
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
@@ -140,6 +141,8 @@ fn main() {
                 }),
         )
         .add_plugins((
+            // Phase 3 — klientský renderer replikovaných hráčů + WASD vstup.
+            gameplay::ClientGameplayPlugin,
             SharedPlugin,
             ResourcesPlugin::new(cache_root, Side::Client),
             ClientNetPlugin,

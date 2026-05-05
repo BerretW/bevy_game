@@ -18,6 +18,7 @@ pub mod handshake;
 pub mod lua_rpc;
 pub mod net_plugin;
 pub mod protocol;
+pub mod sim;
 
 pub use digest::{
     compute_resource_digest, normalize_rel_path, DigestError, FileDigest, ResourceDigest,
@@ -29,8 +30,11 @@ pub use handshake::{
     ServerHandshakeConfig, ServerHandshakePlugin,
 };
 pub use lua_rpc::{ClientLuaRpcPlugin, ServerLuaRpcPlugin};
+pub use sim::{ServerSimPlugin, PLAYER_MOVE_SPEED};
 pub use net_plugin::{
-    ClientNetConfig, ClientNetPlugin, HandshakeChannel, LuaRpcChannel, ProtocolPlugin,
-    ServerNetConfig, ServerNetPlugin, FIXED_TIMESTEP_HZ, NETCODE_PROTOCOL_ID,
+    ClientNetConfig, ClientNetPlugin, HandshakeChannel, InputChannel, LuaRpcChannel,
+    ProtocolPlugin, ServerNetConfig, ServerNetPlugin, FIXED_TIMESTEP_HZ, NETCODE_PROTOCOL_ID,
 };
-pub use protocol::{ClientReady, LuaEventMessage, ServerHello, PROTOCOL_VERSION};
+pub use protocol::{
+    player_action, ClientReady, LuaEventMessage, PlayerInput, ServerHello, PROTOCOL_VERSION,
+};
