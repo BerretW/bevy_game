@@ -1,0 +1,54 @@
+[package]
+name = "host_client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# `cargo run -p host_client --features dynamic_linking`
+dynamic_linking = ["bevy/dynamic_linking"]
+
+[dependencies]
+# Klient potřebuje plný grafický stack — winit, render, pbr, ui, atd.
+# Workspace bevy má `default-features = false`, takže si je tu zapínáme
+# explicitně. Tento seznam přibližně odpovídá Bevy default features
+# minus features, které tahají platformně-specifické závislosti, jež
+# si Cargo aktivuje jen pro relevantní target (x11/wayland na Linux).
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_asset",
+    "bevy_audio",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_gilrs",
+    "bevy_gizmos",
+    "bevy_gltf",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_scene",
+    "bevy_sprite",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_window",
+    "bevy_winit",
+    "default_font",
+    "hdr",
+    "ktx2",
+    "multi_threaded",
+    "png",
+    "serialize",
+    "tonemapping_luts",
+    "vorbis",
+    "webgl2",
+    "x11",
+    "zstd",
+] }
+core_shared = { workspace = true }
+
+[[bin]]
+name = "host_client"
+path = "src/main.rs"

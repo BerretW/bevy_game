@@ -1,0 +1,30 @@
+[package]
+name = "host_server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Zapínáme jen v dev buildu pro rychlejší inkrementální linkování.
+# `cargo run -p host_server --features dynamic_linking`
+dynamic_linking = ["bevy/dynamic_linking"]
+
+[dependencies]
+# Headless-only: žádný winit / render / pbr / sprite / ui.
+# Vědomě nepoužíváme `default-features = true`, abychom server udrželi
+# malý a nezávislý na grafickém stacku (běh v Dockeru, na bare-metal).
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_log",
+    "bevy_state",
+    "multi_threaded",
+    "serialize",
+] }
+core_shared = { workspace = true }
+tokio = { workspace = true }
+
+[[bin]]
+name = "host_server"
+path = "src/main.rs"

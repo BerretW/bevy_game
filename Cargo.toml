@@ -1,0 +1,60 @@
+[workspace]
+resolver = "2"
+members = [
+    "core_shared",
+    "host_server",
+    "host_client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["bevy_game contributors"]
+publish = false
+
+# Sjednocené verze klíčových knihoven napříč crates.
+# Konkrétní crates si vybírají, které z nich opravdu konzumují
+# (workspace.dependencies se neresolvují, dokud je nějaký člen nepoužije).
+[workspace.dependencies]
+# --- Engine ---
+bevy = { version = "0.16", default-features = false }
+
+# --- Networking (lightyear: prediction, rollback, replication) ---
+# Použito v Phase 2; verze ladíme s aktuální kompatibilitou s Bevy 0.16.
+lightyear = { version = "0.21", default-features = false }
+
+# --- Scripting (mlua + bevy_mod_scripting bridge) ---
+# Použito v Phase 1+; mlua-feature flagy se nastavují v cílovém crate.
+mlua = { version = "0.10", default-features = false, features = ["lua54", "vendored"] }
+bevy_mod_scripting = { version = "0.13", default-features = false }
+
+# --- Database (sqlx: PostgreSQL prod / SQLite dev) ---
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "sqlite",
+    "macros",
+    "migrate",
+] }
+
+# --- Async runtime pro DB / IO mimo ECS loop ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# --- Serialization ---
+serde = { version = "1.0", features = ["derive"] }
+
+# --- Lokální crates (workspace members) ---
+core_shared = { path = "core_shared" }
+
+# Bevy doporučuje optimalizovat dependencies i v dev profilu pro
+# rozumný framerate, zatímco vlastní crates kompilujeme rychle.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
