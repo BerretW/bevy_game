@@ -24,7 +24,13 @@
       "Bash(grep -rn \"Authentication\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear-0.26.4\\\\src\" 2>&1 | head -10)",
       "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear-0.26.4/src/**)",
       "Bash(powershell -NoProfile -Command \"\\(Get-Content core_net\\\\src\\\\handshake.rs\\) -replace 'source: e.to_string\\\\\\(\\\\\\),', 'message: e.to_string\\(\\),' | Set-Content core_net\\\\src\\\\handshake.rs\")",
-      "Bash(cargo run *)"
+      "Bash(cargo run *)",
+      "Bash(grep -rn \"SIO_UDP_CONNRESET\\\\|WSAIoctl\\\\|connreset\\\\|10054\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\aeronet_io-0.19.1\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_udp-0.26.4\" 2>&1 | head -20)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aeronet_io-0.19.1/**)",
+      "Bash(grep -rn \"UdpSocket\\\\|socket2\\\\|set_nonblocking\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_udp-0.26.4/src\" 2>&1 | head -20)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_udp-0.26.4/src/**)",
+      "Bash(grep -nE \"custom_layer|BoxedLayer|Layer<S>\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\bevy_log-0.18.1/src/lib.rs\" 2>&1 | head -30)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bevy_log-0.18.1/src/**)"
     ]
   }
 }

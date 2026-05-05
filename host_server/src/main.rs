@@ -10,6 +10,7 @@
 
 mod config;
 mod http_server;
+mod log_filter;
 
 use std::path::PathBuf;
 
@@ -110,6 +111,9 @@ fn main() {
             LogPlugin {
                 level: cfg.logging.level.to_bevy(),
                 filter: cfg.logging.filter.clone(),
+                // Windows-specific: tlumí WSAECONNRESET spam po klientském
+                // odpojení (viz log_filter.rs). Na ostatních OS no-op.
+                custom_layer: |_app| Some(Box::new(log_filter::LightyearUdpNoiseFilter)),
                 ..default()
             },
             SharedPlugin,
