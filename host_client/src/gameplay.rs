@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::RaycastBridge;
+use core_resources::{LocalEventBus, LocalObjectMarker, RaycastBridge};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
@@ -23,7 +23,9 @@ impl Plugin for ClientGameplayPlugin {
             Update,
             (
                 update_raycast_bridge,
+                publish_input_state_to_lua,
                 attach_sprite_to_new_players,
+                attach_sprite_to_local_objects,
                 sync_net_transform_to_render,
             )
                 .chain(),
@@ -142,5 +144,58 @@ fn collect_and_send_input(
 
     for mut sender in senders.iter_mut() {
         let _ = sender.send::<InputChannel>(input.clone());
+    }
+}
+
+/// Publikuje stav inputu do Lua local event busu jako `input:state`.
+/// Resource skripty tak mohou robustne cist klavesove vstupy bez vazby
+/// na Rust struktury `ButtonInput<KeyCode>`.
+fn publish_input_state_to_lua(
+    keys: Res<ButtonInput<KeyCode>>,
+    cfg: Res<ClientConfigResource>,
+    local_bus: Res<LocalEventBus>,
+) {
+    let bindings = &cfg.0.input.keys;
+
+    let mut move_x = 0.0_f32;
+    let mut move_y = 0.0_f32;
+    if keys.pressed(bindings.move_forward) { move_y += 1.0; }
+    if keys.pressed(bindings.move_backward) { move_y -= 1.0; }
+    if keys.pressed(bindings.move_right) { move_x += 1.0; }
+    if keys.pressed(bindings.move_left) { move_x -= 1.0; }
+
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "move": {
+            "x": move_x,
+            "y": move_y,
+        },
+        "keys": {
+            "move_forward": keys.pressed(bindings.move_forward),
+            "move_backward": keys.pressed(bindings.move_backward),
+            "move_left": keys.pressed(bindings.move_left),
+            "move_right": keys.pressed(bindings.move_right),
+            "jump": keys.pressed(bindings.jump),
+            "sprint": keys.pressed(bindings.sprint),
+            "crouch": keys.pressed(bindings.crouch),
+            "interact": keys.pressed(bindings.interact),
+        }
+    }))
+    .unwrap_or_default();
+
+    local_bus.push("input:state".to_string(), payload);
+}
+
+/// Prida Sprite na lokalni objekty spawnute pres `World.SpawnLocalObject`.
+/// Bez Sprite by byly neviditelne.
+fn attach_sprite_to_local_objects(
+    mut commands: Commands,
+    new_objs: Query<Entity, (With<LocalObjectMarker>, Without<Sprite>)>,
+) {
+    for entity in new_objs.iter() {
+        commands.entity(entity).insert(Sprite {
+            color: Color::srgb(0.2, 0.85, 0.3),
+            custom_size: Some(Vec2::splat(WORLD_TO_PIXELS)),
+            ..default()
+        });
     }
 }

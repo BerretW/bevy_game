@@ -424,6 +424,10 @@ fn install_runtime_api_inner(
                         mlua::Value::Nil | mlua::Value::Boolean(false) => None,
                         mlua::Value::Integer(i) if *i > 0 => Some(*i as u64),
                         mlua::Value::Number(f) if *f > 0.0 => Some(*f as u64),
+                        mlua::Value::String(s) => s
+                            .to_str()
+                            .ok()
+                            .and_then(|v| v.parse::<u64>().ok()),
                         _ => None,
                     };
                     out.borrow_mut().push(LuaEventOut {

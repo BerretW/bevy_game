@@ -208,6 +208,9 @@ files {
 - [X] `TriggerClientEvent(name, target, payload)` — unicast pokud `target` je `u64` player_id; broadcast pokud `nil`/`false`
 - [X] JSON payload pro všechny `Trigger*` funkce (LuaTable ↔ `serde_json::Value`; helper funkce `lua_value_to_json` + `json_to_lua_value`)
 - [X] `sender` player_id v handlerech — `server_dispatch_incoming` extrahuje `PeerId::Netcode(id)` a předává `Some(id)` do Lua
+- [X] Client input bridge: `host_client::gameplay::publish_input_state_to_lua` publikuje `input:state` (move axis + key bools) do `LocalEventBus` každý frame
+- [X] Robustní init pro resources: `sq:ready` request/response pattern (client `TriggerServerEvent`, server unicast `sq:init`), odolné vůči missed join eventu po reloadu
+- [X] `TriggerClientEvent` nyní akceptuje `target` i jako string u64 (`"123..."`) kvůli Lua number precision limitům
 - [ ] Vystavit `Stats`, `Inventory` komponenty do Lua přes bridge (Phase 4)
 
 ### Phase 4 — WebUI, DB & QOL
@@ -257,11 +260,13 @@ files {
 /host_client/                    herní klient
   src/main.rs                      DefaultPlugins + ClientNetPlugin + ClientHandshakePlugin + ...
   src/config.rs                    ClientConfig (player/network/graphics/quality/audio/ui/input/paths/...)
-  src/gameplay.rs                  ClientGameplayPlugin, update_raycast_bridge, collect_and_send_input
+  src/gameplay.rs                  ClientGameplayPlugin, update_raycast_bridge, collect_and_send_input,
+                                     publish_input_state_to_lua (`input:state` local bus event)
 /cache/resources/                lokální cache klienta (download během handshake; gitignored)
 /resources/                      game content (Lua + assets) — *server-side autoritativní*
   core/init/                       bootstrap resource (root, no deps)
   example/hello/                   demo závislého resource (depend na core/init)
+  example/moving_square/           demo square + `shared/input.lua` (Input namespace pro key capture)
 ```
 
 ---
@@ -292,8 +297,14 @@ dostupné ve všech `shared_scripts` / `server_scripts` / `client_scripts`:
 | `Engine.SetModelAsNoLongerNeeded(name)`            | both        | Dekrementuje ref_count modelu |
 | `Raycast.GetGroundPosition()`                      | client only | Vrátí `{x, y, z}` world-space pozici myši (Y=0 rovina); na serveru vrací `{0,0,0}` |
 
+Client-only local event bridge (bez síťové replikace):
+
+- `input:state` — payload `{ move = {x, y}, keys = {...} }`, emitován každý frame v `host_client` do `LocalEventBus`; Lua resources ho čtou přes `RegisterEvent("input:state", handler)`.
+
 `payload` je libovolná Lua hodnota (nil, string, number, table) — automaticky serializována jako JSON.
 Handler dostane `(payload, sender)`, kde `sender` je `u64` player_id (nebo `nil` pro lokální eventy / server-side handlery).
+
+Pozn.: `TriggerClientEvent(..., target, ...)` podporuje `target` jako integer/number i string (`"123"`) pro bezpečný routing velkých player_id bez ztráty přesnosti v Lua.
 
 **Stdlib povolen:** `string`, `table`, `math`, `utf8`, `coroutine`.
 **Stdlib zakázán:** `io`, `os`, `package`, `require`, `debug`, `dofile`, `load`, `loadfile`, `loadstring`.

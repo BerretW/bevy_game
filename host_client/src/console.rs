@@ -8,6 +8,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use bevy::ecs::message::MessageReader;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
@@ -207,7 +208,7 @@ fn toggle(
 }
 
 fn type_input(
-    mut evs: EventReader<KeyboardInput>,
+    mut evs: MessageReader<KeyboardInput>,
     mut state: ResMut<ConsoleState>,
     log: Res<ConsoleLog>,
 ) {

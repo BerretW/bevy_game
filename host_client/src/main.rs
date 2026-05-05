@@ -8,6 +8,7 @@
 //! (`%APPDATA%\bevy_game\client.toml` na Windows). Detaily v [`config`].
 
 mod config;
+mod console;
 mod gameplay;
 
 use bevy::log::LogPlugin;
@@ -138,6 +139,7 @@ fn main() {
                 .set(LogPlugin {
                     level: cfg.advanced.log_level.to_bevy(),
                     filter: cfg.advanced.log_filter.clone(),
+                    custom_layer: console::tracing_layer,
                     ..default()
                 })
                 .set(WindowPlugin {
@@ -152,6 +154,7 @@ fn main() {
         .add_plugins((
             // Phase 3 — klientský renderer replikovaných hráčů + WASD vstup.
             gameplay::ClientGameplayPlugin,
+            console::ConsolePlugin,
             SharedPlugin,
             ResourcesPlugin::new(cache_root, Side::Client),
             ClientNetPlugin,

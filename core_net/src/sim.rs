@@ -106,6 +106,7 @@ impl Plugin for ServerSimPlugin {
             (
                 apply_inputs_to_velocity,
                 integrate_velocity,
+                emit_player_positions,
                 tick_weapon_cooldowns,
                 process_combat,
             )
@@ -391,6 +392,36 @@ fn process_combat(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// emit_player_positions — posila pozice vsech hracu do Lua event busu
+// ---------------------------------------------------------------------------
+
+/// Kazdy FixedUpdate tick posle `onPlayerPosition` do LocalEventBus.
+/// Server Lua resource to muze dale poslat klientum pres TriggerClientEvent.
+fn emit_player_positions(
+    players: Query<(&NetTransform, &PlayerMarker)>,
+    local_bus: Res<LocalEventBus>,
+) {
+    let list: Vec<serde_json::Value> = players
+        .iter()
+        .map(|(t, m)| {
+            serde_json::json!({
+                "id": m.client_id,
+                "x":  t.translation.x,
+                "z":  t.translation.z,
+            })
+        })
+        .collect();
+
+    if list.is_empty() {
+        return;
+    }
+
+    let payload = serde_json::to_vec(&serde_json::json!({ "players": list }))
+        .unwrap_or_default();
+    local_bus.push("onPlayerPosition".to_string(), payload);
 }
 
 // ---------------------------------------------------------------------------
