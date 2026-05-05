@@ -16,6 +16,9 @@ dependencies {
 shared_scripts {
     'shared/input.lua',
 }
+files {
+    'stream/blacksmith.glb',
+}
 
 server_scripts {
     'server/main.lua',

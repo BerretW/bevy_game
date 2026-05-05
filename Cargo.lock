@@ -3476,6 +3476,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_framepace",
+ "bevy_gltf",
  "core_net",
  "core_resources",
  "core_shared",

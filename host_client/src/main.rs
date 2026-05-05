@@ -13,6 +13,7 @@ mod gameplay;
 
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
+use bevy::asset::{AssetPlugin, UnapprovedPathMode};
 use bevy::render::settings::{Backends, PowerPreference, RenderCreation, WgpuSettings};
 use bevy::render::RenderPlugin;
 use bevy::window::{
@@ -31,6 +32,8 @@ use crate::config::{
     ClientConfig, ClientConfigResource, GraphicsBackend, GpuPriority, PresentModeConfig,
     WindowModeConfig,
 };
+
+const LUA_SAFE_CLIENT_ID_MAX: u64 = i64::MAX as u64;
 
 fn main() {
     // 1. Resolve config path: CLI arg #1 → BEVY_GAME_CLIENT_CONFIG → AppData default.
@@ -70,12 +73,13 @@ fn main() {
         )
     });
 
-    let client_id = if cfg.player.saved_client_id == 0 {
+    let raw_client_id = if cfg.player.saved_client_id == 0 {
         // 0 = generuj náhodný ID. Phase 4 by tu měl být persistent token.
         nanorand_u64()
     } else {
         cfg.player.saved_client_id
     };
+    let client_id = clamp_client_id(raw_client_id);
 
     let client_net_config = ClientNetConfig {
         server: server_addr,
@@ -133,6 +137,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.1, 0.3, 0.1))) // Tmavě zelená
         .insert_resource(client_net_config)
         .insert_resource(handshake_config)
+        .insert_resource(gameplay::LocalClientId(client_id))
         .insert_resource(ClientConfigResource(cfg.clone()))
         .add_plugins(
             DefaultPlugins
@@ -144,6 +149,11 @@ fn main() {
                 })
                 .set(WindowPlugin {
                     primary_window: Some(primary_window),
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    // Resource stream modely se nacitaji z absolutnich cest v klientskem cache dir.
+                    unapproved_path_mode: UnapprovedPathMode::Allow,
                     ..default()
                 })
                 .set(RenderPlugin {
@@ -237,5 +247,19 @@ fn nanorand_u64() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let pid = std::process::id() as u64;
-    (now.as_nanos() as u64).wrapping_mul(1_000_003).wrapping_add(pid)
+    let raw = (now.as_nanos() as u64).wrapping_mul(1_000_003).wrapping_add(pid);
+    clamp_client_id(raw)
+}
+
+fn clamp_client_id(id: u64) -> u64 {
+    if id <= LUA_SAFE_CLIENT_ID_MAX {
+        return id;
+    }
+    // Drzime client_id v i64 rozsahu kvuli robustnimu prenosu do Lua.
+    let clamped = id & LUA_SAFE_CLIENT_ID_MAX;
+    if clamped == 0 {
+        1
+    } else {
+        clamped
+    }
 }

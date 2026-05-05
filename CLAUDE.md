@@ -146,7 +146,10 @@ files {
 - [X] Server-side player spawn observer (`spawn_player_on_connect` při `Add<Connected>`)
 - [X] `NetTransform`, `NetVelocity`, `PlayerMarker` s lightyear prediction
 - [X] `apply_inputs_to_velocity` + `integrate_velocity` v `FixedUpdate` (`sim.rs`)
-- [X] Klientský renderer replikovaných hráčů (Sprite per `PlayerMarker`) + WASD input collection (`gameplay.rs`)
+- [X] Klientský renderer replikovaných hráčů (3D model + fallback capsule per `PlayerMarker`) + WASD input collection (`gameplay.rs`)
+- [X] Kamera režimy klienta: 3rd person / 1st person toggle (`F6`) se sledováním lokálního hráče
+- [X] Kamera stabilizace: look ovládán `MouseMotion` delta (`yaw/pitch` s clamp), cursor lock (`CursorGrabMode::Locked`), bez nelineární rotace podle pozice kurzoru
+- [X] GLTF `SceneRoot` stabilizace: registrace reflektovaných typů (`Transform`, `GlobalTransform`, `Visibility`, `InheritedVisibility`, `ViewVisibility`, `TransformTreeChanged`, `Mesh3d`, `MeshMaterial3d<StandardMaterial>`, `Aabb`, `SkinnedMesh`, `GltfExtras`, `GltfSceneExtras`, `GltfMeshExtras`, `GltfMeshName`, `GltfMaterialExtras`, `GltfMaterialName`, `ChildOf`, `Children`, `Name`) v klientském pluginu
 
 #### 3.2 — Command Queue & Bezpečný Lua Bridge ✅
 
@@ -197,7 +200,7 @@ files {
 #### 3.7 — Raycasting API ✅
 
 - [X] `RaycastBridge(Arc<Mutex<[f32;3]>>)` — Bevy Resource (Clone + Default), definována v `sandbox.rs`, sdílena přes Arc
-- [X] `update_raycast_bridge` systém v `gameplay.rs` — cursor → `viewport_to_world_2d` → `raycast.set_pos([x,0,z])` každý frame
+- [X] `update_raycast_bridge` systém v `gameplay.rs` — camera forward ray → průsečík s rovinou Y=0 → `raycast.set_pos([x,0,z])` každý frame
 - [X] Lua API: `Raycast.GetGroundPosition() -> {x, y, z}` — čte z `RaycastBridge` Arc; na serveru vrací `{0,0,0}`
 - [X] `collect_and_send_input` v `gameplay.rs` — yaw úhel myši (`atan2`) posílán v `PlayerInput.look[0]`
 
@@ -211,6 +214,7 @@ files {
 - [X] Client input bridge: `host_client::gameplay::publish_input_state_to_lua` publikuje `input:state` (move axis + key bools) do `LocalEventBus` každý frame
 - [X] Robustní init pro resources: `sq:ready` request/response pattern (client `TriggerServerEvent`, server unicast `sq:init`), odolné vůči missed join eventu po reloadu
 - [X] `TriggerClientEvent` nyní akceptuje `target` i jako string u64 (`"123..."`) kvůli Lua number precision limitům
+- [X] Lua-safe player identity: server event payloady (`playerConnecting`, `playerDropped`, `onPlayerPosition`, combat eventy) posílají `id`/`attacker`/`victim` jako stringy; klient clampuje `client_id` do i64 rozsahu
 - [ ] Vystavit `Stats`, `Inventory` komponenty do Lua přes bridge (Phase 4)
 
 ### Phase 4 — WebUI, DB & QOL
@@ -261,12 +265,14 @@ files {
   src/main.rs                      DefaultPlugins + ClientNetPlugin + ClientHandshakePlugin + ...
   src/config.rs                    ClientConfig (player/network/graphics/quality/audio/ui/input/paths/...)
   src/gameplay.rs                  ClientGameplayPlugin, update_raycast_bridge, collect_and_send_input,
-                                     publish_input_state_to_lua (`input:state` local bus event)
+                                     publish_input_state_to_lua (`input:state` local bus event),
+                                     3D player visual attach + 1st/3rd person camera follow
 /cache/resources/                lokální cache klienta (download během handshake; gitignored)
 /resources/                      game content (Lua + assets) — *server-side autoritativní*
   core/init/                       bootstrap resource (root, no deps)
   example/hello/                   demo závislého resource (depend na core/init)
-  example/moving_square/           demo square + `shared/input.lua` (Input namespace pro key capture)
+  example/moving_square/           demo moving actor + `shared/input.lua` (Input namespace pro key capture)
+    stream/blacksmith.glb            model pro lokalni spawn (`World.SpawnLocalObject('blacksmith', ...)`)
 ```
 
 ---
@@ -351,7 +357,9 @@ Sekce ([`host_client::config::ClientConfig`](host_client/src/config.rs), `deny_u
 
 Phase 2 wire-up: graphics → `RenderPlugin` + `WgpuSettings` + `WindowPlugin`,
 `advanced.log_*` → `LogPlugin`, `network.*` → `ClientNetConfig`,
-paths.cache_dir → `ClientHandshakeConfig`. Ostatní pole jsou dostupná
+paths.cache_dir → `ClientHandshakeConfig`. Klientsky `AssetPlugin` ma
+`unapproved_path_mode = Allow`, protoze stream modely se nacitaji z
+absolutnich cest v local cache (`cache/resources/...`). Ostatní pole jsou dostupná
 jako `ClientConfigResource` pro Phase 3+ konzumenty (audio mixer, action
 mapper, …).
 

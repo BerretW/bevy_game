@@ -168,7 +168,7 @@ fn spawn_player_on_connect(
 
     // Phase 3.3 — FiveM-style Lua event: playerConnecting
     let payload = serde_json::to_vec(&serde_json::json!({
-        "id": client_id,
+        "id": client_id.to_string(),
         "entity": format!("{:?}", player)
     }))
     .unwrap_or_default();
@@ -190,7 +190,7 @@ fn emit_player_disconnect(
     info!("[sim/server] client {} disconnected", client_id);
 
     let payload = serde_json::to_vec(&serde_json::json!({
-        "id": client_id,
+        "id": client_id.to_string(),
         "reason": "disconnect"
     }))
     .unwrap_or_default();
@@ -358,8 +358,8 @@ fn process_combat(
 
                 let hit_pos = target_pos;
                 let payload = serde_json::to_vec(&serde_json::json!({
-                    "attacker": attacker.client_id,
-                    "victim": target_cid,
+                    "attacker": attacker.client_id.to_string(),
+                    "victim": target_cid.to_string(),
                     "damage": damage,
                     "weapon": "default",
                     "position": { "x": hit_pos.x, "y": hit_pos.y, "z": hit_pos.z }
@@ -369,8 +369,8 @@ fn process_combat(
 
                 if died {
                     let death_payload = serde_json::to_vec(&serde_json::json!({
-                        "victim": target_cid,
-                        "killer": attacker.client_id,
+                        "victim": target_cid.to_string(),
+                        "killer": attacker.client_id.to_string(),
                         "cause": "weapon"
                     }))
                     .unwrap_or_default();
@@ -408,7 +408,7 @@ fn emit_player_positions(
         .iter()
         .map(|(t, m)| {
             serde_json::json!({
-                "id": m.client_id,
+                "id": m.client_id.to_string(),
                 "x":  t.translation.x,
                 "z":  t.translation.z,
             })

@@ -21,6 +21,7 @@ publish = false
 [workspace.dependencies]
 # --- Engine ---
 bevy = { version = "0.18", default-features = false }
+bevy_gltf = { version = "0.18" }
 
 # --- Networking (lightyear: prediction, rollback, replication) ---
 # 0.26 ladí s Bevy 0.18. Pro Phase 2 stačí `messaging` (channels) —

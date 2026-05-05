@@ -11,7 +11,7 @@
 assert(IS_CLIENT, 'client/main.lua musi bezet na klientovi')
 
 local my_id = nil   -- nase player_id (u64), nastaveno pres sq:init
-local square = nil  -- handle na lokalniho ctverce (u64)
+local actor = nil  -- handle na lokalniho modelu hrace (u64)
 
 -- Debug vizualizace inputu: mala lokalni predikce pozice + yaw podle WASD.
 -- Je to jen klientsky feedback; autoritativni pozice stale zustava serverova.
@@ -55,9 +55,9 @@ RegisterEvent('sq:init', function(data, _sender)
     end
 
     my_id  = tostring(data.id)
-    square = World.SpawnLocalObject('square', { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
-    log_info(string.format('[moving_square] pripojeno jako hrac %s, ctverec handle=%s',
-        tostring(my_id), tostring(square)))
+    actor = World.SpawnLocalObject('blacksmith', { x = 0, y = 0, z = 0 }, { x = 0, y = 0, z = 0 })
+    log_info(string.format('[moving_square] pripojeno jako hrac %s, model handle=%s',
+        tostring(my_id), tostring(actor)))
 
     if Input and Input.IsPressed then
         log_info('[moving_square] Input bridge pripraven (input:state)')
@@ -68,7 +68,7 @@ end)
 
 -- Server posle pozice vsech hracu — aktualizuj nas ctverec.
 RegisterEvent('sq:pos', function(data, _sender)
-    if not square or not my_id then return end
+    if not actor or not my_id then return end
     if type(data) ~= 'table' or type(data.players) ~= 'table' then return end
 
     for _, p in ipairs(data.players) do
@@ -78,7 +78,7 @@ RegisterEvent('sq:pos', function(data, _sender)
             -- LocalObjectMarker entity Transform se nastavuje primo.
             local off_x, off_z, yaw = compute_debug_offset_and_yaw()
             World.SetTransform(
-                square,
+                actor,
                 { x = p.x + off_x, y = 0, z = p.z + off_z },
                 { x = 0, y = yaw, z = 0 }
             )
