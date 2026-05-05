@@ -52,6 +52,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 
 # --- Serialization ---
 serde = { version = "1.0", features = ["derive"] }
+# Server-side config (server.toml).
+toml = { version = "0.9", default-features = false, features = ["parse", "display"] }
 
 # --- Filesystem (VFS scanner + watcher) ---
 walkdir = "2"

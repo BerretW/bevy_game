@@ -78,7 +78,7 @@ fn spawn_http_server(runtime: Res<TokioRuntime>, config: Res<HttpServerConfig>) 
 
     let router = Router::new()
         .route("/health", get(health))
-        .route("/resources/{*path}", get(serve_resource_file))
+        .route("/resources/*path", get(serve_resource_file))
         .with_state(state);
 
     let bind = config.bind;

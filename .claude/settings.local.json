@@ -23,7 +23,8 @@
       "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_netcode-0.26.4/**)",
       "Bash(grep -rn \"Authentication\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear-0.26.4\\\\src\" 2>&1 | head -10)",
       "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear-0.26.4/src/**)",
-      "Bash(powershell -NoProfile -Command \"\\(Get-Content core_net\\\\src\\\\handshake.rs\\) -replace 'source: e.to_string\\\\\\(\\\\\\),', 'message: e.to_string\\(\\),' | Set-Content core_net\\\\src\\\\handshake.rs\")"
+      "Bash(powershell -NoProfile -Command \"\\(Get-Content core_net\\\\src\\\\handshake.rs\\) -replace 'source: e.to_string\\\\\\(\\\\\\),', 'message: e.to_string\\(\\),' | Set-Content core_net\\\\src\\\\handshake.rs\")",
+      "Bash(cargo run *)"
     ]
   }
 }
