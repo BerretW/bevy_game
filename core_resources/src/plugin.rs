@@ -7,7 +7,9 @@ use bevy::prelude::*;
 
 use crate::cmd_queue::{
     process_lua_commands, CommandQueue, LuaWorldState, PendingDamageEvent,
+    PlayerEntityMap, PlayerStatsCache,
 };
+use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
 use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegistry};
 use crate::resolver::resolve_load_order;
 use crate::sandbox::{LocalEventBus, LuaSandbox, RaycastBridge};
@@ -71,6 +73,13 @@ impl Plugin for ResourcesPlugin {
         // Phase 3.7 - Raycast bridge (klient ho aktualizuje; server je no-op)
         app.init_resource::<RaycastBridge>();
 
+        // Phase 4 — Player stats cache + entity map + DB callback queue
+        app.init_resource::<PlayerStatsCache>();
+        app.init_resource::<PlayerEntityMap>();
+        app.init_resource::<DbCallbackQueue>();
+        app.init_resource::<DatabaseBridgeResource>();
+        app.add_systems(PostUpdate, dispatch_db_callbacks);
+
         app.add_systems(Startup, initial_load);
 
         if self.watch {
@@ -102,6 +111,8 @@ fn initial_load(
     model_cmds: Res<ModelCommandQueue>,
     mut model_registry: ResMut<ModelRegistry>,
     raycast: Res<RaycastBridge>,
+    stats_cache: Res<PlayerStatsCache>,
+    db_bridge_res: Res<DatabaseBridgeResource>,
 ) {
     rebuild(
         &mut vfs,
@@ -112,6 +123,8 @@ fn initial_load(
         model_cmds.clone(),
         &mut model_registry,
         raycast.clone(),
+        stats_cache.clone(),
+        db_bridge_res.0.clone(),
     );
 }
 
@@ -125,6 +138,8 @@ fn hot_reload_on_dirty(
     model_cmds: Res<ModelCommandQueue>,
     mut model_registry: ResMut<ModelRegistry>,
     raycast: Res<RaycastBridge>,
+    stats_cache: Res<PlayerStatsCache>,
+    db_bridge_res: Res<DatabaseBridgeResource>,
 ) {
     if events.is_empty() {
         return;
@@ -143,6 +158,8 @@ fn hot_reload_on_dirty(
         model_cmds.clone(),
         &mut model_registry,
         raycast.clone(),
+        stats_cache.clone(),
+        db_bridge_res.0.clone(),
     );
 }
 
@@ -155,6 +172,8 @@ fn rebuild(
     model_cmds: ModelCommandQueue,
     model_registry: &mut ModelRegistry,
     raycast: RaycastBridge,
+    stats_cache: PlayerStatsCache,
+    db_bridge: Option<DbBridge>,
 ) {
     let report = vfs.rescan();
     for err in &report.errors {
@@ -194,6 +213,8 @@ fn rebuild(
             local_bus.clone(),
             model_cmds.clone(),
             raycast.clone(),
+            stats_cache.clone(),
+            db_bridge.clone(),
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);
@@ -240,6 +261,27 @@ fn dispatch_local_events(
                 "[local_bus] no handler for '{}' (payload {} bytes)",
                 evt.name,
                 evt.payload.len()
+            );
+        }
+    }
+}
+
+/// Phase 4 — Drain DbCallbackQueue a dispatch výsledků do příslušných sandboxů.
+fn dispatch_db_callbacks(
+    db_queue: Res<DbCallbackQueue>,
+    registry: NonSend<SandboxRegistry>,
+) {
+    let pending = db_queue.drain();
+    if pending.is_empty() {
+        return;
+    }
+    for entry in pending {
+        if let Some(sandbox) = registry.sandboxes.get(&entry.resource_id) {
+            sandbox.invoke_db_callback(entry.callback_id, entry.result);
+        } else {
+            warn!(
+                "[db_callbacks] sandbox '{}' not found for callback {}",
+                entry.resource_id, entry.callback_id
             );
         }
     }

@@ -6,6 +6,7 @@
 //! * sender player_id v handlerech.
 //! Phase 3.4: Engine namespace (Model Registry).
 //! Phase 3.5: World.SpawnNetworkedObject.
+//! Phase 4: Database.* namespace, Player.* namespace.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,7 +18,8 @@ use bevy::prelude::Resource;
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib};
 use serde_json::Value as Json;
 
-use crate::cmd_queue::{CommandQueue, LuaCommand};
+use crate::cmd_queue::{CommandQueue, LuaCommand, PlayerStatsCache};
+use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
 use crate::model_registry::{ModelCommand, ModelCommandQueue};
 use crate::types::{ResourceId, Side};
@@ -184,6 +186,9 @@ pub struct LuaSandbox {
     lua: Lua,
     outgoing: Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    /// Phase 4 — pending DB callbacks: callback_id → RegistryKey funkce.
+    db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>>,
+    db_counter: Rc<RefCell<u64>>,
 }
 
 impl LuaSandbox {
@@ -194,6 +199,8 @@ impl LuaSandbox {
         local_bus: LocalEventBus,
         model_cmds: ModelCommandQueue,
         raycast: RaycastBridge,
+        stats_cache: PlayerStatsCache,
+        db_bridge: Option<DbBridge>,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -204,6 +211,9 @@ impl LuaSandbox {
         let outgoing = Rc::new(RefCell::new(Vec::new()));
         let handlers: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>> =
             Rc::new(RefCell::new(HashMap::new()));
+        let db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let db_counter: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
 
         install_runtime_api(
             &lua,
@@ -215,6 +225,10 @@ impl LuaSandbox {
             &local_bus,
             &model_cmds,
             &raycast,
+            &stats_cache,
+            &db_bridge,
+            &db_callbacks,
+            &db_counter,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -227,7 +241,7 @@ impl LuaSandbox {
             run_script(&lua, &manifest.id, rel, &abs)?;
         }
 
-        Ok(Self { id: manifest.id.clone(), side, lua, outgoing, handlers })
+        Ok(Self { id: manifest.id.clone(), side, lua, outgoing, handlers, db_callbacks, db_counter })
     }
 
     pub fn drain_outgoing(&self) -> Vec<LuaEventOut> {
@@ -271,6 +285,23 @@ impl LuaSandbox {
 
     pub fn lua(&self) -> &Lua {
         &self.lua
+    }
+
+    /// Phase 4 — zavolá Lua callback registrovaný pro DB dotaz `callback_id`.
+    pub fn invoke_db_callback(&self, callback_id: u64, result: DbQueryResult) {
+        let key = self.db_callbacks.borrow_mut().remove(&callback_id);
+        let Some(key) = key else { return };
+        let f: mlua::Function = match self.lua.registry_value(&key) {
+            Ok(f) => f,
+            Err(e) => {
+                bevy::log::warn!("[db:{}] registry_value error for cb {}: {}", self.id, callback_id, e);
+                return;
+            }
+        };
+        let lua_val = db_result_to_lua(&self.lua, result);
+        if let Err(e) = f.call::<()>(lua_val) {
+            bevy::log::warn!("[db:{}] callback {} error: {}", self.id, callback_id, e);
+        }
     }
 }
 
@@ -317,9 +348,64 @@ fn table_to_vec3(t: &mlua::Table) -> [f32; 3] {
     [get("x", 1), get("y", 2), get("z", 3)]
 }
 
+/// Převede Lua player_id (integer, number nebo string) na u64. 
+fn lua_value_to_u64(v: &mlua::Value) -> Option<u64> {
+    match v {
+        mlua::Value::Integer(i) if *i > 0 => Some(*i as u64),
+        mlua::Value::Number(f) if *f > 0.0 => Some(*f as u64),
+        mlua::Value::String(s) => s.to_str().ok().and_then(|s| s.parse::<u64>().ok()),
+        _ => None,
+    }
+}
+
+/// Převede Lua table parametrů (nebo nil) na Vec<Json> pro DB executor.
+fn json_params(v: mlua::Value) -> Vec<Json> {
+    match v {
+        mlua::Value::Table(t) => {
+            let len = t.raw_len();
+            (1..=len)
+                .filter_map(|i| t.get::<mlua::Value>(i).ok())
+                .map(lua_value_to_json)
+                .collect()
+        }
+        mlua::Value::Nil => Vec::new(),
+        other => vec![lua_value_to_json(other)],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Runtime API installer
 // ---------------------------------------------------------------------------
+
+/// Converts DbQueryResult to Lua value.
+/// RowsAffected → integer, Rows → table of row-tables, Error → (nil, error_string)
+fn db_result_to_lua(lua: &Lua, result: DbQueryResult) -> mlua::Value {
+    match result {
+        DbQueryResult::RowsAffected(n) => mlua::Value::Integer(n as i64),
+        DbQueryResult::Rows(rows) => {
+            let table = match lua.create_table() {
+                Ok(t) => t,
+                Err(_) => return mlua::Value::Nil,
+            };
+            for (i, row) in rows.into_iter().enumerate() {
+                let row_table = match lua.create_table() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                for (k, v) in row {
+                    let lua_val = json_to_lua_value(lua, v).unwrap_or(mlua::Value::Nil);
+                    let _ = row_table.set(k, lua_val);
+                }
+                let _ = table.set(i + 1, row_table);
+            }
+            mlua::Value::Table(table)
+        }
+        DbQueryResult::Error(e) => {
+            bevy::log::warn!("[db] query error: {}", e);
+            mlua::Value::Nil
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn install_runtime_api(
@@ -332,8 +418,12 @@ fn install_runtime_api(
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
     raycast: &RaycastBridge,
+    stats_cache: &PlayerStatsCache,
+    db_bridge: &Option<DbBridge>,
+    db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
+    db_counter: &Rc<RefCell<u64>>,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, db_bridge, db_callbacks, db_counter)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -348,6 +438,10 @@ fn install_runtime_api_inner(
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
     raycast: &RaycastBridge,
+    stats_cache: &PlayerStatsCache,
+    db_bridge: &Option<DbBridge>,
+    db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
+    db_counter: &Rc<RefCell<u64>>,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -545,6 +639,194 @@ fn install_runtime_api_inner(
         })?,
     )?;
     globals.set("Raycast", rc_ns)?;
+
+    // -- Player namespace (Phase 4) -----------------------------------------
+    // Server-only: čtení z PlayerStatsCache (Arc), zápisy přes CommandQueue.
+    let player_ns = lua.create_table()?;
+
+    // Player.GetStat(player_id, stat_name) -> value|nil
+    let sc = stats_cache.clone();
+    player_ns.set("GetStat", lua.create_function(
+        move |_, (player_id_v, name): (mlua::Value, String)| {
+            let pid = lua_value_to_u64(&player_id_v);
+            let val = pid.and_then(|id| sc.get(id))
+                         .and_then(|snap| snap.stats.get(&name).copied());
+            Ok(val)
+        },
+    )?)?;
+
+    // Player.GetStats(player_id) -> table|nil
+    let sc = stats_cache.clone();
+    player_ns.set("GetStats", lua.create_function(
+        move |lua, player_id_v: mlua::Value| {
+            let pid = lua_value_to_u64(&player_id_v);
+            let Some(snap) = pid.and_then(|id| sc.get(id)) else {
+                return Ok(mlua::Value::Nil);
+            };
+            let t = lua.create_table()?;
+            for (k, v) in &snap.stats {
+                t.set(k.as_str(), *v)?;
+            }
+            Ok(mlua::Value::Table(t))
+        },
+    )?)?;
+
+    // Player.SetStat(player_id, name, value)  — server only
+    let cq = cmd_queue.clone();
+    player_ns.set("SetStat", lua.create_function(
+        move |_, (player_id_v, name, value): (mlua::Value, String, f64)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("Player.SetStat is server-only".into()));
+            }
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            cq.push(LuaCommand::SetStat { player_id, name, value });
+            Ok(())
+        },
+    )?)?;
+
+    // Player.GetHealth(player_id) -> number|nil
+    let sc = stats_cache.clone();
+    player_ns.set("GetHealth", lua.create_function(
+        move |_, player_id_v: mlua::Value| {
+            let pid = lua_value_to_u64(&player_id_v);
+            let val = pid.and_then(|id| sc.get(id)).map(|snap| snap.health);
+            Ok(val)
+        },
+    )?)?;
+
+    // Player.GetInventory(player_id) -> table|nil
+    let sc = stats_cache.clone();
+    player_ns.set("GetInventory", lua.create_function(
+        move |lua, player_id_v: mlua::Value| {
+            let pid = lua_value_to_u64(&player_id_v);
+            let Some(snap) = pid.and_then(|id| sc.get(id)) else {
+                return Ok(mlua::Value::Nil);
+            };
+            let t = lua.create_table()?;
+            for (k, v) in &snap.inventory {
+                t.set(k.as_str(), *v)?;
+            }
+            Ok(mlua::Value::Table(t))
+        },
+    )?)?;
+
+    // Player.GetItemCount(player_id, item) -> integer
+    let sc = stats_cache.clone();
+    player_ns.set("GetItemCount", lua.create_function(
+        move |_, (player_id_v, item): (mlua::Value, String)| {
+            let pid = lua_value_to_u64(&player_id_v);
+            let count = pid.and_then(|id| sc.get(id))
+                           .and_then(|snap| snap.inventory.get(&item).copied())
+                           .unwrap_or(0);
+            Ok(count)
+        },
+    )?)?;
+
+    // Player.GiveItem(player_id, item, count) — server only
+    let cq = cmd_queue.clone();
+    player_ns.set("GiveItem", lua.create_function(
+        move |_, (player_id_v, item, count): (mlua::Value, String, i32)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("Player.GiveItem is server-only".into()));
+            }
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            cq.push(LuaCommand::GiveItem { player_id, item, count });
+            Ok(())
+        },
+    )?)?;
+
+    // Player.TakeItem(player_id, item, count) — server only (alias GiveItem negative)
+    let cq = cmd_queue.clone();
+    player_ns.set("TakeItem", lua.create_function(
+        move |_, (player_id_v, item, count): (mlua::Value, String, u32)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("Player.TakeItem is server-only".into()));
+            }
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            cq.push(LuaCommand::GiveItem { player_id, item, count: -(count as i32) });
+            Ok(())
+        },
+    )?)?;
+
+    globals.set("Player", player_ns)?;
+
+    // -- Database namespace (Phase 4) — server only, jen pokud je bridge k dispozici --
+    if let Some(bridge) = db_bridge {
+        let db_ns = lua.create_table()?;
+        let res_id = id.clone();
+
+        // Database.execute(sql, params, callback)
+        // callback(rows_affected: integer)  — INSERT/UPDATE/DELETE
+        {
+            let bridge = bridge.clone();
+            let res_id = res_id.clone();
+            let cbs = db_callbacks.clone();
+            let cnt = db_counter.clone();
+            db_ns.set("execute", lua.create_function(
+                move |lua, (sql, params_v, cb): (String, mlua::Value, mlua::Function)| {
+                    if side != Side::Server {
+                        return Err(mlua::Error::RuntimeError("Database.execute is server-only".into()));
+                    }
+                    let cb_id = { let mut c = cnt.borrow_mut(); *c += 1; *c };
+                    let key = lua.create_registry_value(cb)?;
+                    cbs.borrow_mut().insert(cb_id, key);
+                    let params = json_params(params_v);
+                    bridge.executor.execute(
+                        sql, params,
+                        res_id.clone(), cb_id,
+                        bridge.queue.clone(),
+                    );
+                    Ok(())
+                },
+            )?)?;
+        }
+
+        // Database.query(sql, params, callback)
+        // callback(rows: table)  — SELECT
+        {
+            let bridge = bridge.clone();
+            let res_id = res_id.clone();
+            let cbs = db_callbacks.clone();
+            let cnt = db_counter.clone();
+            db_ns.set("query", lua.create_function(
+                move |lua, (sql, params_v, cb): (String, mlua::Value, mlua::Function)| {
+                    if side != Side::Server {
+                        return Err(mlua::Error::RuntimeError("Database.query is server-only".into()));
+                    }
+                    let cb_id = { let mut c = cnt.borrow_mut(); *c += 1; *c };
+                    let key = lua.create_registry_value(cb)?;
+                    cbs.borrow_mut().insert(cb_id, key);
+                    let params = json_params(params_v);
+                    bridge.executor.query(
+                        sql, params,
+                        res_id.clone(), cb_id,
+                        bridge.queue.clone(),
+                    );
+                    Ok(())
+                },
+            )?)?;
+        }
+
+        // Database.isConnected() -> bool
+        {
+            let bridge = bridge.clone();
+            db_ns.set("isConnected", lua.create_function(
+                move |_, ()| Ok(bridge.executor.is_connected()),
+            )?)?;
+        }
+
+        globals.set("Database", db_ns)?;
+    } else {
+        // Stub na klientu / bez DB — vrátí runtime error při volání
+        let db_ns = lua.create_table()?;
+        for fname in &["execute", "query", "isConnected"] {
+            let n = fname.to_string();
+            db_ns.set(*fname, lua.create_function(move |_, _: MultiValue| -> mlua::Result<mlua::Value> {
+                Err(mlua::Error::RuntimeError(format!("Database.{} is not available (no DB configured)", n)))
+            })?)?;
+        }
+        globals.set("Database", db_ns)?;
+    }
 
     Ok(())
 }

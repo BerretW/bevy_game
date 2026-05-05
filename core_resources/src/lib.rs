@@ -9,6 +9,7 @@
 //! 5. Sledovat filesystem (`notify`) a při změně provést hot-reload.
 
 mod cmd_queue;
+mod db_bridge;
 mod manifest;
 mod model_registry;
 mod plugin;
@@ -19,8 +20,13 @@ mod vfs;
 mod watcher;
 
 pub use cmd_queue::{
-    CommandQueue, LocalObjectMarker, LuaCommand, LuaWorldState, NetworkedObjectMarker,
-    PendingDamageEvent,
+    CommandQueue, Inventory, LocalObjectMarker, LuaCommand, LuaWorldState,
+    NetworkedObjectMarker, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
+    Stats, StatsSnapshot,
+};
+pub use db_bridge::{
+    DatabaseBridgeResource, DbBridge, DbCallbackEntry, DbCallbackQueue,
+    DbExecutorTrait, DbQueryResult,
 };
 pub use manifest::{Manifest, ManifestError, ResourceKind};
 pub use model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands};

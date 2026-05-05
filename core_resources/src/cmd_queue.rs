@@ -4,12 +4,19 @@
 //! na main threadu v `NonSend` resource). Místo toho Lua vkládá záměry do
 //! sdíleného `CommandQueue` bufferu. Bevy systém `process_lua_commands`
 //! v `PostUpdate` frontu vybere a bezpečně aplikuje příkazy na ECS svět.
+//!
+//! Phase 4 přidává:
+//! * `Stats` a `Inventory` ECS komponenty.
+//! * `PlayerEntityMap` — mapuje client_id → Entity (udržuje core_net).
+//! * `PlayerStatsCache` — Arc<Mutex> snapshot pro synchronní Lua čtení.
+//! * `LuaCommand::SetStat`, `GiveItem`, `TakeItem` — mutace přes frontu.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use core_shared::PlayerMarker;
 
 // ---------------------------------------------------------------------------
 // LuaCommand — záměry, které Lua enqueuje přes World.* API
@@ -47,6 +54,19 @@ pub enum LuaCommand {
         model: String,
         pos: [f32; 3],
         rot: [f32; 3],
+    },
+    /// Phase 4 — nastav libovolný stat hráče (server only).
+    SetStat {
+        player_id: u64,
+        name: String,
+        value: f64,
+    },
+    /// Phase 4 — přidej nebo uber předměty z inventáře (server only).
+    /// Kladné `count` = dát, záporné = vzít; pod 0 se orizne na 0.
+    GiveItem {
+        player_id: u64,
+        item: String,
+        count: i32,
     },
 }
 
@@ -148,6 +168,67 @@ pub struct PendingDamageEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 — Stats, Inventory, PlayerEntityMap, PlayerStatsCache
+// ---------------------------------------------------------------------------
+
+/// Herní statistiky hráče (XP, gold, level, …). Definice hodnot plně
+/// v Lua — Rust drží jen HashMap<String, f64>.
+#[derive(Component, Debug, Clone, Default)]
+pub struct Stats(pub HashMap<String, f64>);
+
+/// Inventář hráče — item_id → počet kusů.
+#[derive(Component, Debug, Clone, Default)]
+pub struct Inventory(pub HashMap<String, u32>);
+
+/// Snapshot stavu hráče — synchronizovaný každý FixedUpdate tick
+/// systémem `sync_stats_cache` v `core_net/sim.rs`.
+/// Lua sandbox ho čte synchronně (bez latence).
+#[derive(Debug, Clone, Default)]
+pub struct StatsSnapshot {
+    pub stats: HashMap<String, f64>,
+    pub inventory: HashMap<String, u32>,
+    pub health: f32,
+    pub max_health: f32,
+}
+
+/// Sdílená cache: client_id → StatsSnapshot. Arc<Mutex> umožňuje
+/// Lua closurám číst bez přístupu do ECS světa.
+#[derive(Resource, Clone, Default)]
+pub struct PlayerStatsCache(pub Arc<Mutex<HashMap<u64, StatsSnapshot>>>);
+
+impl PlayerStatsCache {
+    pub fn update(&self, client_id: u64, snapshot: StatsSnapshot) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(client_id, snapshot);
+    }
+
+    pub fn remove(&self, client_id: u64) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&client_id);
+    }
+
+    pub fn get(&self, client_id: u64) -> Option<StatsSnapshot> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&client_id)
+            .cloned()
+    }
+}
+
+/// Mapa client_id → Entity. Udržovaná observery v `core_net/sim.rs`
+/// při Add/Remove PlayerMarker. Umožňuje `process_lua_commands` rychlé
+/// vyhledání entity hráče bez iterace celého světa.
+#[derive(Resource, Default)]
+pub struct PlayerEntityMap {
+    pub map: HashMap<u64, Entity>,
+}
+
+// ---------------------------------------------------------------------------
 // Bevy systém
 // ---------------------------------------------------------------------------
 
@@ -156,8 +237,10 @@ pub struct PendingDamageEvent {
 pub fn process_lua_commands(
     cmd_queue: Res<CommandQueue>,
     mut world_state: ResMut<LuaWorldState>,
+    player_map: Res<PlayerEntityMap>,
     mut commands: Commands,
     mut damage_events: MessageWriter<PendingDamageEvent>,
+    mut player_stats: Query<(&PlayerMarker, &mut Stats, &mut Inventory)>,
 ) {
     for cmd in cmd_queue.drain() {
         match cmd {
@@ -247,6 +330,41 @@ pub fn process_lua_commands(
                     "[cmd_queue] queued networked object '{}' (handle={}, entity={:?})",
                     model, handle, entity
                 );
+            }
+
+            LuaCommand::SetStat { player_id, name, value } => {
+                if let Some(&entity) = player_map.map.get(&player_id) {
+                    if let Ok((_, mut stats, _)) = player_stats.get_mut(entity) {
+                        stats.0.insert(name.clone(), value);
+                        debug!("[cmd_queue] SetStat player={} {}={}", player_id, name, value);
+                    } else {
+                        warn!("[cmd_queue] SetStat: player {} has no Stats component", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] SetStat: unknown player_id {}", player_id);
+                }
+            }
+
+            LuaCommand::GiveItem { player_id, item, count } => {
+                if let Some(&entity) = player_map.map.get(&player_id) {
+                    if let Ok((_, _, mut inv)) = player_stats.get_mut(entity) {
+                        let entry = inv.0.entry(item.clone()).or_insert(0);
+                        if count >= 0 {
+                            *entry = entry.saturating_add(count as u32);
+                        } else {
+                            let take = (-count) as u32;
+                            *entry = entry.saturating_sub(take);
+                        }
+                        debug!(
+                            "[cmd_queue] GiveItem player={} item={} count={} -> new={}",
+                            player_id, item, count, inv.0[&item]
+                        );
+                    } else {
+                        warn!("[cmd_queue] GiveItem: player {} has no Inventory component", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] GiveItem: unknown player_id {}", player_id);
+                }
             }
         }
     }

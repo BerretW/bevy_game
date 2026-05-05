@@ -4,6 +4,7 @@ members = [
     "core_shared",
     "core_resources",
     "core_net",
+    "core_db",
     "host_server",
     "host_client",
 ]
