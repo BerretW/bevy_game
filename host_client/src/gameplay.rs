@@ -32,6 +32,8 @@ const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
 const PLAYER_MODEL_ASSET_PATH: &str = "models/player.glb#Scene0";
 const MAX_PITCH_RAD: f32 = 1.25;
 const MOUSE_SENS_SCALE: f32 = 0.0025;
+const POSITION_SMOOTHING_RATE: f32 = 14.0;
+const ROTATION_SMOOTHING_RATE: f32 = 18.0;
 
 #[derive(Resource, Clone, Copy)]
 pub struct LocalClientId(pub u64);
@@ -119,48 +121,17 @@ impl Plugin for ClientGameplayPlugin {
                 apply_cursor_mode,
                 attach_player_model_to_new_players,
                 prefer_predicted_player_visuals,
+                sync_net_transform_to_render,
                 update_camera_follow,
                 update_raycast_bridge,
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 attach_mesh_to_local_objects,
-                sync_net_transform_to_render,
             )
                 .chain(),
         );
         app.add_systems(FixedUpdate, collect_and_send_input);
         // app.add_systems(Update, debug_player_movement.run_if(on_timer(std::time::Duration::from_secs(2))));
-    }
-}
-
-use bevy::time::common_conditions::on_timer;
-
-fn debug_player_movement(
-    local_id: Option<Res<LocalClientId>>,
-    predicted_q: Query<(&NetTransform, &Transform, &PlayerMarker), With<Predicted>>,
-    fallback_q: Query<(&NetTransform, &Transform, &PlayerMarker), (With<PlayerMarker>, Without<Predicted>)>,
-    senders_q: Query<&MessageSender<PlayerInput>>,
-) {
-    let id_str = local_id.as_ref().map(|r| r.0.to_string()).unwrap_or_else(|| "NONE".into());
-    let sender_count = senders_q.iter().count();
-    info!("[debug/movement] local_client_id={} MessageSender<PlayerInput> count={}", id_str, sender_count);
-
-    for (net, tfm, marker) in predicted_q.iter() {
-        info!("[debug/movement] PREDICTED cid={} NetTransform={:.2},{:.2},{:.2} Transform={:.2},{:.2},{:.2}",
-            marker.client_id,
-            net.translation.x, net.translation.y, net.translation.z,
-            tfm.translation.x, tfm.translation.y, tfm.translation.z,
-        );
-    }
-    for (net, tfm, marker) in fallback_q.iter() {
-        info!("[debug/movement] FALLBACK cid={} NetTransform={:.2},{:.2},{:.2} Transform={:.2},{:.2},{:.2}",
-            marker.client_id,
-            net.translation.x, net.translation.y, net.translation.z,
-            tfm.translation.x, tfm.translation.y, tfm.translation.z,
-        );
-    }
-    if predicted_q.is_empty() && fallback_q.is_empty() {
-        warn!("[debug/movement] ZADNA player entita nenalezena na klientu!");
     }
 }
 
@@ -384,6 +355,7 @@ fn attach_player_model_to_new_players(
 }
 
 fn sync_net_transform_to_render(
+    time: Res<Time>,
     mut predicted_q: Query<
         (
             &mut Transform,
@@ -397,10 +369,13 @@ fn sync_net_transform_to_render(
     // Preferuj server-confirmed stav, fallback na local predicted NetTransform.
     for (mut local, _marker, predicted_net, confirmed_net) in predicted_q.iter_mut() {
         let src = confirmed_net.map(|c| &c.0).unwrap_or(predicted_net);
-        local.translation.x = src.translation.x;
-        local.translation.y = 0.0;
-        local.translation.z = src.translation.z;
-        local.rotation = src.rotation;
+        let target_pos = Vec3::new(src.translation.x, src.translation.y, src.translation.z);
+        let dt = time.delta_secs();
+        let pos_alpha = (1.0 - (-POSITION_SMOOTHING_RATE * dt).exp()).clamp(0.0, 1.0);
+        let rot_alpha = (1.0 - (-ROTATION_SMOOTHING_RATE * dt).exp()).clamp(0.0, 1.0);
+
+        local.translation = local.translation.lerp(target_pos, pos_alpha);
+        local.rotation = local.rotation.slerp(src.rotation, rot_alpha);
     }
 }
 
@@ -505,26 +480,8 @@ fn collect_and_send_input(
     look: Res<CameraLookState>,
     mut senders: Query<&mut MessageSender<PlayerInput>>,
     mut tick: Local<u32>,
-    mut dbg_timer: Local<f32>,
-    time: Res<Time>,
 ) {
     *tick = tick.wrapping_add(1);
-
-    *dbg_timer += time.delta_secs();
-    if *dbg_timer >= 2.0 {
-        *dbg_timer = 0.0;
-        let fwd_key = cfg.0.input.keys.move_forward;
-        let bck_key = cfg.0.input.keys.move_backward;
-        let lft_key = cfg.0.input.keys.move_left;
-        let rgt_key = cfg.0.input.keys.move_right;
-        info!("[input/debug] keys W={:?}({}) S={:?}({}) A={:?}({}) D={:?}({}) yaw={:.2}",
-            fwd_key, keys.pressed(fwd_key),
-            bck_key, keys.pressed(bck_key),
-            lft_key, keys.pressed(lft_key),
-            rgt_key, keys.pressed(rgt_key),
-            look.yaw,
-        );
-    }
 
     let bindings = &cfg.0.input.keys;
     let mouse_b = &cfg.0.input.mouse;
@@ -573,12 +530,6 @@ fn collect_and_send_input(
         actions,
         client_tick: *tick,
     };
-
-    // Log kdyz je pohyb nenulovy
-    if input.move_dir[0].abs() > 0.01 || input.move_dir[1].abs() > 0.01 {
-        info!("[input/send] move_dir=[{:.3},{:.3}] tick={}",
-            input.move_dir[0], input.move_dir[1], *tick);
-    }
 
     for mut sender in senders.iter_mut() {
         let _ = sender.send::<InputChannel>(input.clone());

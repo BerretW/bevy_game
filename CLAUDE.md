@@ -171,6 +171,8 @@ files {
 - [X] `tick_weapon_cooldowns` (FixedUpdate) — decrementuje `WeaponCooldown.remaining`
 - [X] Camera-relative movement input: klient rotuje WASD vektor podle yaw kamery a server dostává world-space `move_dir`
 - [X] Player yaw sync: server zapisuje `PlayerInput.look[0]` do `NetTransform.rotation`; klient při render sync aplikuje i rotaci, takže model/sprite míří směrem kamery
+- [X] Player movement smoothing: klientský `sync_net_transform_to_render` používá exponenciální lerp/slerp (translation + rotation), aby se snížil jitter při síťových korekcích
+- [X] Jump + crouch movement: server sim aplikuje `JUMP` na vertikální rychlost (`NetVelocity.y`) s gravitací/ground clampem; `CROUCH` snižuje rychlost pohybu (a blokuje sprint multiplier)
 - [X] Lua eventy `onPlayerHit` + `onPlayerDeath` emitované serverem přes `LocalEventBus` (JSON payload: attacker, victim, damage, weapon, position)
 - [X] Lua eventy `playerConnecting` + `playerDropped` při connect/disconnect (observer na `Add<Connected>` / `Remove<Connected>`)
 

@@ -15,6 +15,11 @@ use lightyear::prelude::server::LinkOf;
 use crate::protocol::{player_action, PlayerInput};
 
 pub const PLAYER_MOVE_SPEED: f32 = 5.0;
+pub const PLAYER_SPRINT_MULTIPLIER: f32 = 1.35;
+pub const PLAYER_CROUCH_MULTIPLIER: f32 = 0.45;
+pub const PLAYER_JUMP_SPEED: f32 = 6.5;
+pub const PLAYER_GRAVITY: f32 = 20.0;
+pub const GROUND_Y: f32 = 0.0;
 
 // ---------------------------------------------------------------------------
 // Komponenty
@@ -222,31 +227,54 @@ fn apply_inputs_to_velocity(
 ) {
     for (marker, mut vel, mut transform) in players.iter_mut() {
         if let Some(input) = last_inputs.get(marker.client_id) {
-            vel.0.x = input.move_dir[0] * PLAYER_MOVE_SPEED;
-            vel.0.z = input.move_dir[1] * PLAYER_MOVE_SPEED;
+            let crouching = (input.actions & player_action::CROUCH) != 0;
+            let sprinting = (input.actions & player_action::SPRINT) != 0 && !crouching;
+
+            let mut move_speed = PLAYER_MOVE_SPEED;
+            if sprinting {
+                move_speed *= PLAYER_SPRINT_MULTIPLIER;
+            }
+            if crouching {
+                move_speed *= PLAYER_CROUCH_MULTIPLIER;
+            }
+
+            vel.0.x = input.move_dir[0] * move_speed;
+            vel.0.z = input.move_dir[1] * move_speed;
+
+            let on_ground = transform.translation.y <= GROUND_Y + 0.001;
+            if on_ground {
+                transform.translation.y = GROUND_Y;
+                if vel.0.y < 0.0 {
+                    vel.0.y = 0.0;
+                }
+                if (input.actions & player_action::JUMP) != 0 {
+                    vel.0.y = PLAYER_JUMP_SPEED;
+                }
+            }
 
             // Kamerovy yaw z klienta preneseme do autoritativni rotace hrace,
             // aby klienti renderovali model ve smeru pohledu.
             let yaw_rad = input.look[0].to_radians();
             transform.rotation = Quat::from_rotation_y(yaw_rad);
-
-            if input.move_dir[0].abs() > 0.01 || input.move_dir[1].abs() > 0.01 {
-                debug!("[sim/move] cid={} move_dir=[{:.3},{:.3}] vel=[{:.3},{:.3}]",
-                    marker.client_id, input.move_dir[0], input.move_dir[1],
-                    vel.0.x, vel.0.z);
-            }
         }
     }
 }
 
-fn integrate_velocity(mut q: Query<(&mut NetTransform, &NetVelocity)>, time: Res<Time<Fixed>>) {
+fn integrate_velocity(mut q: Query<(&mut NetTransform, &mut NetVelocity)>, time: Res<Time<Fixed>>) {
     let dt = time.delta_secs();
-    for (mut t, v) in q.iter_mut() {
-        if v.0.length_squared() > 0.001 {
-            info!("[sim/integrate] vel=[{:.3},{:.3}] dt={:.4} pos=[{:.3},{:.3}]",
-                v.0.x, v.0.z, dt, t.translation.x, t.translation.z);
-        }
+    for (mut t, mut v) in q.iter_mut() {
         t.translation += v.0 * dt;
+
+        if t.translation.y > GROUND_Y || v.0.y > 0.0 {
+            v.0.y -= PLAYER_GRAVITY * dt;
+        }
+
+        if t.translation.y <= GROUND_Y {
+            t.translation.y = GROUND_Y;
+            if v.0.y < 0.0 {
+                v.0.y = 0.0;
+            }
+        }
     }
 }
 
@@ -466,25 +494,13 @@ impl LastPlayerInputs {
 pub fn collect_last_inputs(
     mut receivers: Query<(&mut MessageReceiver<PlayerInput>, &RemoteId)>,
     mut last: ResMut<LastPlayerInputs>,
-    mut dbg_timer: Local<f32>,
-    time: Res<Time>,
 ) {
-    *dbg_timer += time.delta_secs();
-
-    let receiver_count = receivers.iter().count();
-    if *dbg_timer >= 2.0 {
-        info!("[sim/collect_inputs] receiver entities count={}", receiver_count);
-        *dbg_timer = 0.0;
-    }
-
     for (mut rx, remote_id) in receivers.iter_mut() {
         let client_id = match remote_id.0 {
             PeerId::Netcode(id) => id,
             _ => continue,
         };
         for input in rx.receive() {
-            info!("[sim/collect_inputs] GOT PlayerInput from cid={} move=[{:.3},{:.3}]",
-                client_id, input.move_dir[0], input.move_dir[1]);
             last.update(client_id, input);
         }
     }
