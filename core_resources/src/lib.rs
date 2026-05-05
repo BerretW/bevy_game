@@ -19,7 +19,7 @@ mod watcher;
 pub use manifest::{Manifest, ManifestError, ResourceKind};
 pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry};
 pub use resolver::{resolve_load_order, ResolveError};
-pub use sandbox::{LuaSandbox, SandboxError};
+pub use sandbox::{LuaEventDirection, LuaEventOut, LuaSandbox, SandboxError};
 pub use types::{IdError, ResourceId, Side};
 pub use vfs::{ScanError, ScanReport, Vfs};
 pub use watcher::{ResourcesDirty, VfsWatcher, WatcherError};

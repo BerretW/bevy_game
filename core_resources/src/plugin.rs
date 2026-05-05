@@ -54,7 +54,7 @@ impl Plugin for ResourcesPlugin {
         app.insert_resource(Vfs::new(&self.root));
         app.insert_resource(ResourcesSide(self.side));
         app.insert_non_send_resource(SandboxRegistry::default());
-        app.add_event::<ResourcesDirty>();
+        app.add_message::<ResourcesDirty>();
 
         // Initial load běží jednou v Startup.
         app.add_systems(Startup, initial_load);
@@ -89,7 +89,7 @@ fn initial_load(
 }
 
 fn hot_reload_on_dirty(
-    mut events: EventReader<ResourcesDirty>,
+    mut events: MessageReader<ResourcesDirty>,
     mut vfs: ResMut<Vfs>,
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,

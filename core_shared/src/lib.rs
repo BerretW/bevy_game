@@ -18,7 +18,7 @@ pub struct SharedPlugin;
 
 impl Plugin for SharedPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<LuaEvent>()
+        app.add_message::<LuaEvent>()
             .init_resource::<LuaEventRegistry>();
     }
 }
@@ -32,7 +32,11 @@ impl Plugin for SharedPlugin {
 ///
 /// Payload držíme jako pre-serialized bytes, aby Rust core
 /// nepotřeboval znát konkrétní tvar dat — to ví jen Lua resource.
-#[derive(Event, Debug, Clone, Serialize, Deserialize)]
+///
+/// V Bevy 0.18 jsou buffered eventy přejmenované na "messages"; držíme
+/// `LuaEvent` jako jméno typu (smysluplné z herního pohledu), ale
+/// derivujeme `Message` (Bevy 0.18 trait pro `MessageReader`/`MessageWriter`).
+#[derive(Message, Debug, Clone, Serialize, Deserialize)]
 pub struct LuaEvent {
     /// Jméno eventu, např. `"onPlayerJoin"` nebo `"core_inventory:itemUsed"`.
     pub name: String,

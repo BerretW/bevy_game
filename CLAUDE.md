@@ -17,14 +17,15 @@ Po každé změně, splnení roadmapy a nebo rozšíření aktualizuj claude.md
 
 ## Tech Stack
 
-| Oblast      | Technologie                                              |
-| ----------- | -------------------------------------------------------- |
-| Engine      | Bevy Engine (latest stable), headless-first pro server   |
-| Networking  | `lightyear` — prediction, rollback, replication       |
-| Scripting   | `mlua` via `bevy_mod_scripting`                      |
-| Database    | `sqlx` — PostgreSQL (prod) / SQLite (dev)             |
-| Shadery     | WGSL, hot-reload přes Bevy AssetServer                  |
-| WebUI / NUI | Dioxus / local HTML nebo `bevy_egui`; Axum (admin API) |
+| Oblast      | Technologie                                                                       |
+| ----------- | --------------------------------------------------------------------------------- |
+| Engine      | Bevy Engine 0.18, headless-first pro server                                       |
+| Networking  | `lightyear` 0.26 — UDP netcode, channels, replication (Phase 3+)                  |
+| File sync   | `axum` HTTP server (host_server) + `reqwest::blocking` downloader (host_client)   |
+| Scripting   | `mlua` via `bevy_mod_scripting`                                                   |
+| Database    | `sqlx` — PostgreSQL (prod) / SQLite (dev)                                         |
+| Shadery     | WGSL, hot-reload přes Bevy AssetServer                                            |
+| WebUI / NUI | Dioxus / local HTML nebo `bevy_egui`; Axum (admin API)                            |
 
 ---
 
@@ -124,16 +125,22 @@ files {
 - [x] Dependency resolver (Kahn's topological sort, detekce cyklů / missing / self-deps)
 - [x] Per-resource izolovaný Lua sandbox (vlastní `mlua::Lua` na resource)
 
-### Phase 2 — Network Handshake & File Sync
+### Phase 2 — Network Handshake & File Sync ✅
 
-- [ ] Navázat `lightyear` spojení
-- [ ] Implementovat handshake sekvenci pro stažení assetů/skriptů (Server → Client)
-- [ ] Implementovat Rust-to-Lua RPC (`TriggerServerEvent`)
+- [x] `core_net` crate (wire protocol, file digest, lightyear plugin scaffolding)
+- [x] Lightyear 0.26 UDP netcode connection (server listen + client connect)
+- [x] Axum HTTP file server na `host_server` (`/resources/<id>/<path>`)
+- [x] `ServerHello` digest → klient `reqwest::blocking` download → `ClientReady` handshake
+- [x] Klient přepnutý na cache mode (`cache/resources/`); `ResourcesPlugin` watcher hot-reloaduje stažené soubory
+- [x] Lua RPC bridge: `TriggerServerEvent`, `TriggerClientEvent`, `RegisterEvent` přes lightyear `LuaEventMessage` kanál
 
 ### Phase 3 — Universal ECS API (Rust → Lua Bridge)
 
 - [ ] Vystavit komponenty `Stats`, `Transform`, `Inventory` do Lua
 - [ ] Vytvořit generický Action/Intent systém (Lua žádá akci, Rust Server validuje)
+- [ ] Cross-sandbox event bus (`TriggerEvent` na druhý resource v stejném procesu)
+- [ ] Per-target unicast pro `TriggerClientEvent(name, player_id, ...)` (Phase 2 zatím broadcastuje)
+- [ ] Strukturovaný payload (LuaTable ↔ MessagePack) místo dnešního string-only payloadu
 
 ### Phase 4 — WebUI, DB & QOL
 
@@ -148,20 +155,29 @@ files {
 ```text
 /Cargo.toml                      workspace root, sjednocené [workspace.dependencies]
 /core_shared/                    sdílené typy mezi serverem a klientem
-  src/lib.rs                       SharedPlugin, LuaEvent, LuaEventRegistry
+  src/lib.rs                       SharedPlugin, LuaEvent (Bevy Message), LuaEventRegistry
 /core_resources/                 VFS + manifest + Lua sandbox (Phase 1)
   src/types.rs                     ResourceId, Side
   src/manifest.rs                  Manifest, ResourceKind, parse_manifest
   src/vfs.rs                       Vfs (Bevy resource), walkdir scanner, ScanReport
-  src/watcher.rs                   notify watcher + debounce, ResourcesDirty event
+  src/watcher.rs                   notify watcher + debounce, ResourcesDirty (Bevy Message)
   src/resolver.rs                  resolve_load_order (Kahn's, ResolveError)
-  src/sandbox.rs                   LuaSandbox (per-resource izolovaná mlua VM)
+  src/sandbox.rs                   LuaSandbox + LuaEventOut/LuaEventDirection (RPC bridge state)
   src/plugin.rs                    ResourcesPlugin, SandboxRegistry (NonSend)
+/core_net/                       Phase 2 — networking, digest, handshake, Lua RPC bridge
+  src/protocol.rs                  ServerHello, ClientReady, LuaEventMessage (wire types)
+  src/digest.rs                    FileDigest, ResourceDigest, compute_resource_digest (blake3)
+  src/digest_cache.rs              ResourceDigestCache + DigestPlugin (server-side)
+  src/net_plugin.rs                ProtocolPlugin (channels), ServerNetPlugin, ClientNetPlugin
+  src/handshake.rs                 ServerHandshakePlugin + ClientHandshakePlugin (download)
+  src/lua_rpc.rs                   ServerLuaRpcPlugin + ClientLuaRpcPlugin (drain/dispatch)
 /host_server/                    dedicated headless server
-  src/main.rs                      MinimalPlugins + LogPlugin + Tokio runtime + ServerCorePlugin
+  src/main.rs                      MinimalPlugins + Tokio + ServerNetPlugin + DigestPlugin + ...
+  src/http_server.rs               Axum HTTP file server (`/resources/<id>/<path>`)
 /host_client/                    herní klient
-  src/main.rs                      DefaultPlugins (winit + render) + ClientCorePlugin
-/resources/                      game content (Lua + assets)
+  src/main.rs                      DefaultPlugins + ClientNetPlugin + ClientHandshakePlugin + ...
+/cache/resources/                lokální cache klienta (download během handshake; gitignored)
+/resources/                      game content (Lua + assets) — *server-side autoritativní*
   core/init/                       bootstrap resource (root, no deps)
   example/hello/                   demo závislého resource (depend na core/init)
 ```
@@ -173,15 +189,21 @@ files {
 Každý resource má vlastní izolovanou `mlua::Lua` instanci. Tyto globály jsou
 dostupné ve všech `shared_scripts` / `server_scripts` / `client_scripts`:
 
-| Symbol                                         | Typ      | Význam                                       |
-| ---------------------------------------------- | -------- | -------------------------------------------- |
-| `RESOURCE_ID`                                  | string   | Kanonická cesta resource (`"core/init"`)     |
-| `SIDE`                                         | string   | `"server"` nebo `"client"`                   |
-| `IS_SERVER` / `IS_CLIENT`                      | boolean  | Pohodlný shortcut pro `assert(IS_SERVER)`    |
-| `print(...)`                                   | function | Bevy log info, prefix `[lua:RESOURCE_ID]`    |
-| `log_debug(s)` / `log_info(s)` / `log_warn(s)` | function | Strukturovaný log s explicitní úrovní        |
-| `TriggerEvent(name, ...)`                      | function | **Phase 3 stub** — bude broadcast na bus     |
-| `RegisterEvent(name, handler)`                 | function | **Phase 3 stub** — registrace handleru       |
+| Symbol                                                | Strana       | Význam                                                                              |
+| ----------------------------------------------------- | ------------ | ----------------------------------------------------------------------------------- |
+| `RESOURCE_ID`                                         | both         | Kanonická cesta resource (`"core/init"`)                                            |
+| `SIDE`                                                | both         | `"server"` nebo `"client"`                                                          |
+| `IS_SERVER` / `IS_CLIENT`                             | both         | Pohodlný shortcut pro `assert(IS_SERVER)`                                           |
+| `print(...)`                                          | both         | Bevy log info, prefix `[lua:RESOURCE_ID]`                                           |
+| `log_debug(s)` / `log_info(s)` / `log_warn(s)`        | both         | Strukturovaný log s explicitní úrovní                                               |
+| `RegisterEvent(name, handler)`                        | both         | Uloží Lua callback. Volaný při `TriggerServerEvent` / `TriggerClientEvent`          |
+| `TriggerServerEvent(name, payload?)`                  | client only  | Pošle `LuaEventMessage` serveru. Volání na serveru je runtime error                 |
+| `TriggerClientEvent(name, target?, payload?)`         | server only  | Pošle klientům (Phase 2 = broadcast, `target` se zatím ignoruje)                    |
+| `TriggerEvent(name, ...)`                             | both         | **Phase 3 stub** — cross-sandbox bus uvnitř jednoho procesu                         |
+
+`payload` je v Phase 2 čistý string. Volaný handler dostane `(payload, sender)`,
+kde `sender` je `Option<u64>` (Phase 2 vždy `nil` — Phase 3 doplní player_id).
+Strukturovaná data (LuaTable ↔ JSON/MessagePack) přidáme v Phase 3.
 
 **Stdlib povolen:** `string`, `table`, `math`, `utf8`, `coroutine`.
 **Stdlib zakázán:** `io`, `os`, `package`, `require`, `debug`, `dofile`, `load`, `loadfile`, `loadstring`.
@@ -198,7 +220,9 @@ dostupné ve všech `shared_scripts` / `server_scripts` / `client_scripts`:
 ## Cargo Commands
 
 ```powershell
-# Standardní dev běh
+# Standardní dev běh — server a klient v samostatných shellech.
+# Klient po startu přečte digest, stáhne soubory do cache/resources/
+# a teprve pak spustí Lua sandboxy.
 cargo run -p host_server
 cargo run -p host_client
 
@@ -216,6 +240,16 @@ cargo build -p host_server --release
 # Validace celého workspace
 cargo check --workspace
 ```
+
+### Síťové porty (default)
+
+| Proto      | Port  | Endpoint                               |
+| ---------- | ----- | -------------------------------------- |
+| UDP        | 5000  | lightyear netcode (game traffic)       |
+| TCP/HTTP   | 8081  | Axum file server (`/resources/<...>`)  |
+
+Klient se defaultně connectuje na `127.0.0.1:5000` a `http://127.0.0.1:8081`.
+Pro LAN multiplayer prohoď `ClientNetConfig::server` a `ServerHandshakeConfig::http_base_url`.
 
 > Pozn. k Windows: při `cargo run` se `bevy_dylib.dll` najde automaticky. Při přímém spouštění `.exe` přidej `target\debug\deps` do `PATH`.
 

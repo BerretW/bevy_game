@@ -1,0 +1,36 @@
+[package]
+name = "core_net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# core_net je headless wire-format crate — žádný render, jen `bevy_log`
+# a typy z `prelude` (Plugin, App, Resource, ...). Wire-typy nemusí
+# implementovat Bevy `Event`/`Message`, lightyear si zprávy doručuje
+# vlastním `MessageReceiver<M>` mechanismem.
+bevy = { workspace = true, default-features = false, features = [
+    "std",
+    "bevy_log",
+    "bevy_state",
+    "serialize",
+] }
+core_resources = { workspace = true }
+
+serde = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+crossbeam-channel = { workspace = true }
+
+# HTTP klient pro file download během handshake.
+# Voláme blocking API z `bevy::tasks::IoTaskPool` — reqwest::blocking
+# si interně drží `current_thread` Tokio runtime, který nepotřebuje,
+# aby kolem něj jel jiný runtime (oproti `reqwest::Client`).
+reqwest = { workspace = true }
+
+# Lightyear networking — Phase 2.
+# `core_net` je shared crate, takže vidí jak server, tak client API.
+# host_server / host_client si pak vyberou, které pluginy přidají.
+lightyear = { workspace = true }

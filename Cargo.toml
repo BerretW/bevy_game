@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core_shared",
     "core_resources",
+    "core_net",
     "host_server",
     "host_client",
 ]
@@ -19,11 +20,18 @@ publish = false
 # (workspace.dependencies se neresolvují, dokud je nějaký člen nepoužije).
 [workspace.dependencies]
 # --- Engine ---
-bevy = { version = "0.16", default-features = false }
+bevy = { version = "0.18", default-features = false }
 
 # --- Networking (lightyear: prediction, rollback, replication) ---
-# Použito v Phase 2; verze ladíme s aktuální kompatibilitou s Bevy 0.16.
-lightyear = { version = "0.21", default-features = false }
+# 0.26 ladí s Bevy 0.18. Pro Phase 2 stačí `messaging` (channels) —
+# `replication` zapneme v Phase 3 spolu s ECS bridge.
+lightyear = { version = "0.26", default-features = false, features = [
+    "std",
+    "client",
+    "server",
+    "netcode",
+    "udp",
+] }
 
 # --- Scripting (mlua + bevy_mod_scripting bridge) ---
 # Použito v Phase 1+; mlua-feature flagy se nastavují v cílovém crate.
@@ -50,6 +58,20 @@ walkdir = "2"
 notify = "6"
 crossbeam-channel = "0.5"
 
+# --- Hash pro file digest (Phase 2 file sync) ---
+blake3 = "1"
+
+# --- HTTP server pro asset/script delivery (Phase 2) ---
+axum = { version = "0.7", default-features = false, features = ["tokio", "http1"] }
+tower = { version = "0.5", default-features = false }
+tower-http = { version = "0.5", default-features = false, features = ["fs"] }
+
+# --- HTTP klient na klientské straně (file download během handshake) ---
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "blocking",
+] }
+
 # --- Error handling ---
 thiserror = "2"
 anyhow = "1"
@@ -57,6 +79,7 @@ anyhow = "1"
 # --- Lokální crates (workspace members) ---
 core_shared = { path = "core_shared" }
 core_resources = { path = "core_resources" }
+core_net = { path = "core_net" }
 
 # Bevy doporučuje optimalizovat dependencies i v dev profilu pro
 # rozumný framerate, zatímco vlastní crates kompilujeme rychle.

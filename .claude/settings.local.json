@@ -6,7 +6,24 @@
       "Bash(cargo check *)",
       "Bash(cargo build *)",
       "Bash(tasklist)",
-      "Bash(timeout 4 ./target/debug/host_server.exe)"
+      "Bash(timeout 4 ./target/debug/host_server.exe)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cargo search *)",
+      "Bash(cargo info *)",
+      "Bash(curl -s https://crates.io/api/v1/crates/lightyear/versions)",
+      "Bash(curl -s \"https://crates.io/api/v1/crates/lightyear/versions\")",
+      "Bash(curl -sL \"https://api.github.com/repos/cBournhonesque/lightyear/git/refs/tags\")",
+      "Bash(curl -sL \"https://api.github.com/repos/cBournhonesque/lightyear/tags?per_page=30\")",
+      "Bash(curl -v -L \"https://api.github.com/repos/cBournhonesque/lightyear/tags?per_page=20\")",
+      "Bash(grep -rn \"pub use.*Authentication\\\\|pub struct Authentication\\\\|pub enum Authentication\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear_netcode-0.26.4\" 2>&1 | head -10)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear_netcode-0.26.4/**)",
+      "Bash(grep -rn \"Authentication\" \"C:\\\\Users\\\\Alois\\\\.cargo\\\\registry\\\\src\\\\index.crates.io-1949cf8c6b5b557f\\\\lightyear-0.26.4\\\\src\" 2>&1 | head -10)",
+      "Read(//c/Users/Alois/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lightyear-0.26.4/src/**)",
+      "Bash(powershell -NoProfile -Command \"\\(Get-Content core_net\\\\src\\\\handshake.rs\\) -replace 'source: e.to_string\\\\\\(\\\\\\),', 'message: e.to_string\\(\\),' | Set-Content core_net\\\\src\\\\handshake.rs\")"
     ]
   }
 }

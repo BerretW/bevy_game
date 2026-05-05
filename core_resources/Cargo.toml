@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bevy = { workspace = true, default-features = false, features = [
+    "std",
     "bevy_log",
     "bevy_state",
 ] }

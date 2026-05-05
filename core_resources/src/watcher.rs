@@ -68,8 +68,9 @@ pub enum WatcherError {
     },
 }
 
-/// Marker event: VFS by se měl rescannout při příštím update kroku.
-#[derive(Event, Debug, Clone, Copy)]
+/// Marker zpráva: VFS by se měl rescannout při příštím update kroku.
+/// (V Bevy 0.18 jsou buffered eventy `Message`; trigger/observer eventy zůstávají `Event`.)
+#[derive(Message, Debug, Clone, Copy)]
 pub struct ResourcesDirty;
 
 /// Drainuje frontu notify eventů, debouncuje a vystavuje `ResourcesDirty`.
@@ -77,7 +78,7 @@ pub struct ResourcesDirty;
 /// Přidáno do `Update` schedule plug-inem — běží každý frame na main threadu.
 pub(crate) fn drain_watcher(
     mut watcher: ResMut<VfsWatcher>,
-    mut dirty_writer: EventWriter<ResourcesDirty>,
+    mut dirty_writer: MessageWriter<ResourcesDirty>,
 ) {
     loop {
         match watcher.rx.try_recv() {

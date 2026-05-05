@@ -14,10 +14,10 @@ dynamic_linking = ["bevy/dynamic_linking"]
 [dependencies]
 # Klient potřebuje plný grafický stack — winit, render, pbr, ui, atd.
 # Workspace bevy má `default-features = false`, takže si je tu zapínáme
-# explicitně. Tento seznam přibližně odpovídá Bevy default features
-# minus features, které tahají platformně-specifické závislosti, jež
-# si Cargo aktivuje jen pro relevantní target (x11/wayland na Linux).
+# explicitně. V Bevy 0.18 byly některé features přejmenovány / sloučeny
+# (`zstd` a `webgl2` zmizely jako samostatné flagy).
 bevy = { workspace = true, default-features = false, features = [
+    "std",
     "bevy_asset",
     "bevy_audio",
     "bevy_color",
@@ -43,12 +43,14 @@ bevy = { workspace = true, default-features = false, features = [
     "serialize",
     "tonemapping_luts",
     "vorbis",
-    "webgl2",
     "x11",
-    "zstd",
+    # KTX2 dekompresor — Bevy 0.18 vyžaduje výběr backendu (Rust nebo C).
+    # Volíme pure Rust, ať build neřetězí systémové libzstd.
+    "zstd_rust",
 ] }
 core_shared = { workspace = true }
 core_resources = { workspace = true }
+core_net = { workspace = true }
 
 [[bin]]
 name = "host_client"

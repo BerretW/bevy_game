@@ -5,14 +5,19 @@
 //! Tokio runtime pro asynchronní operace (sqlx queries, VFS scan,
 //! resource HTTP serving), abychom **nikdy neblokovali ECS loop**.
 
+mod http_server;
+
 use std::time::Duration;
 
 use bevy::app::ScheduleRunnerPlugin;
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 
+use core_net::{DigestPlugin, ServerHandshakePlugin, ServerLuaRpcPlugin, ServerNetPlugin};
 use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
+
+use crate::http_server::{HttpFileServerPlugin, HttpServerConfig};
 
 const SERVER_TICK_HZ: f64 = 60.0;
 const RESOURCES_ROOT: &str = "resources";
@@ -30,6 +35,7 @@ fn main() {
 
     App::new()
         .insert_resource(TokioRuntime(tokio_runtime))
+        .insert_resource(HttpServerConfig::new(RESOURCES_ROOT))
         .add_plugins((
             MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
                 1.0 / SERVER_TICK_HZ,
@@ -41,6 +47,21 @@ fn main() {
             },
             SharedPlugin,
             ResourcesPlugin::new(RESOURCES_ROOT, Side::Server),
+            // Phase 2 — server část: digest cache (předpočítané hashe pro
+            // `ServerHello`) a HTTP file server (klientský download endpoint).
+            DigestPlugin,
+            HttpFileServerPlugin,
+            // Lightyear server (UDP netcode) + sdílená protocol registrace.
+            // Pořadí matters: ServerNetPlugin dovnitř přidá ServerPlugins
+            // a ProtocolPlugin v jednom kroku.
+            ServerNetPlugin,
+            // Handshake — observer na Add<Connected>, posílá ServerHello
+            // s digestem manifestů. Konzumuje ResourceDigestCache.
+            ServerHandshakePlugin,
+            // Lua RPC bridge — drainuje outgoing TriggerClientEvent z
+            // serverových sandboxů a posílá je klientům; routuje příchozí
+            // TriggerServerEvent k handlerům RegisterEvent v sandboxech.
+            ServerLuaRpcPlugin,
             ServerCorePlugin,
         ))
         .run();

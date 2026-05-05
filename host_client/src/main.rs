@@ -5,27 +5,51 @@
 //! tento crate je jen "host shell" — okno, asset server, network klient.
 
 use bevy::prelude::*;
+use bevy::window::WindowResolution;
+use core_net::{ClientHandshakePlugin, ClientLuaRpcPlugin, ClientNetPlugin};
 use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
 
-const RESOURCES_ROOT: &str = "resources";
+/// V Phase 2 klient nečte přímo `/resources/` — přepneme na lokální cache,
+/// kterou plní handshake downloader. Resources se objeví až po úspěšném
+/// dokončení `ServerHello → download → ClientReady` sekvence.
+const CACHE_ROOT: &str = "cache/resources";
 
 fn main() {
+    // Cache adresář musí existovat předtím, než ho `notify` watcher začne
+    // sledovat — jinak by se watch pokus odmítl. Nezáleží, jestli je prázdný:
+    // hot-reload pak zachytí soubory zapsané downloaderem.
+    if let Err(e) = std::fs::create_dir_all(CACHE_ROOT) {
+        eprintln!(
+            "[host_client] failed to create cache root {:?}: {}",
+            CACHE_ROOT, e
+        );
+    }
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "bevy_game — host_client".into(),
-                resolution: (1280.0, 720.0).into(),
+                resolution: WindowResolution::new(1280, 720),
                 ..default()
             }),
             ..default()
         }))
         .add_plugins((
             SharedPlugin,
-            // V Phase 2 klient resources stahuje od serveru a nešahá
-            // přímo na disk. Pro Phase 1 čteme lokálně, ať jde projekt
-            // testovat end-to-end bez síťování.
-            ResourcesPlugin::new(RESOURCES_ROOT, Side::Client),
+            // V Phase 2 klient resources stahuje od serveru přes HTTP
+            // a ukládá je do `cache/resources/`. ResourcesPlugin watch
+            // detekuje zápisy a hot-reload spustí sandboxy.
+            ResourcesPlugin::new(CACHE_ROOT, Side::Client),
+            // Lightyear client (UDP netcode) — ProtocolPlugin se přidá
+            // dovnitř, a tak je registrace messages/channelů identická
+            // s `ServerNetPlugin`.
+            ClientNetPlugin,
+            // Handshake state machine — přijme ServerHello, spustí
+            // download na IoTaskPool, po úspěchu pošle ClientReady.
+            ClientHandshakePlugin,
+            // Lua RPC bridge — protějšek ServerLuaRpcPlugin.
+            ClientLuaRpcPlugin,
             ClientCorePlugin,
         ))
         .run();
