@@ -16,6 +16,7 @@ dynamic_linking = ["bevy/dynamic_linking"]
 # Workspace bevy má `default-features = false`, takže si je tu zapínáme
 # explicitně. V Bevy 0.18 byly některé features přejmenovány / sloučeny
 # (`zstd` a `webgl2` zmizely jako samostatné flagy).
+bevy_framepace = "0.21"
 bevy = { workspace = true, default-features = false, features = [
     "std",
     "bevy_asset",

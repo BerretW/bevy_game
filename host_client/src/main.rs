@@ -17,6 +17,7 @@ use bevy::render::RenderPlugin;
 use bevy::window::{
     MonitorSelection, PresentMode, VideoModeSelection, WindowMode, WindowResolution,
 };
+use bevy_framepace::{FramepacePlugin, FramepaceSettings, Limiter};
 
 use core_net::{
     ClientHandshakeConfig, ClientHandshakePlugin, ClientLuaRpcPlugin, ClientNetConfig,
@@ -120,7 +121,15 @@ fn main() {
         ..default()
     };
 
+    // Frame pacing: fps_cap=0 → auto (monitor refresh), >0 → hard cap.
+    let framepace_limiter = if cfg.graphics.fps_cap > 0 {
+        Limiter::from_framerate(cfg.graphics.fps_cap as f64)
+    } else {
+        Limiter::Auto
+    };
+
     App::new()
+        .insert_resource(ClearColor(Color::srgb(0.1, 0.3, 0.1))) // Tmavě zelená
         .insert_resource(client_net_config)
         .insert_resource(handshake_config)
         .insert_resource(ClientConfigResource(cfg.clone()))
@@ -149,7 +158,9 @@ fn main() {
             ClientHandshakePlugin,
             ClientLuaRpcPlugin,
             ClientCorePlugin,
+            FramepacePlugin,
         ))
+        .insert_resource(FramepaceSettings { limiter: framepace_limiter })
         .run();
 }
 
