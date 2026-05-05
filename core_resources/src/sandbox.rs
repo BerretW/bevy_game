@@ -28,6 +28,7 @@ use std::rc::Rc;
 
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib};
 
+use crate::cmd_queue::{CommandQueue, LuaCommand};
 use crate::manifest::Manifest;
 use crate::types::{ResourceId, Side};
 
@@ -62,11 +63,14 @@ pub struct LuaSandbox {
     /// stabilní reference do `mlua` registry, kterou si funkce vyzvedneme
     /// přes `Lua::registry_value::<Function>(key)`.
     handlers: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    /// Sdílená fronta příkazů do ECS světa. Arc clone — levné přeposílání
+    /// do Lua closures (World.SpawnLocalObject, World.DeleteObject, …).
+    cmd_queue: CommandQueue,
 }
 
 impl LuaSandbox {
     /// Vytvoří sandbox a spustí všechny relevantní skripty z manifestu.
-    pub fn create(manifest: &Manifest, side: Side) -> Result<Self, SandboxError> {
+    pub fn create(manifest: &Manifest, side: Side, cmd_queue: CommandQueue) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE
                 | StdLib::STRING
@@ -81,7 +85,7 @@ impl LuaSandbox {
         let handlers: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>> =
             Rc::new(RefCell::new(HashMap::new()));
 
-        install_runtime_api(&lua, &manifest.id, side, &outgoing, &handlers)?;
+        install_runtime_api(&lua, &manifest.id, side, &outgoing, &handlers, &cmd_queue)?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
             Side::Server => manifest.server_scripts.iter(),
@@ -99,6 +103,7 @@ impl LuaSandbox {
             lua,
             outgoing,
             handlers,
+            cmd_queue,
         })
     }
 
@@ -190,16 +195,30 @@ fn run_script(lua: &Lua, id: &ResourceId, rel: &str, abs: &Path) -> Result<(), S
         })
 }
 
+/// Extrahuje Vec3 z Lua tabulky — akceptuje pojmenované klíče `{x,y,z}`
+/// i indexované pole `{1,2,3}`. Chybějící klíče defaultují na 0.
+fn table_to_vec3(t: &mlua::Table) -> [f32; 3] {
+    let get = |name: &str, idx: i32| -> f32 {
+        t.get::<f32>(name)
+            .or_else(|_| t.get::<f32>(idx))
+            .unwrap_or(0.0)
+    };
+    [get("x", 1), get("y", 2), get("z", 3)]
+}
+
 fn install_runtime_api(
     lua: &Lua,
     id: &ResourceId,
     side: Side,
     outgoing: &Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    cmd_queue: &CommandQueue,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers).map_err(|e| SandboxError::Api {
-        id: id.clone(),
-        source: e,
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue).map_err(|e| {
+        SandboxError::Api {
+            id: id.clone(),
+            source: e,
+        }
     })
 }
 
@@ -209,6 +228,7 @@ fn install_runtime_api_inner(
     side: Side,
     outgoing: &Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    cmd_queue: &CommandQueue,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -348,6 +368,77 @@ fn install_runtime_api_inner(
             )?;
         }
     }
+
+    // -----------------------------------------------------------------------
+    // World namespace — Phase 3.2 Command Queue API
+    // -----------------------------------------------------------------------
+    //
+    // Každá closure dostane vlastní Arc-klon CommandQueue (levné).
+    // Rotace jsou Euler XYZ ve stupních; pos je world-space {x,y,z}.
+    let world = lua.create_table()?;
+
+    // World.SpawnLocalObject(model, pos, rot) -> handle
+    let cq = cmd_queue.clone();
+    world.set(
+        "SpawnLocalObject",
+        lua.create_function(
+            move |_, (model, pos_t, rot_t): (String, mlua::Table, mlua::Table)| {
+                let pos = table_to_vec3(&pos_t);
+                let rot = table_to_vec3(&rot_t);
+                let handle = cq.alloc_handle();
+                cq.push(LuaCommand::SpawnLocalObject { handle, model, pos, rot });
+                Ok(handle)
+            },
+        )?,
+    )?;
+
+    // World.DeleteObject(handle)
+    let cq = cmd_queue.clone();
+    world.set(
+        "DeleteObject",
+        lua.create_function(move |_, handle: u64| {
+            cq.push(LuaCommand::DespawnEntity { handle });
+            Ok(())
+        })?,
+    )?;
+
+    // World.SetTransform(handle, pos, rot)
+    let cq = cmd_queue.clone();
+    world.set(
+        "SetTransform",
+        lua.create_function(
+            move |_, (handle, pos_t, rot_t): (u64, mlua::Table, mlua::Table)| {
+                let pos = table_to_vec3(&pos_t);
+                let rot = table_to_vec3(&rot_t);
+                cq.push(LuaCommand::SetTransform { handle, pos, rot });
+                Ok(())
+            },
+        )?,
+    )?;
+
+    // World.ApplyDamage(target_handle, amount, source_handle?) — server only
+    let cq = cmd_queue.clone();
+    world.set(
+        "ApplyDamage",
+        lua.create_function(
+            move |_,
+                  (target_handle, amount, source_handle): (u64, f32, Option<u64>)| {
+                if side != Side::Server {
+                    return Err(mlua::Error::RuntimeError(
+                        "World.ApplyDamage is server-only".to_string(),
+                    ));
+                }
+                cq.push(LuaCommand::ApplyDamage {
+                    target_handle,
+                    amount,
+                    source_handle,
+                });
+                Ok(())
+            },
+        )?,
+    )?;
+
+    globals.set("World", world)?;
 
     Ok(())
 }

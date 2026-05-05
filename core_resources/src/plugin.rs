@@ -5,6 +5,9 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 
+use crate::cmd_queue::{
+    process_lua_commands, CommandQueue, LuaWorldState, PendingDamageEvent,
+};
 use crate::resolver::resolve_load_order;
 use crate::sandbox::LuaSandbox;
 use crate::types::{ResourceId, Side};
@@ -56,6 +59,12 @@ impl Plugin for ResourcesPlugin {
         app.insert_non_send_resource(SandboxRegistry::default());
         app.add_message::<ResourcesDirty>();
 
+        // Phase 3.2 — Command Queue & World state.
+        app.init_resource::<CommandQueue>();
+        app.init_resource::<LuaWorldState>();
+        app.add_event::<PendingDamageEvent>();
+        app.add_systems(PostUpdate, process_lua_commands);
+
         // Initial load běží jednou v Startup.
         app.add_systems(Startup, initial_load);
 
@@ -84,8 +93,9 @@ fn initial_load(
     mut vfs: ResMut<Vfs>,
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
+    cmd_queue: Res<CommandQueue>,
 ) {
-    rebuild(&mut vfs, side.0, &mut registry);
+    rebuild(&mut vfs, side.0, &mut registry, cmd_queue.clone());
 }
 
 fn hot_reload_on_dirty(
@@ -93,6 +103,7 @@ fn hot_reload_on_dirty(
     mut vfs: ResMut<Vfs>,
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
+    cmd_queue: Res<CommandQueue>,
 ) {
     if events.is_empty() {
         return;
@@ -104,10 +115,10 @@ fn hot_reload_on_dirty(
         "[core_resources] filesystem change detected ({count} event{}), reloading resources",
         if count == 1 { "" } else { "s" }
     );
-    rebuild(&mut vfs, side.0, &mut registry);
+    rebuild(&mut vfs, side.0, &mut registry, cmd_queue.clone());
 }
 
-fn rebuild(vfs: &mut Vfs, side: Side, registry: &mut SandboxRegistry) {
+fn rebuild(vfs: &mut Vfs, side: Side, registry: &mut SandboxRegistry, cmd_queue: CommandQueue) {
     // 1. Rescan VFS
     let report = vfs.rescan();
     for err in &report.errors {
@@ -139,7 +150,7 @@ fn rebuild(vfs: &mut Vfs, side: Side, registry: &mut SandboxRegistry) {
             Some(m) => m,
             None => continue,
         };
-        match LuaSandbox::create(manifest, side) {
+        match LuaSandbox::create(manifest, side, cmd_queue.clone()) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);
                 registry.sandboxes.insert(id.clone(), sandbox);

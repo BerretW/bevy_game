@@ -8,6 +8,7 @@
 //!    jeho `shared_scripts` + side-specific (`server_scripts`/`client_scripts`).
 //! 5. Sledovat filesystem (`notify`) a při změně provést hot-reload.
 
+mod cmd_queue;
 mod manifest;
 mod plugin;
 mod resolver;
@@ -16,6 +17,9 @@ mod types;
 mod vfs;
 mod watcher;
 
+pub use cmd_queue::{
+    CommandQueue, LocalObjectMarker, LuaCommand, LuaWorldState, PendingDamageEvent,
+};
 pub use manifest::{Manifest, ManifestError, ResourceKind};
 pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry};
 pub use resolver::{resolve_load_order, ResolveError};

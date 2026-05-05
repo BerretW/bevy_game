@@ -11,6 +11,7 @@ bevy = { workspace = true, default-features = false, features = [
     "std",
     "bevy_log",
     "bevy_state",
+    "bevy_transform",
 ] }
 core_shared = { workspace = true }
 
