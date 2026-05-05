@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use bevy::transform::components::TransformTreeChanged;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy::asset::AssetPath;
+use std::collections::HashSet;
 use bevy_gltf::{
     GltfExtras,
     GltfMaterialExtras,
@@ -114,11 +115,12 @@ impl Plugin for ClientGameplayPlugin {
             Update,
             (
                 toggle_camera_mode,
-            update_camera_look_from_mouse,
-            apply_cursor_mode,
+                update_camera_look_from_mouse,
+                apply_cursor_mode,
                 attach_player_model_to_new_players,
+                prefer_predicted_player_visuals,
                 update_camera_follow,
-            update_raycast_bridge,
+                update_raycast_bridge,
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 attach_mesh_to_local_objects,
@@ -127,6 +129,38 @@ impl Plugin for ClientGameplayPlugin {
                 .chain(),
         );
         app.add_systems(FixedUpdate, collect_and_send_input);
+        // app.add_systems(Update, debug_player_movement.run_if(on_timer(std::time::Duration::from_secs(2))));
+    }
+}
+
+use bevy::time::common_conditions::on_timer;
+
+fn debug_player_movement(
+    local_id: Option<Res<LocalClientId>>,
+    predicted_q: Query<(&NetTransform, &Transform, &PlayerMarker), With<Predicted>>,
+    fallback_q: Query<(&NetTransform, &Transform, &PlayerMarker), (With<PlayerMarker>, Without<Predicted>)>,
+    senders_q: Query<&MessageSender<PlayerInput>>,
+) {
+    let id_str = local_id.as_ref().map(|r| r.0.to_string()).unwrap_or_else(|| "NONE".into());
+    let sender_count = senders_q.iter().count();
+    info!("[debug/movement] local_client_id={} MessageSender<PlayerInput> count={}", id_str, sender_count);
+
+    for (net, tfm, marker) in predicted_q.iter() {
+        info!("[debug/movement] PREDICTED cid={} NetTransform={:.2},{:.2},{:.2} Transform={:.2},{:.2},{:.2}",
+            marker.client_id,
+            net.translation.x, net.translation.y, net.translation.z,
+            tfm.translation.x, tfm.translation.y, tfm.translation.z,
+        );
+    }
+    for (net, tfm, marker) in fallback_q.iter() {
+        info!("[debug/movement] FALLBACK cid={} NetTransform={:.2},{:.2},{:.2} Transform={:.2},{:.2},{:.2}",
+            marker.client_id,
+            net.translation.x, net.translation.y, net.translation.z,
+            tfm.translation.x, tfm.translation.y, tfm.translation.z,
+        );
+    }
+    if predicted_q.is_empty() && fallback_q.is_empty() {
+        warn!("[debug/movement] ZADNA player entita nenalezena na klientu!");
     }
 }
 
@@ -163,6 +197,50 @@ fn setup_scene_and_camera(
             perceptual_roughness: 0.95,
             ..default()
         })),
+    ));
+
+    // Orientacni body ve svete: je hned videt, jestli se hybe hrac nebo scena.
+    let marker_mesh = meshes.add(Cuboid::new(1.2, 2.8, 1.2));
+    let marker_positions = [
+        (Vec3::new(0.0, 1.4, 0.0), Color::srgb(1.0, 0.2, 0.2)),
+        (Vec3::new(10.0, 1.4, 0.0), Color::srgb(1.0, 0.85, 0.2)),
+        (Vec3::new(-10.0, 1.4, 0.0), Color::srgb(0.2, 0.85, 1.0)),
+        (Vec3::new(0.0, 1.4, 10.0), Color::srgb(0.2, 1.0, 0.35)),
+        (Vec3::new(0.0, 1.4, -10.0), Color::srgb(1.0, 0.35, 0.9)),
+        (Vec3::new(18.0, 1.4, 18.0), Color::srgb(1.0, 0.55, 0.15)),
+        (Vec3::new(-18.0, 1.4, -18.0), Color::srgb(0.65, 0.4, 1.0)),
+    ];
+    for (pos, color) in marker_positions {
+        commands.spawn((
+            Mesh3d(marker_mesh.clone()),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: color,
+                emissive: color.into(),
+                perceptual_roughness: 0.45,
+                ..default()
+            })),
+            Transform::from_translation(pos),
+        ));
+    }
+
+    // Delsi referencni objekty kolem os X/Z.
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(30.0, 0.3, 1.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.85, 0.2, 0.2),
+            emissive: Color::srgb(0.25, 0.05, 0.05).into(),
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.15, 0.0),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(1.0, 0.3, 30.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.2, 0.75, 0.95),
+            emissive: Color::srgb(0.05, 0.15, 0.2).into(),
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.15, 0.0),
     ));
 
     commands.insert_resource(PlayerModelHandle(asset_server.load(PLAYER_MODEL_ASSET_PATH)));
@@ -235,15 +313,14 @@ fn apply_cursor_mode(
     mode: Res<CameraModeState>,
     mut cursor_q: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
-    if !mode.is_changed() {
-        return;
-    }
-
     let Ok(mut cursor) = cursor_q.single_mut() else { return };
 
     // V obou rezimech drzi gameplay relativni ovladani mysi.
     cursor.visible = false;
     cursor.grab_mode = CursorGrabMode::Locked;
+
+    // Pouzij `mode` aby system stale reagoval na zmenu a nevznikal warning.
+    let _ = mode.mode;
 }
 
 fn attach_player_model_to_new_players(
@@ -251,12 +328,24 @@ fn attach_player_model_to_new_players(
     model: Res<PlayerModelHandle>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    predicted_players: Query<&PlayerMarker, With<Predicted>>,
     new_players: Query<
-        (Entity, &PlayerMarker),
-        (With<NetTransform>, With<Predicted>, Without<PlayerVisualAttached>),
+        (Entity, &PlayerMarker, Option<&Predicted>),
+        (With<NetTransform>, Without<PlayerVisualAttached>),
     >,
 ) {
-    for (entity, marker) in new_players.iter() {
+    let predicted_ids: HashSet<u64> = predicted_players
+        .iter()
+        .map(|m| m.client_id)
+        .collect();
+
+    for (entity, marker, predicted) in new_players.iter() {
+        // Pokud existuje predicted entita pro stejneho hrace,
+        // vizual attachujeme jen na ni (zabrani statickym duplikatum).
+        if predicted.is_none() && predicted_ids.contains(&marker.client_id) {
+            continue;
+        }
+
         let hue = (marker.client_id as f32 * 47.0).rem_euclid(360.0);
         let color = Color::hsl(hue, 0.7, 0.6);
 
@@ -294,11 +383,24 @@ fn attach_player_model_to_new_players(
     }
 }
 
-fn sync_net_transform_to_render(mut q: Query<(&NetTransform, &mut Transform, &Predicted)>) {
-    for (net, mut local, _) in q.iter_mut() {
-        local.translation.x = net.translation.x;
+fn sync_net_transform_to_render(
+    mut predicted_q: Query<
+        (
+            &mut Transform,
+            &PlayerMarker,
+            &NetTransform,
+            Option<&Confirmed<NetTransform>>,
+        ),
+        With<Predicted>,
+    >,
+) {
+    // Preferuj server-confirmed stav, fallback na local predicted NetTransform.
+    for (mut local, _marker, predicted_net, confirmed_net) in predicted_q.iter_mut() {
+        let src = confirmed_net.map(|c| &c.0).unwrap_or(predicted_net);
+        local.translation.x = src.translation.x;
         local.translation.y = 0.0;
-        local.translation.z = net.translation.z;
+        local.translation.z = src.translation.z;
+        local.rotation = src.rotation;
     }
 }
 
@@ -306,7 +408,10 @@ fn update_camera_follow(
     local_client_id: Option<Res<LocalClientId>>,
     mode: Res<CameraModeState>,
     look: Res<CameraLookState>,
-    players: Query<(&NetTransform, &PlayerMarker), With<Predicted>>,
+    predicted_players: Query<
+        (&Transform, &PlayerMarker),
+        (With<Predicted>, Without<MainGameplayCamera>),
+    >,
     mut cam_q: Query<&mut Transform, With<MainGameplayCamera>>,
 ) {
     let Some(local_client_id) = local_client_id else {
@@ -317,9 +422,9 @@ fn update_camera_follow(
     };
 
     let mut player_pos: Option<Vec3> = None;
-    for (net, marker) in players.iter() {
+    for (tfm, marker) in predicted_players.iter() {
         if marker.client_id == local_client_id.0 {
-            player_pos = Some(Vec3::new(net.translation.x, 0.0, net.translation.z));
+            player_pos = Some(Vec3::new(tfm.translation.x, 0.0, tfm.translation.z));
             break;
         }
     }
@@ -352,6 +457,27 @@ fn update_camera_follow(
     }
 }
 
+fn prefer_predicted_player_visuals(
+    predicted_ids_q: Query<&PlayerMarker, With<Predicted>>,
+    mut fallback_visuals_q: Query<
+        (&PlayerMarker, &mut Visibility),
+        (With<PlayerVisualAttached>, Without<Predicted>),
+    >,
+) {
+    let predicted_ids: HashSet<u64> = predicted_ids_q
+        .iter()
+        .map(|m| m.client_id)
+        .collect();
+
+    for (marker, mut visibility) in fallback_visuals_q.iter_mut() {
+        *visibility = if predicted_ids.contains(&marker.client_id) {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+    }
+}
+
 fn update_local_player_visibility(
     local_client_id: Option<Res<LocalClientId>>,
     mode: Res<CameraModeState>,
@@ -362,12 +488,14 @@ fn update_local_player_visibility(
     };
     for (marker, mut vis) in players.iter_mut() {
         if marker.client_id == local_client_id.0 {
-            *vis = match mode.mode {
-                CameraMode::FirstPerson => Visibility::Hidden,
-                CameraMode::ThirdPerson => Visibility::Visible,
-            };
+            // Lokalni model nechame viditelny i v 1st person, at je jasne,
+            // ze se replikuje a pohybuje.
+            *vis = Visibility::Visible;
         }
     }
+
+    // Pouzij `mode` aby system stale reagoval na zmenu a nevznikal warning.
+    let _ = mode.mode;
 }
 
 fn collect_and_send_input(
@@ -377,8 +505,26 @@ fn collect_and_send_input(
     look: Res<CameraLookState>,
     mut senders: Query<&mut MessageSender<PlayerInput>>,
     mut tick: Local<u32>,
+    mut dbg_timer: Local<f32>,
+    time: Res<Time>,
 ) {
     *tick = tick.wrapping_add(1);
+
+    *dbg_timer += time.delta_secs();
+    if *dbg_timer >= 2.0 {
+        *dbg_timer = 0.0;
+        let fwd_key = cfg.0.input.keys.move_forward;
+        let bck_key = cfg.0.input.keys.move_backward;
+        let lft_key = cfg.0.input.keys.move_left;
+        let rgt_key = cfg.0.input.keys.move_right;
+        info!("[input/debug] keys W={:?}({}) S={:?}({}) A={:?}({}) D={:?}({}) yaw={:.2}",
+            fwd_key, keys.pressed(fwd_key),
+            bck_key, keys.pressed(bck_key),
+            lft_key, keys.pressed(lft_key),
+            rgt_key, keys.pressed(rgt_key),
+            look.yaw,
+        );
+    }
 
     let bindings = &cfg.0.input.keys;
     let mouse_b = &cfg.0.input.mouse;
@@ -387,8 +533,8 @@ fn collect_and_send_input(
     let mut move_y = 0.0_f32;
     if keys.pressed(bindings.move_forward) { move_y += 1.0; }
     if keys.pressed(bindings.move_backward) { move_y -= 1.0; }
-    if keys.pressed(bindings.move_right) { move_x += 1.0; }
-    if keys.pressed(bindings.move_left) { move_x -= 1.0; }
+    if keys.pressed(bindings.move_right) { move_x -= 1.0; }
+    if keys.pressed(bindings.move_left) { move_x += 1.0; }
 
     let mag2 = move_x * move_x + move_y * move_y;
     if mag2 > 1.0 {
@@ -396,6 +542,17 @@ fn collect_and_send_input(
         move_x *= inv;
         move_y *= inv;
     }
+
+    // Klientske WASD je v "camera-local" prostoru.
+    // Server sim ale ocekava world-space move_dir, takze vektor
+    // pred odeslanim otocime podle aktualni yaw kamery.
+    let yaw_rad = look.yaw;
+    let forward_x = yaw_rad.sin();
+    let forward_z = yaw_rad.cos();
+    let right_x = yaw_rad.cos();
+    let right_z = -yaw_rad.sin();
+    let world_move_x = right_x * move_x + forward_x * move_y;
+    let world_move_z = right_z * move_x + forward_z * move_y;
 
     let mut actions = 0u32;
     if mouse.pressed(mouse_b.attack_primary) { actions |= player_action::PRIMARY_FIRE; }
@@ -411,11 +568,17 @@ fn collect_and_send_input(
     let yaw = look.yaw.to_degrees();
 
     let input = PlayerInput {
-        move_dir: [move_x, move_y],
+        move_dir: [world_move_x, world_move_z],
         look: [yaw, 0.0],
         actions,
         client_tick: *tick,
     };
+
+    // Log kdyz je pohyb nenulovy
+    if input.move_dir[0].abs() > 0.01 || input.move_dir[1].abs() > 0.01 {
+        info!("[input/send] move_dir=[{:.3},{:.3}] tick={}",
+            input.move_dir[0], input.move_dir[1], *tick);
+    }
 
     for mut sender in senders.iter_mut() {
         let _ = sender.send::<InputChannel>(input.clone());

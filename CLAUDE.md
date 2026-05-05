@@ -147,6 +147,7 @@ files {
 - [X] `NetTransform`, `NetVelocity`, `PlayerMarker` s lightyear prediction
 - [X] `apply_inputs_to_velocity` + `integrate_velocity` v `FixedUpdate` (`sim.rs`)
 - [X] Klientský renderer replikovaných hráčů (3D model + fallback capsule per `PlayerMarker`) + WASD input collection (`gameplay.rs`)
+- [X] Preferovaná vizualizace predicted entity: fallback duplicate pro stejné `client_id` se automaticky skrývá (`prefer_predicted_player_visuals`)
 - [X] Kamera režimy klienta: 3rd person / 1st person toggle (`F6`) se sledováním lokálního hráče
 - [X] Kamera stabilizace: look ovládán `MouseMotion` delta (`yaw/pitch` s clamp), cursor lock (`CursorGrabMode::Locked`), bez nelineární rotace podle pozice kurzoru
 - [X] GLTF `SceneRoot` stabilizace: registrace reflektovaných typů (`Transform`, `GlobalTransform`, `Visibility`, `InheritedVisibility`, `ViewVisibility`, `TransformTreeChanged`, `Mesh3d`, `MeshMaterial3d<StandardMaterial>`, `Aabb`, `SkinnedMesh`, `GltfExtras`, `GltfSceneExtras`, `GltfMeshExtras`, `GltfMeshName`, `GltfMaterialExtras`, `GltfMaterialName`, `ChildOf`, `Children`, `Name`) v klientském pluginu
@@ -168,6 +169,8 @@ files {
 - [X] `collect_last_inputs` systém (Update) — drainuje `MessageReceiver<PlayerInput>` do `LastPlayerInputs` resource
 - [X] `process_combat` (FixedUpdate) — čte `LastPlayerInputs`, `PRIMARY_FIRE` bitflag + proximity + angle check, aplikuje dmg na `Health`
 - [X] `tick_weapon_cooldowns` (FixedUpdate) — decrementuje `WeaponCooldown.remaining`
+- [X] Camera-relative movement input: klient rotuje WASD vektor podle yaw kamery a server dostává world-space `move_dir`
+- [X] Player yaw sync: server zapisuje `PlayerInput.look[0]` do `NetTransform.rotation`; klient při render sync aplikuje i rotaci, takže model/sprite míří směrem kamery
 - [X] Lua eventy `onPlayerHit` + `onPlayerDeath` emitované serverem přes `LocalEventBus` (JSON payload: attacker, victim, damage, weapon, position)
 - [X] Lua eventy `playerConnecting` + `playerDropped` při connect/disconnect (observer na `Add<Connected>` / `Remove<Connected>`)
 
@@ -207,7 +210,7 @@ files {
 #### 3.8 — Zbývající ECS Bridge položky ✅ (základ)
 
 - [X] `LocalEventBus(Arc<Mutex<Vec<LocalEvent>>>)` — Bevy Resource; `dispatch_local_events` systém (PostUpdate) drainuje bus a volá `dispatch_incoming` na všechny sandboxy
-- [X] `TriggerEvent(name, payload)` — funkční cross-sandbox bus (nahrazuje Phase 2 no-op stub)
+- [X] `TriggerEvent(name, payload)` — funkční cross-sandwwwwbox bus (nahrazuje Phase 2 no-op stub)
 - [X] `TriggerClientEvent(name, target, payload)` — unicast pokud `target` je `u64` player_id; broadcast pokud `nil`/`false`
 - [X] JSON payload pro všechny `Trigger*` funkce (LuaTable ↔ `serde_json::Value`; helper funkce `lua_value_to_json` + `json_to_lua_value`)
 - [X] `sender` player_id v handlerech — `server_dispatch_incoming` extrahuje `PeerId::Netcode(id)` a předává `Some(id)` do Lua
@@ -271,7 +274,7 @@ files {
 /resources/                      game content (Lua + assets) — *server-side autoritativní*
   core/init/                       bootstrap resource (root, no deps)
   example/hello/                   demo závislého resource (depend na core/init)
-  example/moving_square/           demo moving actor + `shared/input.lua` (Input namespace pro key capture)
+  example/moving_square/           demo per-player moving actors (`sq:pos` -> `SetTransform`) + `shared/input.lua`
     stream/blacksmith.glb            model pro lokalni spawn (`World.SpawnLocalObject('blacksmith', ...)`)
 ```
 
@@ -282,26 +285,26 @@ files {
 Každý resource má vlastní izolovanou `mlua::Lua` instanci. Tyto globály jsou
 dostupné ve všech `shared_scripts` / `server_scripts` / `client_scripts`:
 
-| Symbol                                               | Strana      | Význam                                                                            |
-| ---------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------- |
-| `RESOURCE_ID`                                      | both        | Kanonická cesta resource (`"core/init"`)                                        |
-| `SIDE`                                             | both        | `"server"` nebo `"client"`                                                     |
-| `IS_SERVER` / `IS_CLIENT`                        | both        | Pohodlný shortcut pro `assert(IS_SERVER)`                                       |
-| `print(...)`                                       | both        | Bevy log info, prefix `[lua:RESOURCE_ID]`                                        |
-| `log_debug(s)` / `log_info(s)` / `log_warn(s)` | both        | Strukturovaný log s explicitní úrovní                                          |
+| Symbol                                               | Strana      | Význam                                                                                               |
+| ---------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `RESOURCE_ID`                                      | both        | Kanonická cesta resource (`"core/init"`)                                                           |
+| `SIDE`                                             | both        | `"server"` nebo `"client"`                                                                        |
+| `IS_SERVER` / `IS_CLIENT`                        | both        | Pohodlný shortcut pro `assert(IS_SERVER)`                                                          |
+| `print(...)`                                       | both        | Bevy log info, prefix `[lua:RESOURCE_ID]`                                                           |
+| `log_debug(s)` / `log_info(s)` / `log_warn(s)` | both        | Strukturovaný log s explicitní úrovní                                                             |
 | `RegisterEvent(name, handler)`                     | both        | Uloží Lua callback. Volaný při `TriggerServerEvent` / `TriggerClientEvent` / `TriggerEvent` |
-| `TriggerServerEvent(name, payload?)`               | client only | Pošle `LuaEventMessage` serveru (JSON payload). Volání na serveru je runtime error |
-| `TriggerClientEvent(name, target, payload?)`       | server only | Unicast pokud `target` je `u64` player_id; broadcast pokud `nil`/`false` |
-| `TriggerEvent(name, payload?)`                     | both        | Cross-sandbox bus uvnitř jednoho procesu — funkční od Phase 3.8 |
-| `World.SpawnLocalObject(model, pos, rot)`          | both        | Spawne lokální (non-replikovanou) entitu → vrátí `handle` (u64) |
-| `World.SpawnNetworkedObject(model, pos, rot)`      | server only | Spawne replikovanou entitu (lightyear) → vrátí `handle` (u64) |
-| `World.DeleteObject(handle)`                       | both        | Despawne entitu podle handle |
-| `World.SetTransform(handle, pos, rot)`             | both        | Nastaví pozici a rotaci entity |
-| `World.ApplyDamage(target, amount, source?)`       | server only | Enqueue damage intent do `CommandQueue` |
-| `Engine.RequestModel(name)`                        | both        | Inkrementuje ref_count modelu v `ModelRegistry` |
-| `Engine.HasModelLoaded(name)`                      | both        | Vrátí `true` pokud je model v registry s `ref_count > 0` |
-| `Engine.SetModelAsNoLongerNeeded(name)`            | both        | Dekrementuje ref_count modelu |
-| `Raycast.GetGroundPosition()`                      | client only | Vrátí `{x, y, z}` world-space pozici myši (Y=0 rovina); na serveru vrací `{0,0,0}` |
+| `TriggerServerEvent(name, payload?)`               | client only | Pošle `LuaEventMessage` serveru (JSON payload). Volání na serveru je runtime error               |
+| `TriggerClientEvent(name, target, payload?)`       | server only | Unicast pokud `target` je `u64` player_id; broadcast pokud `nil`/`false`                      |
+| `TriggerEvent(name, payload?)`                     | both        | Cross-sandbox bus uvnitř jednoho procesu — funkční od Phase 3.8                                   |
+| `World.SpawnLocalObject(model, pos, rot)`          | both        | Spawne lokální (non-replikovanou) entitu → vrátí `handle` (u64)                                |
+| `World.SpawnNetworkedObject(model, pos, rot)`      | server only | Spawne replikovanou entitu (lightyear) → vrátí `handle` (u64)                                    |
+| `World.DeleteObject(handle)`                       | both        | Despawne entitu podle handle                                                                          |
+| `World.SetTransform(handle, pos, rot)`             | both        | Nastaví pozici a rotaci entity                                                                       |
+| `World.ApplyDamage(target, amount, source?)`       | server only | Enqueue damage intent do `CommandQueue`                                                             |
+| `Engine.RequestModel(name)`                        | both        | Inkrementuje ref_count modelu v `ModelRegistry`                                                     |
+| `Engine.HasModelLoaded(name)`                      | both        | Vrátí `true` pokud je model v registry s `ref_count > 0`                                        |
+| `Engine.SetModelAsNoLongerNeeded(name)`            | both        | Dekrementuje ref_count modelu                                                                         |
+| `Raycast.GetGroundPosition()`                      | client only | Vrátí `{x, y, z}` world-space pozici myši (Y=0 rovina); na serveru vrací `{0,0,0}`            |
 
 Client-only local event bridge (bez síťové replikace):
 

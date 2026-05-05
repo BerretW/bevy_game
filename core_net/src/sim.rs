@@ -218,12 +218,23 @@ fn attach_replication_to_networked_object(
 
 fn apply_inputs_to_velocity(
     last_inputs: Res<LastPlayerInputs>,
-    mut players: Query<(&PlayerMarker, &mut NetVelocity)>,
+    mut players: Query<(&PlayerMarker, &mut NetVelocity, &mut NetTransform)>,
 ) {
-    for (marker, mut vel) in players.iter_mut() {
+    for (marker, mut vel, mut transform) in players.iter_mut() {
         if let Some(input) = last_inputs.get(marker.client_id) {
             vel.0.x = input.move_dir[0] * PLAYER_MOVE_SPEED;
             vel.0.z = input.move_dir[1] * PLAYER_MOVE_SPEED;
+
+            // Kamerovy yaw z klienta preneseme do autoritativni rotace hrace,
+            // aby klienti renderovali model ve smeru pohledu.
+            let yaw_rad = input.look[0].to_radians();
+            transform.rotation = Quat::from_rotation_y(yaw_rad);
+
+            if input.move_dir[0].abs() > 0.01 || input.move_dir[1].abs() > 0.01 {
+                debug!("[sim/move] cid={} move_dir=[{:.3},{:.3}] vel=[{:.3},{:.3}]",
+                    marker.client_id, input.move_dir[0], input.move_dir[1],
+                    vel.0.x, vel.0.z);
+            }
         }
     }
 }
@@ -231,6 +242,10 @@ fn apply_inputs_to_velocity(
 fn integrate_velocity(mut q: Query<(&mut NetTransform, &NetVelocity)>, time: Res<Time<Fixed>>) {
     let dt = time.delta_secs();
     for (mut t, v) in q.iter_mut() {
+        if v.0.length_squared() > 0.001 {
+            info!("[sim/integrate] vel=[{:.3},{:.3}] dt={:.4} pos=[{:.3},{:.3}]",
+                v.0.x, v.0.z, dt, t.translation.x, t.translation.z);
+        }
         t.translation += v.0 * dt;
     }
 }
@@ -451,13 +466,25 @@ impl LastPlayerInputs {
 pub fn collect_last_inputs(
     mut receivers: Query<(&mut MessageReceiver<PlayerInput>, &RemoteId)>,
     mut last: ResMut<LastPlayerInputs>,
+    mut dbg_timer: Local<f32>,
+    time: Res<Time>,
 ) {
+    *dbg_timer += time.delta_secs();
+
+    let receiver_count = receivers.iter().count();
+    if *dbg_timer >= 2.0 {
+        info!("[sim/collect_inputs] receiver entities count={}", receiver_count);
+        *dbg_timer = 0.0;
+    }
+
     for (mut rx, remote_id) in receivers.iter_mut() {
         let client_id = match remote_id.0 {
             PeerId::Netcode(id) => id,
             _ => continue,
         };
         for input in rx.receive() {
+            info!("[sim/collect_inputs] GOT PlayerInput from cid={} move=[{:.3},{:.3}]",
+                client_id, input.move_dir[0], input.move_dir[1]);
             last.update(client_id, input);
         }
     }
