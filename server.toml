@@ -2,9 +2,15 @@
 # server.toml — bevy_game dedicated server configuration
 # =============================================================================
 #
-# Tento soubor čte `host_server` na startu. Když chybí, server jede
-# s defaulty (viz log). Stačí mít platné [server], [net], [gameplay] —
-# zbytek volitelné a má rozumný default.
+# Tento soubor čte `host_server` na startu. Hledá se v pořadí:
+#   1. první positional CLI argument (`host_server.exe my.toml`)
+#   2. `<dir(.exe)>/server.toml`  (= vedle binárky)
+#   3. `<cwd>/server.toml`        (fallback pro `cargo run`)
+# Když nikde není, server jede s defaulty (viz log).
+#
+# Distribuce: stačí mít vedle `host_server.exe` adresář `resources/` a
+# tento `server.toml` — server je najde nezávisle na pracovním adresáři,
+# ze kterého ho admin spustí.
 #
 # Spuštění s alternativní cestou:    cargo run -p host_server -- my_config.toml
 #
@@ -84,6 +90,7 @@ protocol_id = 0x6265_7679_5f67_616d
 # Cesta k 32-bytovému netcode privátnímu klíči. Když nezadán, použije
 # se all-zero klíč (insecure, jen dev). Generování: `openssl rand 32`
 # nebo libovolných 32 bytes. Klient musí mít stejný klíč.
+# Relativní cesta se hledá nejprve vedle `.exe`, pak v CWD.
 # private_key_path = "secrets/netcode.key"
 
 # Po jak dlouho bez keepalive server klienta dropne na netcode úrovni (sec).
@@ -95,7 +102,10 @@ connection_timeout_sec = 15
 # -----------------------------------------------------------------------------
 [resources]
 
-# Adresář, který server skenuje. Cesta relativní k CWD.
+# Adresář, který server skenuje. Relativní cesta se hledá:
+#   1. vedle `.exe`  (typický distribuční layout)
+#   2. relativně k CWD  (fallback pro `cargo run`)
+# Absolutní cesta se použije tak, jak je.
 root = "resources"
 
 # Hot-reload: při změně souboru pod `root` server rescanuje VFS a obnoví

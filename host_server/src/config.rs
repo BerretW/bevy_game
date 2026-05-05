@@ -14,8 +14,38 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-/// Default cesta ke configu, hledaná v aktuálním pracovním adresáři.
-pub const DEFAULT_CONFIG_PATH: &str = "server.toml";
+/// Default jméno config souboru. Server ho hledá nejprve vedle `.exe`,
+/// teprve potom v CWD (viz [`resolve_path_relative_to_exe`]).
+pub const DEFAULT_CONFIG_FILE: &str = "server.toml";
+
+/// Vrátí absolutní cestu pro daný (typicky relativní) path:
+///
+/// 1. Když je `rel` **absolutní**, vrátíme ho beze změny.
+/// 2. Zkusíme `<dir(.exe)>/<rel>` — pokud existuje, vrátíme absolutní cestu.
+///    Tím distribuce s rozložením `.exe + resources/ + server.toml` funguje
+///    bez ohledu na CWD, ze kterého admin server spustí.
+/// 3. Když ani to neexistuje, vrátíme `rel` tak jak je. OS pak interpretuje
+///    relativně k CWD — což je očekávané chování pro `cargo run` z projekt
+///    rootu (`resources/` ležící vedle `Cargo.toml`).
+pub fn resolve_path_relative_to_exe(rel: &Path) -> PathBuf {
+    if rel.is_absolute() {
+        return rel.to_path_buf();
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join(rel);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    rel.to_path_buf()
+}
+
+/// Default config path s exe-adjacent fallbackem (viz [`resolve_path_relative_to_exe`]).
+pub fn resolve_default_config_path() -> PathBuf {
+    resolve_path_relative_to_exe(Path::new(DEFAULT_CONFIG_FILE))
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -433,17 +463,20 @@ impl ServerConfig {
 
     /// Načte 32-bytový privátní netcode klíč ze souboru, pokud je nakonfigurovaný.
     /// Pokud cesta není uvedená, vrací `None` (použije se all-zero default).
+    /// Relativní cesty resolvujeme vůči `.exe` (viz [`resolve_path_relative_to_exe`]),
+    /// aby distribuce s `secrets/netcode.key` vedle `.exe` šla rozjet.
     pub fn load_private_key(&self) -> Result<Option<[u8; 32]>, ConfigError> {
         let Some(path) = &self.net.private_key_path else {
             return Ok(None);
         };
-        let bytes = std::fs::read(path).map_err(|e| ConfigError::Io {
+        let path = resolve_path_relative_to_exe(path);
+        let bytes = std::fs::read(&path).map_err(|e| ConfigError::Io {
             path: path.clone(),
             source: e,
         })?;
         if bytes.len() != 32 {
             return Err(ConfigError::KeyLength {
-                path: path.clone(),
+                path,
                 actual: bytes.len(),
             });
         }

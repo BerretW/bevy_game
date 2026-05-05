@@ -24,15 +24,18 @@ use core_net::{
 use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
 
-use crate::config::{ConfigError, ServerConfig, DEFAULT_CONFIG_PATH};
+use crate::config::{
+    resolve_default_config_path, resolve_path_relative_to_exe, ConfigError, ServerConfig,
+};
 use crate::http_server::{HttpFileServerPlugin, HttpServerConfig};
 
 fn main() {
-    // 1. Konfigurační soubor — `server.toml` v CWD. Když chybí, jedeme s defaulty.
+    // 1. Konfigurační soubor — defaultně `<exe_dir>/server.toml` (s fallbackem
+    //    na CWD pro `cargo run`). Override: první positional CLI argument.
     let cfg_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
+        .unwrap_or_else(resolve_default_config_path);
     let cfg = ServerConfig::load_or_default(&cfg_path);
 
     // 2. Validace network/key vstupů — když je tu chyba, raději spadneme
@@ -50,15 +53,22 @@ fn main() {
         .unwrap_or_else(|e: ConfigError| panic!("[host_server] {}", e))
         .unwrap_or([0u8; 32]);
 
+    // Resources root — když je v configu relativní cesta (např. `"resources"`),
+    // přednostně hledáme vedle `.exe`, jinak fallback na CWD. Distribuce s
+    // rozložením `host_server.exe + server.toml + resources/` tak funguje
+    // out-of-the-box bez ohledu na to, odkud admin server spouští.
+    let resources_root = resolve_path_relative_to_exe(&cfg.resources.root);
+
     // Banner — ať admin v logu hned vidí, co serveru běží.
     eprintln!(
-        "[host_server] {} — \"{}\" (max_players={}, udp={}, http={}, gamemode={})",
+        "[host_server] {} — \"{}\" (max_players={}, udp={}, http={}, gamemode={}, resources={})",
         cfg.server.name,
         cfg.server.description.lines().next().unwrap_or(""),
         cfg.gameplay.max_players,
         udp_bind,
         http_bind,
         cfg.gameplay.gamemode.as_deref().unwrap_or("<none>"),
+        resources_root.display(),
     );
 
     // 3. Tokio runtime žije celou dobu života procesu jako Bevy Resource.
@@ -80,7 +90,7 @@ fn main() {
 
     let http_config = HttpServerConfig {
         bind: http_bind,
-        vfs_root: cfg.resources.root.clone(),
+        vfs_root: resources_root.clone(),
     };
 
     let handshake_config = ServerHandshakeConfig {
@@ -103,7 +113,7 @@ fn main() {
                 ..default()
             },
             SharedPlugin,
-            ResourcesPlugin::new(cfg.resources.root.clone(), Side::Server)
+            ResourcesPlugin::new(resources_root.clone(), Side::Server)
                 .with_watch(cfg.resources.hot_reload),
             // Phase 2 — server část: digest cache (předpočítané hashe pro
             // `ServerHello`) a HTTP file server (klientský download endpoint).

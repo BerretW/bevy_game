@@ -259,8 +259,19 @@ mapper, …).
 
 ## Server Config — `server.toml`
 
-`host_server` čte na startu [`server.toml`](server.toml) z CWD. Když chybí, jede s defaulty.
-Alternativní cesta: `cargo run -p host_server -- jiny_config.toml`.
+`host_server` při startu hledá config v pořadí:
+
+1. první positional CLI argument (`host_server.exe my.toml`),
+2. `<dir(.exe)>/server.toml` — typický distribuční layout (vedle binárky),
+3. `<cwd>/server.toml` — fallback pro `cargo run` z projekt rootu.
+
+Stejná logika platí pro `[resources].root` (typicky `"resources"`) a
+`[net].private_key_path`: relativní cesty se nejdřív zkoušejí vedle `.exe`,
+když tam neexistují, použijí se relativně k CWD. Absolutní cesty zůstávají
+beze změny. Tím **distribuce** s rozložením `host_server.exe + server.toml +
+resources/ + secrets/netcode.key` v jedné složce funguje out-of-the-box,
+zatímco dev `cargo run` z projekt rootu pokračuje fungovat (binárka leží
+v `target/debug/`, takže fallback najde projekt-rootový `resources/`).
 
 Sekce (vše má defaulty):
 
