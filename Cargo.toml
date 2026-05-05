@@ -63,6 +63,12 @@ crossbeam-channel = "0.5"
 # --- Hash pro file digest (Phase 2 file sync) ---
 blake3 = "1"
 
+# --- Platform-specific user dirs (config / cache / saves) ---
+# Windows: %APPDATA% / %LOCALAPPDATA%
+# Linux:   $XDG_CONFIG_HOME (~/.config) / $XDG_CACHE_HOME (~/.cache)
+# macOS:   ~/Library/Application Support / ~/Library/Caches
+dirs = "5"
+
 # --- HTTP server pro asset/script delivery (Phase 2) ---
 axum = { version = "0.7", default-features = false, features = ["tokio", "http1"] }
 tower = { version = "0.5", default-features = false }

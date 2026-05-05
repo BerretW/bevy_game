@@ -9,3 +9,10 @@
 # Phase 2 — klient stahuje resources sem přes handshake.
 # Cache je per-machine a deterministická vůči server digestu, nepatří do repa.
 /cache/
+
+# Per-deploy override configy a klíče.
+# Repo verzuje pouze defaultní `server.toml` jako referenci, ale výroba si
+# typicky drží vlastní (private_key_path, public URL, sloty, …).
+/server.local.toml
+/secrets/
+*.key

@@ -174,8 +174,11 @@ files {
 /host_server/                    dedicated headless server
   src/main.rs                      MinimalPlugins + Tokio + ServerNetPlugin + DigestPlugin + ...
   src/http_server.rs               Axum HTTP file server (`/resources/<id>/<path>`)
+  src/config.rs                    ServerConfig (server.toml: identity/gameplay/net/auth/...)
+/server.toml                     repo-tracked default server config (edit jako šablonu)
 /host_client/                    herní klient
   src/main.rs                      DefaultPlugins + ClientNetPlugin + ClientHandshakePlugin + ...
+  src/config.rs                    ClientConfig (player/network/graphics/quality/audio/ui/input/paths/...)
 /cache/resources/                lokální cache klienta (download během handshake; gitignored)
 /resources/                      game content (Lua + assets) — *server-side autoritativní*
   core/init/                       bootstrap resource (root, no deps)
@@ -214,6 +217,69 @@ Strukturovaná data (LuaTable ↔ JSON/MessagePack) přidáme v Phase 3.
 - Cross-resource API výhradně přes event bus (`TriggerEvent` / `RegisterEvent`), nikdy přes shared globals.
 - Manifest parser běží v ještě omezenější VM (jen `string`/`table`/`math`) — manifest je deklarativní DSL, ne runtime.
 - `mlua::Lua` je `!Send` ⇒ `SandboxRegistry` je Bevy `NonSend` resource (drží na main threadu). Až budeme v Phase 3 spouštět Lua handlery z paralelních systémů, přepneme `mlua` na `send` feature a obtočíme `Mutex`em.
+
+---
+
+## Client Config — `client.toml` (per-user)
+
+`host_client` na prvním spuštění **vygeneruje** `client.toml` v platform-specific
+config dir (přes [`dirs`](https://crates.io/crates/dirs) crate):
+
+| OS      | Cesta                                                |
+| ------- | ---------------------------------------------------- |
+| Windows | `%APPDATA%\bevy_game\client.toml`                    |
+| Linux   | `~/.config/bevy_game/client.toml`                    |
+| macOS   | `~/Library/Application Support/bevy_game/client.toml`|
+
+Resource cache je samostatně v `cache_dir` (Win: `%LOCALAPPDATA%\bevy_game\cache\resources`).
+Override cesty: první positional CLI argument, nebo `BEVY_GAME_CLIENT_CONFIG` env variable.
+
+Sekce ([`host_client::config::ClientConfig`](host_client/src/config.rs), `deny_unknown_fields`):
+
+| Sekce               | Co řídí                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `[player]`          | `name`, `saved_client_id` (0 = generovat), `avatar`                                      |
+| `[network]`         | `default_server`, `local_bind`, `download_concurrency`, `strict_https`, timeouty         |
+| `[graphics]`        | `backend` (auto/vulkan/dx12/metal/gl/browser_webgpu), window mode, resolution, vsync     |
+| `[graphics.quality]`| `preset`, shadow/texture/AA/SSAO/SSR/volumetric/water/foliage, view distance, LOD bias   |
+| `[audio]`           | Master + 5 kanálů, output device, spatial audio, mute on focus lost                      |
+| `[ui]`              | Jazyk, UI scale, font, HUD opacity, FPS/ping/minimap toggles, crosshair, subtitles       |
+| `[input]`           | Mouse sensitivity (ADS i hip), invert Y, raw input, gamepad deadzone, vibration          |
+| `[input.keys]`      | 39 keybindings (movement, combat, weapon slots 1–9, UI, screenshot, …)                   |
+| `[input.mouse]`     | `attack_primary`, `attack_secondary`, `middle_click`                                     |
+| `[paths]`           | Cache / screenshot / savegame / mod / log dir overridy                                   |
+| `[server_history]`  | Recent / favorite servery, last used username                                            |
+| `[advanced]`        | log level/filter, debug/profile overlaye, dev console, GPU validation, preload toggle    |
+
+Phase 2 wire-up: graphics → `RenderPlugin` + `WgpuSettings` + `WindowPlugin`,
+advanced.log_* → `LogPlugin`, network.* → `ClientNetConfig`,
+paths.cache_dir → `ClientHandshakeConfig`. Ostatní pole jsou dostupná
+jako `ClientConfigResource` pro Phase 3+ konzumenty (audio mixer, action
+mapper, …).
+
+## Server Config — `server.toml`
+
+`host_server` čte na startu [`server.toml`](server.toml) z CWD. Když chybí, jede s defaulty.
+Alternativní cesta: `cargo run -p host_server -- jiny_config.toml`.
+
+Sekce (vše má defaulty):
+
+| Sekce         | Co řídí                                                                            |
+| ------------- | ---------------------------------------------------------------------------------- |
+| `[server]`    | Display name, MOTD, tagy, ikona, public listing flag                               |
+| `[gameplay]`  | `max_players`, `queue_max`, root gamemode, `idle_kick_sec`                         |
+| `[net]`       | UDP/HTTP bind, public URL, tickrate, `protocol_id`, klíč, connection timeout       |
+| `[resources]` | VFS root, `hot_reload`, watcher debounce                                           |
+| `[handshake]` | Phase 2/3 timeoutu pro digest delivery a klientův ready signal                     |
+| `[auth]`      | `mode = "open" / "token" / "whitelist"` (Phase 4 enforce)                          |
+| `[logging]`   | tracing level + per-modul filter                                                   |
+| `[admin]`     | Phase 4: bind + bearer token pro admin API                                         |
+| `[database]`  | Phase 4: sqlx connection string + pool size + migrations                           |
+| `[dev]`       | Debug toggles (`auto_acknowledge_clients`, `print_digest_on_startup`, …)          |
+
+Strukturu definuje [`host_server::config::ServerConfig`](host_server/src/config.rs) — přidat
+volbu = přidat pole + popsat v `server.toml`. Neznámá pole odmítáme (`deny_unknown_fields`),
+takže překlepy pukají hned při startu.
 
 ---
 

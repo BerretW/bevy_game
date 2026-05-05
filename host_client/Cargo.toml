@@ -52,6 +52,12 @@ core_shared = { workspace = true }
 core_resources = { workspace = true }
 core_net = { workspace = true }
 
+# Klientský config (`client.toml` v %APPDATA%).
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+dirs = { workspace = true }
+
 [[bin]]
 name = "host_client"
 path = "src/main.rs"
