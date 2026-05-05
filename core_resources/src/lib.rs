@@ -20,7 +20,8 @@ mod vfs;
 mod watcher;
 
 pub use cmd_queue::{
-    CommandQueue, Inventory, LocalObjectMarker, LuaCommand, LuaWorldState,
+    AnimationState, CommandQueue, EntityHandle, EntitySnapshot, EntityStateCache,
+    Inventory, LocalObjectMarker, LuaCommand, LuaWorldState, ModelName,
     NetworkedObjectMarker, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
     Stats, StatsSnapshot,
 };

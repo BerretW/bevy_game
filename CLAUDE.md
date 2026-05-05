@@ -222,6 +222,20 @@ files {
 - [X] Lua-safe player identity: server event payloady (`playerConnecting`, `playerDropped`, `onPlayerPosition`, combat eventy) posílají `id`/`attacker`/`victim` jako stringy; klient clampuje `client_id` do i64 rozsahu
 - [ ] Vystavit `Stats`, `Inventory` komponenty do Lua přes bridge (Phase 4)
 
+#### 3.9 — Entity State API ✅
+
+- [X] `Health` přesunut do `core_shared` — sdíleno mezi `core_resources` a `core_net`
+- [X] `EntityHandle(u64)` Component — embeddovaný handle na všech Lua-spawnutých entitách
+- [X] `ModelName(String)` Component — kanonické jméno modelu (oddělené od markerů, mutovatelné)
+- [X] `AnimationState { current, speed, looping, paused }` Component — stav animace; Phase 4 napojí na Bevy AnimationPlayer
+- [X] `EntitySnapshot` — snapshot stavu entity pro synchronní Lua čtení (pos, rot quaternion, scale, model, alive, health, animation)
+- [X] `EntityStateCache(Arc<Mutex<HashMap<u64, EntitySnapshot>>>)` — Bevy Resource, aktualizovaná každý frame
+- [X] `sync_entity_state_cache` systém (PostUpdate, po `process_lua_commands`, před `dispatch_local_events`) — naplňuje cache
+- [X] Nové `LuaCommand` varianty: `SetModel`, `SetPosition`, `SetRotation`, `SetScale`, `PlayAnimation`, `StopAnimation`
+- [X] `process_lua_commands` rozšířen: přidává `EntityHandle` + `ModelName` při spawnu; zpracovává nové příkazy; zachovává rot/scale při `SetPosition` atd.
+- [X] Lua API gettery: `World.IsValid`, `World.IsAlive`, `World.GetHealth`, `World.GetModel`, `World.GetPosition`, `World.GetRotation` (Euler°), `World.GetQuaternion`, `World.GetScale`, `World.GetTransform`, `World.GetAnimation`, `World.GetAnimationSpeed`
+- [X] Lua API settery: `World.SetModel`, `World.SetPosition`, `World.SetRotation` (Euler°), `World.SetScale` (číslo nebo tabulka), `World.PlayAnimation(h, name, looping?, speed?)`, `World.StopAnimation`
+
 ### Phase 4 — WebUI, DB & QOL
 
 - [ ] Integrovat `sqlx` a namapovat Lua Database exporty
@@ -301,7 +315,24 @@ dostupné ve všech `shared_scripts` / `server_scripts` / `client_scripts`:
 | `World.SpawnLocalObject(model, pos, rot)`          | both        | Spawne lokální (non-replikovanou) entitu → vrátí `handle` (u64)                                |
 | `World.SpawnNetworkedObject(model, pos, rot)`      | server only | Spawne replikovanou entitu (lightyear) → vrátí `handle` (u64)                                    |
 | `World.DeleteObject(handle)`                       | both        | Despawne entitu podle handle                                                                          |
-| `World.SetTransform(handle, pos, rot)`             | both        | Nastaví pozici a rotaci entity                                                                       |
+| `World.SetTransform(handle, pos, rot)`             | both        | Nastaví pozici + rotaci (Euler XYZ°), zachová scale                                               |
+| `World.SetPosition(handle, pos)`                   | both        | Nastaví jen pozici, zachová rotaci a scale                                                           |
+| `World.SetRotation(handle, rot)`                   | both        | Nastaví jen rotaci (Euler XYZ°), zachová pozici a scale                                           |
+| `World.SetScale(handle, scale)`                    | both        | Nastaví scale — číslo (uniform) nebo `{x,y,z}`                                                   |
+| `World.SetModel(handle, model)`                    | both        | Změní jméno modelu entity (Phase 4: swap meshe)                                                    |
+| `World.PlayAnimation(handle, name, loop?, speed?)` | both        | Spustí animaci; `loop` default `true`, `speed` default `1.0`                                    |
+| `World.StopAnimation(handle)`                      | both        | Zastaví animaci entity                                                                               |
+| `World.IsValid(handle)`                            | both        | `true` pokud handle mapuje na živou ECS entitu                                                    |
+| `World.IsAlive(handle)`                            | both        | `true` pokud entita existuje a health > 0 (nebo nemá Health komponentu)                         |
+| `World.GetHealth(handle)`                          | both        | Vrátí current health nebo `nil` (entita nemá Health komponentu)                                  |
+| `World.GetModel(handle)`                           | both        | Vrátí jméno modelu nebo `nil`                                                                       |
+| `World.GetPosition(handle)`                        | both        | Vrátí `{x, y, z}` nebo `nil`                                                                      |
+| `World.GetRotation(handle)`                        | both        | Vrátí `{x, y, z}` Euler° nebo `nil`                                                               |
+| `World.GetQuaternion(handle)`                      | both        | Vrátí `{x, y, z, w}` kvaternion nebo `nil` (přesné rotace)                                    |
+| `World.GetScale(handle)`                           | both        | Vrátí `{x, y, z}` nebo `nil`                                                                      |
+| `World.GetTransform(handle)`                       | both        | Vrátí `{pos, rot, scale}` najednou nebo `nil`                                                     |
+| `World.GetAnimation(handle)`                       | both        | Vrátí název aktuální animace nebo `nil`                                                            |
+| `World.GetAnimationSpeed(handle)`                  | both        | Vrátí rychlost animace (default `1.0`)                                                              |
 | `World.ApplyDamage(target, amount, source?)`       | server only | Enqueue damage intent do `CommandQueue`                                                             |
 | `Engine.RequestModel(name)`                        | both        | Inkrementuje ref_count modelu v `ModelRegistry`                                                     |
 | `Engine.HasModelLoaded(name)`                      | both        | Vrátí `true` pokud je model v registry s `ref_count > 0`                                        |

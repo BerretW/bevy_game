@@ -115,3 +115,23 @@ pub struct PlayerMarker {
     pub client_id: u64,
 }
 
+/// Zdraví entity. Server-autoritativní.
+/// Sdíleno přes core_shared pro použití v core_resources entity cache.
+#[derive(Component, Debug, Clone)]
+pub struct Health {
+    pub current: f32,
+    pub max: f32,
+}
+
+impl Default for Health {
+    fn default() -> Self {
+        Self { current: 100.0, max: 100.0 }
+    }
+}
+
+impl Health {
+    pub fn is_dead(&self) -> bool {
+        self.current <= 0.0
+    }
+}
+

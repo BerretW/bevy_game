@@ -18,7 +18,9 @@ use bevy::prelude::Resource;
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib};
 use serde_json::Value as Json;
 
-use crate::cmd_queue::{CommandQueue, LuaCommand, PlayerStatsCache};
+use bevy::math::{EulerRot, Quat};
+
+use crate::cmd_queue::{CommandQueue, EntityStateCache, LuaCommand, PlayerStatsCache};
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
 use crate::model_registry::{ModelCommand, ModelCommandQueue};
@@ -200,6 +202,7 @@ impl LuaSandbox {
         model_cmds: ModelCommandQueue,
         raycast: RaycastBridge,
         stats_cache: PlayerStatsCache,
+        entity_cache: EntityStateCache,
         db_bridge: Option<DbBridge>,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
@@ -226,6 +229,7 @@ impl LuaSandbox {
             &model_cmds,
             &raycast,
             &stats_cache,
+            &entity_cache,
             &db_bridge,
             &db_callbacks,
             &db_counter,
@@ -419,11 +423,12 @@ fn install_runtime_api(
     model_cmds: &ModelCommandQueue,
     raycast: &RaycastBridge,
     stats_cache: &PlayerStatsCache,
+    entity_cache: &EntityStateCache,
     db_bridge: &Option<DbBridge>,
     db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: &Rc<RefCell<u64>>,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, db_bridge, db_callbacks, db_counter)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -439,6 +444,7 @@ fn install_runtime_api_inner(
     model_cmds: &ModelCommandQueue,
     raycast: &RaycastBridge,
     stats_cache: &PlayerStatsCache,
+    entity_cache: &EntityStateCache,
     db_bridge: &Option<DbBridge>,
     db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: &Rc<RefCell<u64>>,
@@ -596,6 +602,185 @@ fn install_runtime_api_inner(
             Ok(())
         },
     )?)?;
+
+    // -- Entity state getters (synchronous read from EntityStateCache) --------
+
+    let ec = entity_cache.clone();
+    world.set("IsValid", lua.create_function(move |_, handle: u64| {
+        Ok(ec.is_valid(handle))
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("IsAlive", lua.create_function(move |_, handle: u64| {
+        Ok(ec.get(handle).map(|s| s.alive).unwrap_or(false))
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("GetHealth", lua.create_function(move |_, handle: u64| -> mlua::Result<mlua::Value> {
+        Ok(match ec.get(handle).and_then(|s| s.health) {
+            Some(v) => mlua::Value::Number(v as f64),
+            None => mlua::Value::Nil,
+        })
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("GetModel", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
+        Ok(match ec.get(handle).and_then(|s| s.model) {
+            Some(m) => mlua::Value::String(lua.create_string(m)?),
+            None => mlua::Value::Nil,
+        })
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("GetPosition", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
+        let Some(snap) = ec.get(handle) else { return Ok(mlua::Value::Nil) };
+        let t = lua.create_table()?;
+        t.set("x", snap.pos[0])?;
+        t.set("y", snap.pos[1])?;
+        t.set("z", snap.pos[2])?;
+        Ok(mlua::Value::Table(t))
+    })?)?;
+
+    // Vrátí rotaci jako Euler XYZ ve stupních — stejný formát jako SetTransform.
+    let ec = entity_cache.clone();
+    world.set("GetRotation", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
+        let Some(snap) = ec.get(handle) else { return Ok(mlua::Value::Nil) };
+        let q = Quat::from_array(snap.rot);
+        let (ex, ey, ez) = q.to_euler(EulerRot::XYZ);
+        let t = lua.create_table()?;
+        t.set("x", ex.to_degrees())?;
+        t.set("y", ey.to_degrees())?;
+        t.set("z", ez.to_degrees())?;
+        Ok(mlua::Value::Table(t))
+    })?)?;
+
+    // Vrátí rotaci jako kvaternion {x, y, z, w} pro přesné výpočty (bez gimbal locku).
+    let ec = entity_cache.clone();
+    world.set("GetQuaternion", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
+        let Some(snap) = ec.get(handle) else { return Ok(mlua::Value::Nil) };
+        let t = lua.create_table()?;
+        t.set("x", snap.rot[0])?;
+        t.set("y", snap.rot[1])?;
+        t.set("z", snap.rot[2])?;
+        t.set("w", snap.rot[3])?;
+        Ok(mlua::Value::Table(t))
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("GetScale", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
+        let Some(snap) = ec.get(handle) else { return Ok(mlua::Value::Nil) };
+        let t = lua.create_table()?;
+        t.set("x", snap.scale[0])?;
+        t.set("y", snap.scale[1])?;
+        t.set("z", snap.scale[2])?;
+        Ok(mlua::Value::Table(t))
+    })?)?;
+
+    // Vrátí celý transform najednou: {pos={x,y,z}, rot={x,y,z}, scale={x,y,z}}
+    let ec = entity_cache.clone();
+    world.set("GetTransform", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
+        let Some(snap) = ec.get(handle) else { return Ok(mlua::Value::Nil) };
+        let q = Quat::from_array(snap.rot);
+        let (ex, ey, ez) = q.to_euler(EulerRot::XYZ);
+
+        let pos_t = lua.create_table()?;
+        pos_t.set("x", snap.pos[0])?;
+        pos_t.set("y", snap.pos[1])?;
+        pos_t.set("z", snap.pos[2])?;
+
+        let rot_t = lua.create_table()?;
+        rot_t.set("x", ex.to_degrees())?;
+        rot_t.set("y", ey.to_degrees())?;
+        rot_t.set("z", ez.to_degrees())?;
+
+        let scale_t = lua.create_table()?;
+        scale_t.set("x", snap.scale[0])?;
+        scale_t.set("y", snap.scale[1])?;
+        scale_t.set("z", snap.scale[2])?;
+
+        let t = lua.create_table()?;
+        t.set("pos", pos_t)?;
+        t.set("rot", rot_t)?;
+        t.set("scale", scale_t)?;
+        Ok(mlua::Value::Table(t))
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("GetAnimation", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
+        Ok(match ec.get(handle).and_then(|s| s.animation) {
+            Some(a) => mlua::Value::String(lua.create_string(a)?),
+            None => mlua::Value::Nil,
+        })
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("GetAnimationSpeed", lua.create_function(move |_, handle: u64| -> mlua::Result<f64> {
+        Ok(ec.get(handle).map(|s| s.anim_speed as f64).unwrap_or(1.0))
+    })?)?;
+
+    // -- Entity state setters (queued commands) --------------------------------
+
+    let cq = cmd_queue.clone();
+    world.set("SetModel", lua.create_function(
+        move |_, (handle, model): (u64, String)| {
+            cq.push(LuaCommand::SetModel { handle, model });
+            Ok(())
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("SetPosition", lua.create_function(
+        move |_, (handle, pos_t): (u64, mlua::Table)| {
+            let pos = table_to_vec3(&pos_t);
+            cq.push(LuaCommand::SetPosition { handle, pos });
+            Ok(())
+        },
+    )?)?;
+
+    // SetRotation přijímá Euler XYZ ve stupních — stejný formát jako SetTransform.
+    let cq = cmd_queue.clone();
+    world.set("SetRotation", lua.create_function(
+        move |_, (handle, rot_t): (u64, mlua::Table)| {
+            let rot = table_to_vec3(&rot_t);
+            cq.push(LuaCommand::SetRotation { handle, rot });
+            Ok(())
+        },
+    )?)?;
+
+    // SetScale přijímá číslo (uniform) nebo tabulku {x, y, z}.
+    let cq = cmd_queue.clone();
+    world.set("SetScale", lua.create_function(
+        move |_, (handle, scale_v): (u64, mlua::Value)| {
+            let scale = match &scale_v {
+                mlua::Value::Number(f) => [*f as f32; 3],
+                mlua::Value::Integer(i) => [*i as f32; 3],
+                mlua::Value::Table(t) => table_to_vec3(t),
+                _ => [1.0; 3],
+            };
+            cq.push(LuaCommand::SetScale { handle, scale });
+            Ok(())
+        },
+    )?)?;
+
+    // PlayAnimation(handle, name, looping?, speed?) — looping=true, speed=1.0 by default
+    let cq = cmd_queue.clone();
+    world.set("PlayAnimation", lua.create_function(
+        move |_, (handle, name, looping_v, speed_v): (u64, String, Option<bool>, Option<f32>)| {
+            cq.push(LuaCommand::PlayAnimation {
+                handle,
+                name,
+                looping: looping_v.unwrap_or(true),
+                speed: speed_v.unwrap_or(1.0),
+            });
+            Ok(())
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("StopAnimation", lua.create_function(move |_, handle: u64| {
+        cq.push(LuaCommand::StopAnimation { handle });
+        Ok(())
+    })?)?;
 
     globals.set("World", world)?;
 

@@ -30,8 +30,9 @@ pub use handshake::{
     ServerHandshakeConfig, ServerHandshakePlugin,
 };
 pub use lua_rpc::{ClientLuaRpcPlugin, ServerLuaRpcPlugin};
+pub use core_shared::Health;
 pub use sim::{
-    collect_last_inputs, Health, LastPlayerInputs, ServerSimPlugin, WeaponConfig, WeaponType,
+    collect_last_inputs, LastPlayerInputs, ServerSimPlugin, WeaponConfig, WeaponType,
     PLAYER_MOVE_SPEED,
 };
 pub use net_plugin::{

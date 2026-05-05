@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 
 use crate::cmd_queue::{
-    process_lua_commands, CommandQueue, LuaWorldState, PendingDamageEvent,
-    PlayerEntityMap, PlayerStatsCache,
+    process_lua_commands, sync_entity_state_cache, CommandQueue, EntityStateCache,
+    LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
 use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegistry};
@@ -73,6 +73,12 @@ impl Plugin for ResourcesPlugin {
         // Phase 3.7 - Raycast bridge (klient ho aktualizuje; server je no-op)
         app.init_resource::<RaycastBridge>();
 
+        // Entity state cache — synchronní čtení stavu Lua entit
+        app.init_resource::<EntityStateCache>();
+        app.add_systems(PostUpdate, sync_entity_state_cache
+            .after(process_lua_commands)
+            .before(dispatch_local_events));
+
         // Phase 4 — Player stats cache + entity map + DB callback queue
         app.init_resource::<PlayerStatsCache>();
         app.init_resource::<PlayerEntityMap>();
@@ -112,6 +118,7 @@ fn initial_load(
     mut model_registry: ResMut<ModelRegistry>,
     raycast: Res<RaycastBridge>,
     stats_cache: Res<PlayerStatsCache>,
+    entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
 ) {
     rebuild(
@@ -124,6 +131,7 @@ fn initial_load(
         &mut model_registry,
         raycast.clone(),
         stats_cache.clone(),
+        entity_cache.clone(),
         db_bridge_res.0.clone(),
     );
 }
@@ -139,6 +147,7 @@ fn hot_reload_on_dirty(
     mut model_registry: ResMut<ModelRegistry>,
     raycast: Res<RaycastBridge>,
     stats_cache: Res<PlayerStatsCache>,
+    entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
 ) {
     if events.is_empty() {
@@ -159,6 +168,7 @@ fn hot_reload_on_dirty(
         &mut model_registry,
         raycast.clone(),
         stats_cache.clone(),
+        entity_cache.clone(),
         db_bridge_res.0.clone(),
     );
 }
@@ -173,6 +183,7 @@ fn rebuild(
     model_registry: &mut ModelRegistry,
     raycast: RaycastBridge,
     stats_cache: PlayerStatsCache,
+    entity_cache: EntityStateCache,
     db_bridge: Option<DbBridge>,
 ) {
     let report = vfs.rescan();
@@ -214,6 +225,7 @@ fn rebuild(
             model_cmds.clone(),
             raycast.clone(),
             stats_cache.clone(),
+            entity_cache.clone(),
             db_bridge.clone(),
         ) {
             Ok(sandbox) => {

@@ -8,7 +8,7 @@
 
 use bevy::prelude::*;
 use core_resources::{LocalEventBus};
-use core_shared::{NetTransform, NetVelocity, PlayerMarker};
+use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::server::LinkOf;
 
@@ -24,27 +24,6 @@ pub const GROUND_Y: f32 = 0.0;
 // ---------------------------------------------------------------------------
 // Komponenty
 // ---------------------------------------------------------------------------
-
-/// Zdravi hrace. Server-authoritativni — Lua resource (core/combat nebo
-/// jina) ho muze cist pres SpawnNetworkedObject + Events. Phase 4 bude
-/// replikovat klientovi.
-#[derive(Component, Debug, Clone)]
-pub struct Health {
-    pub current: f32,
-    pub max: f32,
-}
-
-impl Default for Health {
-    fn default() -> Self {
-        Self { current: 100.0, max: 100.0 }
-    }
-}
-
-impl Health {
-    pub fn is_dead(&self) -> bool {
-        self.current <= 0.0
-    }
-}
 
 /// Cooldown zbrane per hrac.
 #[derive(Component, Debug, Default)]
