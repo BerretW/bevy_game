@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "core_shared",
+    "core_resources",
     "host_server",
     "host_client",
 ]
@@ -44,8 +45,18 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 # --- Serialization ---
 serde = { version = "1.0", features = ["derive"] }
 
+# --- Filesystem (VFS scanner + watcher) ---
+walkdir = "2"
+notify = "6"
+crossbeam-channel = "0.5"
+
+# --- Error handling ---
+thiserror = "2"
+anyhow = "1"
+
 # --- Lokální crates (workspace members) ---
 core_shared = { path = "core_shared" }
+core_resources = { path = "core_resources" }
 
 # Bevy doporučuje optimalizovat dependencies i v dev profilu pro
 # rozumný framerate, zatímco vlastní crates kompilujeme rychle.

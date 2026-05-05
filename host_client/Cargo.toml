@@ -48,6 +48,7 @@ bevy = { workspace = true, default-features = false, features = [
     "zstd",
 ] }
 core_shared = { workspace = true }
+core_resources = { workspace = true }
 
 [[bin]]
 name = "host_client"

@@ -3,7 +3,10 @@
     "allow": [
       "Bash(cargo --version)",
       "Bash(rustc --version)",
-      "Bash(cargo check *)"
+      "Bash(cargo check *)",
+      "Bash(cargo build *)",
+      "Bash(tasklist)",
+      "Bash(timeout 4 ./target/debug/host_server.exe)"
     ]
   }
 }

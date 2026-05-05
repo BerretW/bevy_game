@@ -5,7 +5,10 @@
 //! tento crate je jen "host shell" — okno, asset server, network klient.
 
 use bevy::prelude::*;
+use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
+
+const RESOURCES_ROOT: &str = "resources";
 
 fn main() {
     App::new()
@@ -17,7 +20,14 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins((SharedPlugin, ClientCorePlugin))
+        .add_plugins((
+            SharedPlugin,
+            // V Phase 2 klient resources stahuje od serveru a nešahá
+            // přímo na disk. Pro Phase 1 čteme lokálně, ať jde projekt
+            // testovat end-to-end bez síťování.
+            ResourcesPlugin::new(RESOURCES_ROOT, Side::Client),
+            ClientCorePlugin,
+        ))
         .run();
 }
 

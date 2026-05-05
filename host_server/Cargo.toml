@@ -23,6 +23,7 @@ bevy = { workspace = true, default-features = false, features = [
     "serialize",
 ] }
 core_shared = { workspace = true }
+core_resources = { workspace = true }
 tokio = { workspace = true }
 
 [[bin]]

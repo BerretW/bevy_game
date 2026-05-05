@@ -11,9 +11,11 @@ use bevy::app::ScheduleRunnerPlugin;
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 
+use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
 
 const SERVER_TICK_HZ: f64 = 60.0;
+const RESOURCES_ROOT: &str = "resources";
 
 fn main() {
     // Tokio runtime žije celou dobu života procesu jako Bevy Resource.
@@ -38,6 +40,7 @@ fn main() {
                 ..default()
             },
             SharedPlugin,
+            ResourcesPlugin::new(RESOURCES_ROOT, Side::Server),
             ServerCorePlugin,
         ))
         .run();
