@@ -47,7 +47,9 @@
       "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(v['num']\\) for v in data['versions'][:15]]\")",
       "Bash(curl -s \"https://crates.io/api/v1/crates/bevy_framepace/0.18.1\")",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('version',{}\\).get\\('num','?'\\), [x for x in d.get\\('version',{}\\).get\\('features',{}\\).keys\\(\\)]\\)\")",
-      "Bash(cargo tree *)"
+      "Bash(cargo tree *)",
+      "Bash(find ~/.cargo/registry/src -type d -name \"lightyear-0.26*\" 2>/dev/null | head -5)",
+      "Read(//c/Users/adolf/.cargo/registry/src/**)"
     ]
   }
 }

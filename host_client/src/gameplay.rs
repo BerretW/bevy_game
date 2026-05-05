@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use core_net::{player_action, InputChannel, PlayerInput};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
+use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
 
@@ -27,7 +28,10 @@ impl Plugin for ClientGameplayPlugin {
         app.add_systems(Startup, setup_camera);
         app.add_systems(
             Update,
-            (attach_sprite_to_new_players, sync_net_transform_to_render),
+            // chain zajistí: sprite se přidá DŘÍV než sync čte Transform,
+            // jinak by Changed<NetTransform> v dalším framu bylo false a
+            // pozice by se nikdy neaktualizovala.
+            (attach_sprite_to_new_players, sync_net_transform_to_render).chain(),
         );
         app.add_systems(FixedUpdate, collect_and_send_input);
     }
@@ -45,7 +49,7 @@ fn attach_sprite_to_new_players(
     mut commands: Commands,
     new_players: Query<
         (Entity, &PlayerMarker),
-        (With<NetTransform>, Without<Sprite>),
+        (With<NetTransform>, With<Predicted>, Without<Sprite>),
     >,
 ) {
     for (entity, marker) in new_players.iter() {
@@ -70,9 +74,9 @@ fn attach_sprite_to_new_players(
 /// Mapuje 3D world-space `NetTransform` na 2D Bevy `Transform`. Pro Phase 3
 /// jednoduché top-down (XZ ground plane → screen XY).
 fn sync_net_transform_to_render(
-    mut q: Query<(&NetTransform, &mut Transform), Changed<NetTransform>>,
+    mut q: Query<(&NetTransform, &mut Transform, &Predicted)>,
 ) {
-    for (net, mut local) in q.iter_mut() {
+    for (net, mut local, _) in q.iter_mut() {
         local.translation.x = net.translation.x * WORLD_TO_PIXELS;
         local.translation.y = net.translation.z * WORLD_TO_PIXELS;
     }

@@ -79,10 +79,12 @@ fn spawn_player_on_connect(
             NetTransform::default(),
             NetVelocity::default(),
             PlayerMarker { client_id },
-            // Replikujeme všem připojeným klientům — i sebe-sama vidí, aby
-            // si mohl renderovat svého hráče (Phase 3 step 8 přepneme na
-            // owner-only prediction + remote interpolation).
+            // Replicate řídí TRANSPORT (ke kterým klientům entita jde).
             Replicate::to_clients(NetworkTarget::All),
+            // PredictionTarget říká klientům, že mají entitu predikovat —
+            // bez tohoto dostane klient predicted=false a entity nedostane
+            // Predicted komponentu, takže sprite attachment query ji nenajde.
+            PredictionTarget::to_clients(NetworkTarget::All),
         ))
         .id();
 

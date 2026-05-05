@@ -130,7 +130,10 @@ impl Plugin for ProtocolPlugin {
         // impl nebo custom lerp fn pro `NetTransform`).
         app.register_component::<NetTransform>().add_prediction();
         app.register_component::<NetVelocity>().add_prediction();
-        app.register_component::<PlayerMarker>();
+        // add_prediction zkopíruje PlayerMarker i na Predicted entitu,
+        // aby sprite attachment query v gameplay.rs správně cílila na
+        // renderovanou (Predicted) entitu, ne jen na Confirmed datovou entitu.
+        app.register_component::<PlayerMarker>().add_prediction();
     }
 }
 

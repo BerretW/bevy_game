@@ -25,18 +25,22 @@ bevy = { workspace = true, default-features = false, features = [
     "bevy_core_pipeline",
     "bevy_gilrs",
     "bevy_gizmos",
+    "bevy_gizmos_render",   # Bevy 0.18: render pipeline pro gizmos (oddělen od API)
     "bevy_gltf",
     "bevy_log",
+    "bevy_mesh",            # Bevy 0.18: mesh API (oddělen od render)
     "bevy_pbr",
+    "bevy_post_process",    # Bevy 0.18: post-process pass (tonemapping, bloom, …)
     "bevy_render",
     "bevy_scene",
     "bevy_sprite",
+    "bevy_sprite_render",   # Bevy 0.18: sprite render pipeline (oddělen od API!)
     "bevy_state",
     "bevy_text",
     "bevy_ui",
+    "bevy_ui_render",       # Bevy 0.18: UI render pipeline (oddělen od API)
     "bevy_window",
     "bevy_winit",
-    "webgl2",
     "default_font",
     "hdr",
     "ktx2",
