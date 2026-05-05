@@ -124,9 +124,9 @@ pub struct LocalObjectMarker {
     pub model: String,
 }
 
-/// Event emitovaný při zpracování `World.ApplyDamage`.
-/// Phase 3.3 combat systémy se na tento event přihlásí přes `EventReader`.
-#[derive(Event, Debug, Clone)]
+/// Message emitovaná při zpracování `World.ApplyDamage`.
+/// Phase 3.3 combat systémy ji čtou přes `MessageReader<PendingDamageEvent>`.
+#[derive(Message, Debug, Clone)]
 pub struct PendingDamageEvent {
     pub target: Entity,
     pub amount: f32,
@@ -143,7 +143,7 @@ pub fn process_lua_commands(
     cmd_queue: Res<CommandQueue>,
     mut world_state: ResMut<LuaWorldState>,
     mut commands: Commands,
-    mut damage_events: EventWriter<PendingDamageEvent>,
+    mut damage_events: MessageWriter<PendingDamageEvent>,
 ) {
     for cmd in cmd_queue.drain() {
         match cmd {

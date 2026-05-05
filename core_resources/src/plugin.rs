@@ -62,7 +62,7 @@ impl Plugin for ResourcesPlugin {
         // Phase 3.2 — Command Queue & World state.
         app.init_resource::<CommandQueue>();
         app.init_resource::<LuaWorldState>();
-        app.add_event::<PendingDamageEvent>();
+        app.add_message::<PendingDamageEvent>();
         app.add_systems(PostUpdate, process_lua_commands);
 
         // Initial load běží jednou v Startup.

@@ -148,12 +148,15 @@ files {
 - [x] `apply_inputs_to_velocity` + `integrate_velocity` v `FixedUpdate` (`sim.rs`)
 - [x] Klientský renderer replikovaných hráčů (Sprite per `PlayerMarker`) + WASD input collection (`gameplay.rs`)
 
-#### 3.2 — Command Queue & Bezpečný Lua Bridge
+#### 3.2 — Command Queue & Bezpečný Lua Bridge ✅
 
-- [ ] `LuaCommand` enum: `SpawnLocalObject`, `DespawnEntity`, `SetTransform`, `ApplyDamage`, …
-- [ ] Sdílený `CommandQueue` buffer (`Arc<Mutex<Vec<LuaCommand>>>`) ve `LuaSandbox`
-- [ ] Bevy systém `process_lua_commands` (FixedUpdate) — bezpečně aplikuje příkazy na ECS svět
-- [ ] Lua API: `World.SpawnLocalObject(model, pos, rot)` → handle, `World.DeleteObject(handle)`
+- [x] `LuaCommand` enum: `SpawnLocalObject`, `DespawnEntity`, `SetTransform`, `ApplyDamage`
+- [x] Sdílený `CommandQueue` buffer (`Arc<Mutex<Vec<LuaCommand>>>`) — Lua closures zachytí Arc klon
+- [x] Bevy systém `process_lua_commands` (PostUpdate) — bezpečně aplikuje příkazy na ECS svět
+- [x] `LuaWorldState` Bevy Resource — mapuje Lua handles (`u64`) na Bevy `Entity`
+- [x] `LocalObjectMarker` Component — marker pro lokální (non-lightyear) objekty (Phase 3.4 přidá mesh)
+- [x] `PendingDamageEvent` Message — Phase 3.3 combat systémy se přihlásí přes `MessageReader`
+- [x] Lua API: `World.SpawnLocalObject(model, pos, rot)` → handle, `World.DeleteObject(handle)`, `World.SetTransform(handle, pos, rot)`, `World.ApplyDamage(target, amount, source?)` (server only)
 
 #### 3.3 — Data-Driven Combat & Akce
 
@@ -341,7 +344,7 @@ Sekce (vše má defaulty):
 | `[logging]`   | tracing level + per-modul filter                                                   |
 | `[admin]`     | Phase 4: bind + bearer token pro admin API                                         |
 | `[database]`  | Phase 4: sqlx connection string + pool size + migrations                           |
-| `[dev]`       | Debug toggles (`auto_acknowledge_clients`, `print_digest_on_startup`, ...)       |
+| `[dev]`       | Debug toggles (`auto_acknowledge_clients`, `print_digest_on_startup`, ...)         |
 
 Strukturu definuje [`host_server::config::ServerConfig`](host_server/src/config.rs) — přidat
 volbu = přidat pole + popsat v `server.toml`. Neznámá pole odmítáme (`deny_unknown_fields`),

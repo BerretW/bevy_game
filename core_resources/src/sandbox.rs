@@ -63,9 +63,6 @@ pub struct LuaSandbox {
     /// stabilní reference do `mlua` registry, kterou si funkce vyzvedneme
     /// přes `Lua::registry_value::<Function>(key)`.
     handlers: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
-    /// Sdílená fronta příkazů do ECS světa. Arc clone — levné přeposílání
-    /// do Lua closures (World.SpawnLocalObject, World.DeleteObject, …).
-    cmd_queue: CommandQueue,
 }
 
 impl LuaSandbox {
@@ -103,7 +100,6 @@ impl LuaSandbox {
             lua,
             outgoing,
             handlers,
-            cmd_queue,
         })
     }
 
