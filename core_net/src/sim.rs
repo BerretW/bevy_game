@@ -15,6 +15,7 @@
 use bevy::prelude::*;
 use core_shared::{NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
+use lightyear::prelude::server::LinkOf;
 
 use crate::protocol::PlayerInput;
 
@@ -26,12 +27,30 @@ pub struct ServerSimPlugin;
 
 impl Plugin for ServerSimPlugin {
     fn build(&self, app: &mut App) {
+        // Pořadí observerů: nejprve přidáme ReplicationSender na transport entitu
+        // (Add<LinkOf>), pak spawneme hráče (Add<Connected>).
+        // ReplicationSender musí existovat předtím, než Replicate::on_insert
+        // deferred closure prohledá ClientOf entity.
+        app.add_observer(attach_replication_sender);
         app.add_observer(spawn_player_on_connect);
         app.add_systems(
             FixedUpdate,
             (apply_inputs_to_velocity, integrate_velocity).chain(),
         );
     }
+}
+
+/// Přidá `ReplicationSender` na každou nově připojenou linku (transport entitu).
+/// Bez tohoto komponentu by lightyear nedokázal replikovat entity k tomuto klientovi.
+/// Viz: https://github.com/cBournhonesque/lightyear — link entity musí mít ReplicationSender.
+fn attach_replication_sender(trigger: On<Add, LinkOf>, mut commands: Commands) {
+    commands
+        .entity(trigger.entity)
+        .insert(ReplicationSender::default());
+    trace!(
+        "[sim/server] ReplicationSender attached to link entity {:?}",
+        trigger.entity
+    );
 }
 
 fn spawn_player_on_connect(

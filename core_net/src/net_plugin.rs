@@ -294,6 +294,8 @@ fn spawn_client(
             Link::new(None),
             NetcodeClient::new(auth, ClientNetcodeConfig::default())?,
             UdpIo::default(),
+            // Bez ReplicationReceiver by klient nedokázal přijímat replikovaná data.
+            ReplicationReceiver::default(),
         ))
         .id();
     commands.trigger(Connect { entity });
