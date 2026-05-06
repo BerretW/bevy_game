@@ -63,6 +63,9 @@ core_resources = { workspace = true }
 core_net = { workspace = true }
 lightyear = { workspace = true }
 
+# NUI overlay — WebView embedded do herního okna (Phase 4)
+wry = { workspace = true }
+
 # Klientský config (`client.toml` v %APPDATA%).
 serde = { workspace = true }
 toml = { workspace = true }

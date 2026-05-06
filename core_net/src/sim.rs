@@ -12,7 +12,8 @@ use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::server::LinkOf;
 
-use crate::protocol::{player_action, PlayerInput};
+use crate::net_plugin::StatsChannel;
+use crate::protocol::{player_action, PlayerInput, PlayerStatsUpdate};
 
 pub const PLAYER_MOVE_SPEED: f32 = 5.0;
 pub const PLAYER_SPRINT_MULTIPLIER: f32 = 1.35;
@@ -93,6 +94,7 @@ impl Plugin for ServerSimPlugin {
                 emit_player_positions,
                 tick_weapon_cooldowns,
                 process_combat,
+                broadcast_player_stats,
             )
                 .chain(),
         );
@@ -481,6 +483,36 @@ pub fn collect_last_inputs(
         };
         for input in rx.receive() {
             last.update(client_id, input);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// broadcast_player_stats — každých 6 FixedUpdate ticků (~10 Hz)
+// ---------------------------------------------------------------------------
+
+fn broadcast_player_stats(
+    players: Query<(&PlayerMarker, &Health)>,
+    mut senders: Query<(&mut MessageSender<PlayerStatsUpdate>, &RemoteId)>,
+    mut tick: Local<u32>,
+) {
+    *tick = tick.wrapping_add(1);
+    if *tick % 6 != 0 {
+        return;
+    }
+
+    for (mut sender, remote_id) in senders.iter_mut() {
+        let client_id = match remote_id.0 {
+            PeerId::Netcode(id) => id,
+            _ => continue,
+        };
+        // Najdi entitu hráče patřící tomuto klientovi
+        if let Some((_, health)) = players.iter().find(|(m, _)| m.client_id == client_id) {
+            let msg = PlayerStatsUpdate {
+                hp: health.current,
+                max_hp: health.max,
+            };
+            sender.send::<StatsChannel>(msg);
         }
     }
 }

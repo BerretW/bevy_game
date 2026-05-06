@@ -31,7 +31,7 @@ pub enum NuiOutMsg {
     SetFocus { has_focus: bool, has_cursor: bool },
     /// Přidá iframe pro daný resource do host stránky.
     /// Automaticky posílá sandbox při `create()`, pokud manifest má `ui_page`.
-    AddFrame { resource_host: String },
+    AddFrame { resource_host: String, page: String },
     /// Odstraní iframe resource (hot-reload, despawn).
     RemoveFrame { resource_host: String },
 }

@@ -7,10 +7,11 @@ use bevy::prelude::*;
 
 use crate::cmd_queue::{
     process_lua_commands, sync_entity_state_cache, CommandQueue, EntityStateCache,
-    LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
+    LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
 use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegistry};
+use crate::nui_bridge::{NuiInQueue, NuiOutQueue};
 use crate::resolver::resolve_load_order;
 use crate::sandbox::{LocalEventBus, LuaSandbox, RaycastBridge};
 use crate::types::{ResourceId, Side};
@@ -86,6 +87,14 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<DatabaseBridgeResource>();
         app.add_systems(PostUpdate, dispatch_db_callbacks);
 
+        // Phase 4 — NUI queues (out = Lua → WebView; in = WebView → Lua)
+        app.init_resource::<NuiOutQueue>();
+        app.init_resource::<NuiInQueue>();
+        app.add_systems(PostUpdate, dispatch_nui_callbacks);
+
+        // Phase 4 — stats lokálního hráče (klient čte přes Player.GetLocalStats())
+        app.init_resource::<LocalPlayerStats>();
+
         app.add_systems(Startup, initial_load);
 
         if self.watch {
@@ -120,6 +129,8 @@ fn initial_load(
     stats_cache: Res<PlayerStatsCache>,
     entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
+    nui_out: Res<NuiOutQueue>,
+    local_stats: Res<LocalPlayerStats>,
 ) {
     rebuild(
         &mut vfs,
@@ -133,6 +144,8 @@ fn initial_load(
         stats_cache.clone(),
         entity_cache.clone(),
         db_bridge_res.0.clone(),
+        nui_out.clone(),
+        local_stats.clone(),
     );
 }
 
@@ -149,6 +162,8 @@ fn hot_reload_on_dirty(
     stats_cache: Res<PlayerStatsCache>,
     entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
+    nui_out: Res<NuiOutQueue>,
+    local_stats: Res<LocalPlayerStats>,
 ) {
     if events.is_empty() {
         return;
@@ -170,6 +185,8 @@ fn hot_reload_on_dirty(
         stats_cache.clone(),
         entity_cache.clone(),
         db_bridge_res.0.clone(),
+        nui_out.clone(),
+        local_stats.clone(),
     );
 }
 
@@ -185,6 +202,8 @@ fn rebuild(
     stats_cache: PlayerStatsCache,
     entity_cache: EntityStateCache,
     db_bridge: Option<DbBridge>,
+    nui_out: NuiOutQueue,
+    local_stats: LocalPlayerStats,
 ) {
     let report = vfs.rescan();
     for err in &report.errors {
@@ -217,6 +236,7 @@ fn rebuild(
             Some(m) => m,
             None => continue,
         };
+        let ls = if side == Side::Client { Some(local_stats.clone()) } else { None };
         match LuaSandbox::create(
             manifest,
             side,
@@ -227,6 +247,8 @@ fn rebuild(
             stats_cache.clone(),
             entity_cache.clone(),
             db_bridge.clone(),
+            Some(nui_out.clone()),
+            ls,
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);
@@ -294,6 +316,28 @@ fn dispatch_db_callbacks(
             warn!(
                 "[db_callbacks] sandbox '{}' not found for callback {}",
                 entry.resource_id, entry.callback_id
+            );
+        }
+    }
+}
+
+/// Phase 4 — Drain NuiInQueue a dispatch NUI callbacks do příslušných sandboxů.
+/// Volá se v PostUpdate; frontu plní NuiPlugin z custom protocol POST requestů.
+fn dispatch_nui_callbacks(
+    nui_in: Res<NuiInQueue>,
+    registry: NonSend<SandboxRegistry>,
+) {
+    let msgs = nui_in.drain();
+    if msgs.is_empty() {
+        return;
+    }
+    for msg in msgs {
+        if let Some(sandbox) = registry.sandboxes.get(&msg.resource_id) {
+            sandbox.invoke_nui_callback(&msg.callback_name, &msg.data);
+        } else {
+            warn!(
+                "[nui_callbacks] sandbox '{}' not found for callback '{}'",
+                msg.resource_id, msg.callback_name
             );
         }
     }

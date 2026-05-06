@@ -7,11 +7,11 @@
 //! * server_drain_outgoing: respektuje evt.target pro unicast routing.
 
 use bevy::prelude::*;
-use core_resources::{LuaEventDirection, SandboxRegistry};
+use core_resources::{LocalPlayerStats, LuaEventDirection, SandboxRegistry};
 use lightyear::prelude::*;
 
 use crate::net_plugin::LuaRpcChannel;
-use crate::protocol::LuaEventMessage;
+use crate::protocol::{LuaEventMessage, PlayerStatsUpdate};
 
 // ---------------------------------------------------------------------------
 // Server side
@@ -111,7 +111,7 @@ impl Plugin for ClientLuaRpcPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (client_drain_outgoing, client_dispatch_incoming).chain(),
+            (client_drain_outgoing, client_dispatch_incoming, receive_player_stats).chain(),
         );
     }
 }
@@ -140,6 +140,22 @@ fn client_drain_outgoing(
             for mut sender in senders.iter_mut() {
                 sender.send::<LuaRpcChannel>(msg.clone());
             }
+        }
+    }
+}
+
+fn receive_player_stats(
+    mut receivers: Query<&mut MessageReceiver<PlayerStatsUpdate>>,
+    local_stats: Res<LocalPlayerStats>,
+) {
+    for mut rx in receivers.iter_mut() {
+        // SequencedUnreliable — vezmeme jen poslední zprávu v dávce
+        let mut last: Option<PlayerStatsUpdate> = None;
+        for msg in rx.receive() {
+            last = Some(msg);
+        }
+        if let Some(update) = last {
+            local_stats.update_health(update.hp, update.max_hp);
         }
     }
 }

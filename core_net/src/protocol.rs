@@ -86,6 +86,14 @@ pub struct PlayerInput {
     pub client_tick: u32,
 }
 
+/// **Server → Client** ~10 Hz — snapshot stavu lokálního hráče.
+/// Klient drží `LocalPlayerStats` resource, Lua čte přes `Player.GetLocalStats()`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlayerStatsUpdate {
+    pub hp: f32,
+    pub max_hp: f32,
+}
+
 /// Konstanty pro `PlayerInput::actions` bitfield. Phase 3+ scripty
 /// (Lua weapon definice) si je můžou číst přes Bevy resource registry.
 pub mod player_action {

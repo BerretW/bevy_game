@@ -238,9 +238,16 @@ files {
 
 ### Phase 4 — WebUI, DB & QOL
 
-- [ ] Integrovat `sqlx` a namapovat Lua Database exporty
+- [X] **NUI (Native UI) overlay** — `wry` WebView2 embeddovaný do herního okna jako child window
+  - [X] `manifest.lua` DSL: `ui_page 'ui/index.html'` — deklaruje NUI stránku resource
+  - [X] Transparentní host HTML (`nui_host.html`) s dynamickými iframy per resource
+  - [X] Custom protocol `nui://resource__name/path` — servíruje soubory z resource cache
+  - [X] Custom protocol `POST nui://resource__name/callback/name` — JS → Lua callback routing
+  - [X] `NuiOutQueue` + `NuiInQueue` — Arc<Mutex> sdílené fronty Lua ↔ WebView
+  - [X] Lua API: `SendNUIMessage(data)`, `RegisterNUICallback(name, handler)`, `SetNUIFocus(hasFocus, hasCursor?)`
+  - [X] FiveM-kompatibilní: JS `window.addEventListener('message', handler)` + `fetch('nui://...', {method:'POST'})`
+- [ ] Integrovat `sqlx` a namapovat Lua Database exporty (základ přítomen jako stub)
 - [ ] Umožnit Lua resources registrovat vlastní WGSL shadery a aplikovat je na materiály
-- [ ] Implementovat NUI (CEF/WebView nebo WebUI přes Axum) pro HTML/JS player rozhraní
 
 ---
 

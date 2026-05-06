@@ -12,6 +12,7 @@ mod cmd_queue;
 mod db_bridge;
 mod manifest;
 mod model_registry;
+mod nui_bridge;
 mod plugin;
 mod resolver;
 mod sandbox;
@@ -22,14 +23,17 @@ mod watcher;
 pub use cmd_queue::{
     AnimationState, CommandQueue, EntityHandle, EntitySnapshot, EntityStateCache,
     Inventory, LocalObjectMarker, LuaCommand, LuaWorldState, ModelName,
-    NetworkedObjectMarker, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
-    Stats, StatsSnapshot,
+    LocalPlayerStats, NetworkedObjectMarker, PendingDamageEvent, PlayerEntityMap,
+    PlayerStatsCache, Stats, StatsSnapshot,
 };
 pub use db_bridge::{
     DatabaseBridgeResource, DbBridge, DbCallbackEntry, DbCallbackQueue,
     DbExecutorTrait, DbQueryResult,
 };
 pub use manifest::{Manifest, ManifestError, ResourceKind};
+pub use nui_bridge::{
+    host_to_resource_id_str, resource_id_to_host, NuiInMsg, NuiInQueue, NuiOutMsg, NuiOutQueue,
+};
 pub use model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands};
 pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry};
 pub use resolver::{resolve_load_order, ResolveError};

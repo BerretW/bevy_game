@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+#nui-root {
+  position: fixed; top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+}
+.nui-frame {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  border: none;
+  background: transparent;
+}
+</style>
+</head>
+<body>
+<div id="nui-root"></div>
+<script>
+'use strict';
+var frames = {};
+
+// Dispatch JSON zprávu do iframe daného resource.
+// Voláno z Rust: webview.evaluate_script("window.__nui_dispatch('host','json')")
+window.__nui_dispatch = function(host, jsonStr) {
+  var f = frames[host];
+  if (!f) return;
+  try {
+    f.contentWindow.postMessage(JSON.parse(jsonStr), '*');
+  } catch (e) {
+    console.error('[nui] dispatch error for', host, e);
+  }
+};
+
+// Přepne zachycování vstupu pro celý NUI overlay.
+window.__nui_set_focus = function(hasFocus, hasCursor) {
+  document.getElementById('nui-root').style.pointerEvents = hasFocus ? 'auto' : 'none';
+};
+
+// Přidá transparentní iframe pro daný resource.
+// page = cesta k HTML souboru relativně ke kořenu resource (z ui_page v manifest.lua)
+window.__nui_add_frame = function(host, page) {
+  if (frames[host]) return;
+  var iframe = document.createElement('iframe');
+  iframe.className = 'nui-frame';
+  iframe.src = 'nui://' + host + '/' + (page || '');
+  iframe.setAttribute('allowtransparency', 'true');
+  iframe.setAttribute('allow', 'autoplay');
+  frames[host] = iframe;
+  document.getElementById('nui-root').appendChild(iframe);
+};
+
+// Odstraní iframe resource (hot-reload, unload).
+window.__nui_remove_frame = function(host) {
+  var f = frames[host];
+  if (f) {
+    f.remove();
+    delete frames[host];
+  }
+};
+</script>
+</body>
+</html>

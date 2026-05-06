@@ -10,6 +10,7 @@
 mod config;
 mod console;
 mod gameplay;
+mod nui;
 
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
@@ -166,10 +167,12 @@ fn main() {
             gameplay::ClientGameplayPlugin,
             console::ConsolePlugin,
             SharedPlugin,
-            ResourcesPlugin::new(cache_root, Side::Client),
+            ResourcesPlugin::new(cache_root.clone(), Side::Client),
             ClientNetPlugin,
             ClientHandshakePlugin,
             ClientLuaRpcPlugin,
+            // Phase 4 — NUI overlay (WebView2 na Windows).
+            nui::NuiPlugin { cache_root },
             ClientCorePlugin,
             FramepacePlugin,
         ))

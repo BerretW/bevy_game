@@ -91,6 +91,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std"] }
 
+# --- NUI overlay (WebView2 na Windows, WebKitGTK na Linux, WKWebView na macOS) ---
+# Transparentní WebView embeddovaný do herního okna — FiveM-style HTML/JS NUI.
+wry = "0.46"
+
 # --- Error handling ---
 thiserror = "2"
 anyhow = "1"

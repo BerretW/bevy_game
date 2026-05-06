@@ -323,6 +323,23 @@ pub struct PlayerEntityMap {
     pub map: HashMap<u64, Entity>,
 }
 
+/// Stats lokálního hráče na klientu — aktualizovány serverem přes `PlayerStatsUpdate`.
+/// Arc<Mutex> sdíleno se sandbox closurami pro synchronní čtení z `Player.GetLocalStats()`.
+#[derive(Resource, Clone, Default)]
+pub struct LocalPlayerStats(pub Arc<Mutex<StatsSnapshot>>);
+
+impl LocalPlayerStats {
+    pub fn update_health(&self, hp: f32, max_hp: f32) {
+        let mut snap = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        snap.health = hp;
+        snap.max_health = max_hp;
+    }
+
+    pub fn get(&self) -> StatsSnapshot {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bevy systémy
 // ---------------------------------------------------------------------------

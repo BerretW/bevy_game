@@ -34,7 +34,7 @@ use lightyear::prelude::*;
 
 use core_shared::{NetTransform, NetVelocity, PlayerMarker};
 
-use crate::protocol::{ClientReady, LuaEventMessage, PlayerInput, ServerHello};
+use crate::protocol::{ClientReady, LuaEventMessage, PlayerInput, PlayerStatsUpdate, ServerHello};
 
 /// Tickrate pro lightyear (musí ladit s herní simulací).
 pub const FIXED_TIMESTEP_HZ: f64 = 60.0;
@@ -74,6 +74,10 @@ pub struct LuaRpcChannel;
 /// → konzistentní latency. Vhodné pro tick-rate inputy, ne pro reliable RPC.
 pub struct InputChannel;
 
+/// Phase 4 — sequenced unreliable kanál pro `PlayerStatsUpdate` (~10 Hz, server→klient).
+/// Vždy zajímá jen poslední stav; ztráta paketu je přijatelná.
+pub struct StatsChannel;
+
 // ---------------------------------------------------------------------------
 // ProtocolPlugin — sdílený
 // ---------------------------------------------------------------------------
@@ -97,6 +101,10 @@ impl Plugin for ProtocolPlugin {
         app.register_message::<PlayerInput>()
             .add_direction(NetworkDirection::ClientToServer);
 
+        // Phase 4 — stats update (server → client).
+        app.register_message::<PlayerStatsUpdate>()
+            .add_direction(NetworkDirection::ServerToClient);
+
         // -----------------------------------------------------------------
         // Channels
         // -----------------------------------------------------------------
@@ -119,6 +127,13 @@ impl Plugin for ProtocolPlugin {
             ..default()
         })
         .add_direction(NetworkDirection::ClientToServer);
+
+        // Stats — sequenced unreliable server→klient; vždy zajímá jen poslední snapshot.
+        app.add_channel::<StatsChannel>(ChannelSettings {
+            mode: ChannelMode::SequencedUnreliable,
+            ..default()
+        })
+        .add_direction(NetworkDirection::ServerToClient);
 
         // -----------------------------------------------------------------
         // Replicated components (Phase 3)

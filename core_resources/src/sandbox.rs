@@ -20,7 +20,7 @@ use serde_json::Value as Json;
 
 use bevy::math::{EulerRot, Quat};
 
-use crate::cmd_queue::{CommandQueue, EntityStateCache, LuaCommand, PlayerStatsCache};
+use crate::cmd_queue::{CommandQueue, EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache};
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
 use crate::model_registry::{ModelCommand, ModelCommandQueue};
@@ -194,6 +194,8 @@ pub struct LuaSandbox {
     db_counter: Rc<RefCell<u64>>,
     /// Phase 4 — NUI callbacks: callback_name → list of handler RegistryKeys.
     nui_callbacks: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    /// Phase 4 — stats lokálního hráče (client only; na serveru None).
+    local_stats: Option<LocalPlayerStats>,
 }
 
 impl LuaSandbox {
@@ -208,6 +210,7 @@ impl LuaSandbox {
         entity_cache: EntityStateCache,
         db_bridge: Option<DbBridge>,
         nui_out: Option<NuiOutQueue>,
+        local_stats: Option<LocalPlayerStats>,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -225,8 +228,11 @@ impl LuaSandbox {
             Rc::new(RefCell::new(HashMap::new()));
 
         // Pokud má resource ui_page, ihned enqueujeme AddFrame → NuiPlugin přidá iframe.
-        if let (Some(ref nq), Some(_)) = (&nui_out, &manifest.ui_page) {
-            nq.push(NuiOutMsg::AddFrame { resource_host: resource_id_to_host(&manifest.id) });
+        if let (Some(ref nq), Some(ref page)) = (&nui_out, &manifest.ui_page) {
+            nq.push(NuiOutMsg::AddFrame {
+                resource_host: resource_id_to_host(&manifest.id),
+                page: page.clone(),
+            });
         }
 
         install_runtime_api(
@@ -246,6 +252,7 @@ impl LuaSandbox {
             &db_counter,
             &nui_out,
             &nui_callbacks,
+            &local_stats,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -258,7 +265,7 @@ impl LuaSandbox {
             run_script(&lua, &manifest.id, rel, &abs)?;
         }
 
-        Ok(Self { id: manifest.id.clone(), side, lua, outgoing, handlers, db_callbacks, db_counter, nui_callbacks })
+        Ok(Self { id: manifest.id.clone(), side, lua, outgoing, handlers, db_callbacks, db_counter, nui_callbacks, local_stats })
     }
 
     pub fn drain_outgoing(&self) -> Vec<LuaEventOut> {
@@ -474,8 +481,9 @@ fn install_runtime_api(
     db_counter: &Rc<RefCell<u64>>,
     nui_out: &Option<NuiOutQueue>,
     nui_callbacks: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    local_stats: &Option<LocalPlayerStats>,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, nui_out, nui_callbacks)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, nui_out, nui_callbacks, local_stats)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -497,6 +505,7 @@ fn install_runtime_api_inner(
     db_counter: &Rc<RefCell<u64>>,
     nui_out: &Option<NuiOutQueue>,
     nui_callbacks: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    local_stats: &Option<LocalPlayerStats>,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -1118,6 +1127,38 @@ fn install_runtime_api_inner(
                 Err(mlua::Error::RuntimeError(format!("{} is client-only", n)))
             })?)?;
         }
+    }
+
+    // -- Player.GetLocalStats() — client only ---------------------------------
+    // Vrátí snapshot HP lokálního hráče aktualizovaný serverem přes PlayerStatsUpdate.
+    // Lua resource ho může číst v loopu: while true do ... wait(100) end
+    {
+        let player_tbl = lua.create_table()?;
+
+        if side == Side::Client {
+            if let Some(ls) = local_stats.clone() {
+                player_tbl.set("GetLocalStats", lua.create_function(move |lua, ()| {
+                    let snap = ls.get();
+                    let t = lua.create_table()?;
+                    t.set("hp", snap.health)?;
+                    t.set("max_hp", snap.max_health)?;
+                    Ok(t)
+                })?)?;
+            } else {
+                player_tbl.set("GetLocalStats", lua.create_function(|lua, ()| {
+                    let t = lua.create_table()?;
+                    t.set("hp", 100.0_f32)?;
+                    t.set("max_hp", 100.0_f32)?;
+                    Ok(t)
+                })?)?;
+            }
+        } else {
+            player_tbl.set("GetLocalStats", lua.create_function(|_, ()| -> mlua::Result<()> {
+                Err(mlua::Error::RuntimeError("Player.GetLocalStats is client-only".into()))
+            })?)?;
+        }
+
+        globals.set("Player", player_tbl)?;
     }
 
     Ok(())
