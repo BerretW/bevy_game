@@ -19,7 +19,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
 use bevy::window::PrimaryWindow;
 
-use core_resources::{DrawCommand, FontLoadQueue, GuiDrawBuffer, ImageLoadQueue};
+use core_resources::{DrawCommand, FontLoadQueue, GuiDrawBuffer, ImageLoadQueue, SpriteFit};
 
 const GUI_LAYER_ID: usize = 31;
 
@@ -217,11 +217,14 @@ fn process_asset_queues(
     mut image_reg: ResMut<GuiImageRegistry>,
 ) {
     for req in font_queue.drain() {
-        let handle: Handle<Font> = asset_server.load(req.abs_path.clone());
+        let handle: Handle<Font> = asset_server.load(std::path::PathBuf::from(&req.abs_path));
         font_reg.0.insert(req.font_id, handle);
     }
     for req in image_queue.drain() {
-        let handle: Handle<Image> = asset_server.load(req.abs_path.clone());
+        info!("[gui] loading image '{}' from '{}'", req.image_id, req.abs_path);
+        let handle: Handle<Image> = asset_server.load(std::path::PathBuf::from(&req.abs_path));
+        let state = asset_server.load_state(&handle);
+        info!("[gui] image '{}' handle {:?}, state {:?}", req.image_id, handle.id(), state);
         image_reg.0.insert(req.image_id, handle);
     }
 }
@@ -231,6 +234,7 @@ fn render_gui(
     pool: Res<GuiPool>,
     font_reg: Res<GuiFontRegistry>,
     image_reg: Res<GuiImageRegistry>,
+    images: Res<Assets<Image>>,
     mut hw: ResMut<GuiHighWater>,
     window_q: Query<&Window, With<PrimaryWindow>>,
     mut rect_q: Query<
@@ -345,14 +349,60 @@ fn render_gui(
                 ti += 1;
             }
 
-            DrawCommand::Sprite { image_id, x, y, w, h, color } => {
+            DrawCommand::Sprite { image_id, x, y, w, h, color, uv, fit, flip_x, flip_y } => {
                 if ii >= pool.images.len() { continue; }
-                let Some(img_handle) = image_reg.0.get(&image_id) else { continue };
+                let Some(img_handle) = image_reg.0.get(&image_id) else {
+                    warn!("[gui] DrawSprite: image '{}' not in registry", image_id);
+                    continue;
+                };
                 let e = pool.images[ii];
                 if let Ok((mut spr, mut tr, mut vis)) = image_q.get_mut(e) {
                     spr.image = img_handle.clone();
                     spr.color = Color::srgba_u8(color[0], color[1], color[2], color[3]);
-                    spr.custom_size = Some(Vec2::new(w * win_w, h * win_h));
+                    spr.flip_x = flip_x;
+                    spr.flip_y = flip_y;
+
+                    let dest_w = w * win_w;
+                    let dest_h = h * win_h;
+
+                    let (img_w, img_h) = images.get(img_handle)
+                        .map(|img| (img.width() as f32, img.height() as f32))
+                        .unwrap_or((dest_w, dest_h));
+
+                    let uv_rect = uv.map(|[u0, v0, u1, v1]| {
+                        Rect::new(u0 * img_w, v0 * img_h, u1 * img_w, v1 * img_h)
+                    });
+
+                    let (src_w, src_h) = uv_rect
+                        .map(|r| (r.width(), r.height()))
+                        .unwrap_or((img_w, img_h));
+
+                    match fit {
+                        SpriteFit::Stretch => {
+                            spr.rect = uv_rect;
+                            spr.custom_size = Some(Vec2::new(dest_w, dest_h));
+                        }
+                        SpriteFit::Fit => {
+                            // Letterbox: scale to fit, no cropping
+                            let scale = (dest_w / src_w).min(dest_h / src_h);
+                            spr.rect = uv_rect;
+                            spr.custom_size = Some(Vec2::new(src_w * scale, src_h * scale));
+                        }
+                        SpriteFit::Fill => {
+                            // Crop to fill: scale to cover dest, crop center
+                            let scale = (dest_w / src_w).max(dest_h / src_h);
+                            let crop_w = dest_w / scale;
+                            let crop_h = dest_h / scale;
+                            let (base_x, base_y, base_w, base_h) = uv_rect
+                                .map(|r| (r.min.x, r.min.y, r.width(), r.height()))
+                                .unwrap_or((0.0, 0.0, img_w, img_h));
+                            let cx = base_x + (base_w - crop_w) * 0.5;
+                            let cy = base_y + (base_h - crop_h) * 0.5;
+                            spr.rect = Some(Rect::new(cx, cy, cx + crop_w, cy + crop_h));
+                            spr.custom_size = Some(Vec2::new(dest_w, dest_h));
+                        }
+                    }
+
                     let world = to_world(x, y);
                     tr.translation.x = world.x;
                     tr.translation.y = world.y;

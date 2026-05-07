@@ -13,6 +13,7 @@ mod console;
 mod gameplay;
 mod gui_render;
 mod lobby;
+mod native_assets;
 
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
@@ -191,6 +192,8 @@ fn main() {
             auth_ui::AuthUiPlugin,
             // Phase 4 — GUI overlay (immediate-mode Lua drawing API).
             gui_render::GuiRenderPlugin,
+            // Native assets (fonts, models) from `assets/` directory.
+            native_assets::NativeAssetsPlugin,
             ClientCorePlugin,
             FramepacePlugin,
         ))

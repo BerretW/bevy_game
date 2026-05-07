@@ -79,6 +79,16 @@ impl ModelRegistry {
         }
     }
 
+    /// Registers a native client-side asset (e.g. from `assets/models/`)
+    /// using a Bevy relative path as the model path. Does not overwrite
+    /// existing VFS-scanned entries so server resources take precedence.
+    pub fn register_native(&mut self, name: String, bevy_path: String) {
+        if self.models.contains_key(&name) {
+            return;
+        }
+        self.models.insert(name, ModelEntry { path: PathBuf::from(bevy_path), ref_count: 0 });
+    }
+
     /// Cesta na disk pro daný model (pro Phase 4 asset loading).
     pub fn path(&self, name: &str) -> Option<&PathBuf> {
         self.models.get(name).map(|e| &e.path)

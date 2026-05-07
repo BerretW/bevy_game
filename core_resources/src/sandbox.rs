@@ -18,7 +18,7 @@ use bevy::prelude::*;
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib, ThreadStatus};
 use serde_json::Value as Json;
 
-use crate::gui::{DrawCommand, GuiDrawBuffer};
+use crate::gui::{DrawCommand, GuiDrawBuffer, SpriteFit};
 
 use bevy::math::{EulerRot, Quat};
 
@@ -1554,11 +1554,45 @@ fn install_runtime_api_inner(
 
             let buf = draw_buffer.clone();
             gui_ns.set("DrawSprite", lua.create_function(
-                move |_, (image_id, x, y, w, h, r, g, b, a): (String, f32, f32, f32, f32, Option<u8>, Option<u8>, Option<u8>, Option<u8>)| {
+                move |_, (image_id, x, y, w, h, r, g, b, a, opts): (
+                    String, f32, f32, f32, f32,
+                    Option<u8>, Option<u8>, Option<u8>, Option<u8>,
+                    Option<mlua::Table>,
+                )| {
+                    let fit = opts.as_ref()
+                        .and_then(|t| t.get::<String>("fit").ok())
+                        .map(|s| match s.as_str() {
+                            "fit"  => SpriteFit::Fit,
+                            "fill" => SpriteFit::Fill,
+                            _      => SpriteFit::Stretch,
+                        })
+                        .unwrap_or_default();
+
+                    let uv = opts.as_ref()
+                        .and_then(|t| t.get::<mlua::Table>("uv").ok())
+                        .and_then(|uv| {
+                            let u0 = uv.get::<f32>(1).ok()?;
+                            let v0 = uv.get::<f32>(2).ok()?;
+                            let u1 = uv.get::<f32>(3).ok()?;
+                            let v1 = uv.get::<f32>(4).ok()?;
+                            Some([u0, v0, u1, v1])
+                        });
+
+                    let flip_x = opts.as_ref()
+                        .and_then(|t| t.get::<bool>("flip_x").ok())
+                        .unwrap_or(false);
+                    let flip_y = opts.as_ref()
+                        .and_then(|t| t.get::<bool>("flip_y").ok())
+                        .unwrap_or(false);
+
                     buf.push(DrawCommand::Sprite {
                         image_id,
                         x, y, w, h,
                         color: [r.unwrap_or(255), g.unwrap_or(255), b.unwrap_or(255), a.unwrap_or(255)],
+                        uv,
+                        fit,
+                        flip_x,
+                        flip_y,
                     });
                     Ok(())
                 },

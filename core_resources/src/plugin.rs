@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::cmd_queue::{
@@ -14,6 +15,24 @@ use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegi
 use crate::resolver::resolve_load_order;
 use crate::gui::{FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
 use crate::sandbox::{GameBridges, LocalEventBus, LuaSandbox};
+
+/// All passthrough resources for `rebuild()` bundled into one SystemParam.
+/// Keeps `initial_load` / `hot_reload_on_dirty` well under Bevy's 16-param limit.
+#[derive(SystemParam)]
+struct RebuildParams<'w> {
+    bridges:       Res<'w, GameBridges>,
+    cmd_queue:     Res<'w, CommandQueue>,
+    local_bus:     Res<'w, LocalEventBus>,
+    model_cmds:    Res<'w, ModelCommandQueue>,
+    stats_cache:   Res<'w, PlayerStatsCache>,
+    entity_cache:  Res<'w, EntityStateCache>,
+    db_bridge_res: Res<'w, DatabaseBridgeResource>,
+    local_stats:   Res<'w, LocalPlayerStats>,
+    draw_buffer:   Res<'w, GuiDrawBuffer>,
+    font_queue:    Res<'w, FontLoadQueue>,
+    image_queue:   Res<'w, ImageLoadQueue>,
+    allowlist:     Res<'w, ServerResourceAllowlist>,
+}
 use crate::types::{ResourceId, Side};
 use crate::vfs::Vfs;
 use crate::watcher::{drain_watcher, ResourcesDirty, VfsWatcher};
@@ -146,28 +165,17 @@ fn initial_load(
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
     mut model_registry: ResMut<ModelRegistry>,
-    bridges: Res<GameBridges>,
-    cmd_queue: Res<CommandQueue>,
-    local_bus: Res<LocalEventBus>,
-    model_cmds: Res<ModelCommandQueue>,
-    stats_cache: Res<PlayerStatsCache>,
-    entity_cache: Res<EntityStateCache>,
-    db_bridge_res: Res<DatabaseBridgeResource>,
-    local_stats: Res<LocalPlayerStats>,
-    draw_buffer: Res<GuiDrawBuffer>,
-    font_queue: Res<FontLoadQueue>,
-    image_queue: Res<ImageLoadQueue>,
-    allowlist: Res<ServerResourceAllowlist>,
+    p: RebuildParams,
 ) {
     rebuild(
         &mut vfs, side.0, &mut registry,
-        cmd_queue.clone(), local_bus.clone(), model_cmds.clone(),
+        p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
         &mut model_registry,
-        bridges.clone(),
-        stats_cache.clone(), entity_cache.clone(),
-        db_bridge_res.0.clone(), local_stats.clone(), draw_buffer.clone(),
-        Some((font_queue.clone(), image_queue.clone())),
-        &allowlist,
+        p.bridges.clone(),
+        p.stats_cache.clone(), p.entity_cache.clone(),
+        p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
+        Some((p.font_queue.clone(), p.image_queue.clone())),
+        &p.allowlist,
     );
 }
 
@@ -177,16 +185,7 @@ fn hot_reload_on_dirty(
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
     mut model_registry: ResMut<ModelRegistry>,
-    bridges: Res<GameBridges>,
-    cmd_queue: Res<CommandQueue>,
-    local_bus: Res<LocalEventBus>,
-    model_cmds: Res<ModelCommandQueue>,
-    stats_cache: Res<PlayerStatsCache>,
-    entity_cache: Res<EntityStateCache>,
-    db_bridge_res: Res<DatabaseBridgeResource>,
-    local_stats: Res<LocalPlayerStats>,
-    draw_buffer: Res<GuiDrawBuffer>,
-    allowlist: Res<ServerResourceAllowlist>,
+    p: RebuildParams,
 ) {
     if events.is_empty() {
         return;
@@ -198,13 +197,13 @@ fn hot_reload_on_dirty(
     );
     rebuild(
         &mut vfs, side.0, &mut registry,
-        cmd_queue.clone(), local_bus.clone(), model_cmds.clone(),
+        p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
         &mut model_registry,
-        bridges.clone(),
-        stats_cache.clone(), entity_cache.clone(),
-        db_bridge_res.0.clone(), local_stats.clone(), draw_buffer.clone(),
-        None,
-        &allowlist,
+        p.bridges.clone(),
+        p.stats_cache.clone(), p.entity_cache.clone(),
+        p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
+        Some((p.font_queue.clone(), p.image_queue.clone())),
+        &p.allowlist,
     );
 }
 
@@ -296,8 +295,11 @@ fn rebuild(
                         abs_path: abs.to_string_lossy().into_owned(),
                     });
                 }
+                info!("[core_resources] '{}': {} image(s) declared, {} font(s) declared",
+                    id, manifest.images.len(), manifest.fonts.len());
                 for imd in &manifest.images {
                     let abs = manifest.root.join(&imd.path);
+                    info!("[core_resources] enqueueing image '{}' -> '{}'", imd.id, abs.display());
                     image_queue.push(ImageLoadRequest {
                         image_id: imd.id.clone(),
                         abs_path: abs.to_string_lossy().into_owned(),

@@ -31,7 +31,7 @@ pub use db_bridge::{
     DatabaseBridgeResource, DbBridge, DbCallbackEntry, DbCallbackQueue,
     DbExecutorTrait, DbQueryResult,
 };
-pub use gui::{DrawCommand, FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
+pub use gui::{DrawCommand, FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest, SpriteFit};
 pub use manifest::{FontDef, ImageDef, Manifest, ManifestError, ResourceKind};
 pub use model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands};
 pub use ace::AceRegistry;

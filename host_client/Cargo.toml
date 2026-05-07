@@ -45,6 +45,8 @@ bevy = { workspace = true, default-features = false, features = [
     "hdr",
     "ktx2",
     "multi_threaded",
+    "jpeg",
+    "dds",
     "png",
     "serialize",
     "tonemapping_luts",

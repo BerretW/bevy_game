@@ -245,11 +245,19 @@ files {
   - [X] `Gui.DrawText(text, x, y, scale, r, g, b, a)` — text s top-left anchoringem
   - [X] `Gui.DrawLine(x1, y1, x2, y2, r, g, b, a)` — čára (renderuje se jako tenký rotovaný Sprite)
   - [X] `Gui.DrawCircle(x, y, radius, r, g, b, a)` — kruh (24 line segmentů)
+  - [X] `Gui.DrawSprite(id, x, y, w, h, r?, g?, b?, a?, opts?)` — obrázek z manifestu; opts = `{fit="stretch"|"fit"|"fill", uv={u0,v0,u1,v1}, flip_x=bool, flip_y=bool}`
+  - [X] `Gui.DrawDisc(x, y, radius, r, g, b, a)` — vyplněný kruh (GPU texture, anti-aliased)
+  - [X] `Gui.DrawRoundedRect(x, y, w, h, radius, r, g, b, a)` — zaoblené rohy
+  - [X] `Gui.DrawBorder(x, y, w, h, thickness, r, g, b, a)` — obrys obdélníku
+  - [X] `Gui.DrawShadow(x, y, w, h, spread, r, g, b, a)` — vrstvený stín (volat před elementem)
+  - [X] `Gui.GetCursorPos()` → `{x, y}`, `Gui.IsMouseOver(x,y,w,h)`, `Gui.IsMouseDown(btn?)`, `Gui.IsMouseClicked(btn?)`
+  - [X] `UI.Window(opts)` — Lua menu framework s fade animací, tlačítky, labely a separátory
   - [X] `CreateThread(fn)` — spustí Lua coroutinu (mlua `Thread` uložena přes `RegistryKey`)
   - [X] `Wait(ms)` — alias pro `coroutine.yield(ms)`; 0 = příští frame
   - [X] `tick_lua_threads` systém (PreUpdate) — resumuje thready jejichž wait timer vypršel
-  - [X] `GuiRenderPlugin` — `Camera2d` (order 10, no clear, `RenderLayers::layer(31)`) + pool 512 Sprite + 64 Text2d entit
+  - [X] `GuiRenderPlugin` — `Camera2d` (order 10, no clear, `RenderLayers::layer(31)`) + pool 256 rect + 48 text + 16 image + 128 disc entit
   - [X] `resources/example/hud/` — demo HUD (health bar, crosshair, FPS counter)
+  - [X] `resources/example/esc_menu/` — ESC pauza menu (`UI.Window` framework)
 - [ ] Integrovat `sqlx` a namapovat Lua Database exporty (základ přítomen jako stub)
 - [ ] Umožnit Lua resources registrovat vlastní WGSL shadery a aplikovat je na materiály
 

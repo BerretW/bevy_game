@@ -19,11 +19,18 @@ Každý resource má vlastní izolovanou VM — globály se mezi resources nesd�
    - [Stav entity](#46-stav-entity)
    - [Combat](#47-combat)
 5. [Player](#5-player)
-6. [Engine — model registry](#6-engine--model-registry)
+6. [Engine](#6-engine)
 7. [Raycast](#7-raycast)
 8. [Database](#8-database)
-9. [Vestavěné události](#9-vestavěné-události)
-10. [Vzory a recepty](#10-vzory-a-recepty)
+9. [GUI — vykreslování](#9-gui--vykreslování)
+   - [Primitivy](#91-primitivy)
+   - [Pokročilé tvary](#92-pokročilé-tvary)
+   - [Obrázky (sprites)](#93-obrázky-sprites)
+   - [Vstup myši](#94-vstup-myši)
+   - [UI framework](#95-ui-framework)
+10. [Threading](#10-threading)
+11. [Vestavěné události](#11-vestavěné-události)
+12. [Vzory a recepty](#12-vzory-a-recepty)
 
 ---
 
@@ -170,7 +177,7 @@ Všechny funkce pro práci s objekty ve světě. Objekty jsou identifikovány ne
 
 Spawne entitu **bez síťové replikace** (viditelnou jen lokálně — na serveru nebo na klientu, podle toho kde se zavolá). Typické použití: dekorativní objekty, UI prvky, debug vizualizace.
 
-- `model` — string, název modelu (musí existovat v `stream/` složce resource)
+- `model` — string, název modelu (musí existovat v `stream/` složce resource nebo v `assets/models/` klienta)
 - `pos` — `{x, y, z}` nebo `{[1], [2], [3]}`
 - `rot` — `{x, y, z}` Euler úhly **ve stupních**
 
@@ -181,9 +188,6 @@ local chest = World.SpawnLocalObject(
     { x = 10.0, y = 0.0, z = -5.0 },
     { x = 0.0, y = 45.0, z = 0.0 }   -- otočená o 45° kolem Y
 )
-
--- Spawn na pozici hráče (zjistit přes GetPosition nebo z eventu)
-local torch = World.SpawnLocalObject('torch', {x=0,y=0,z=0}, {x=0,y=0,z=0})
 ```
 
 ---
@@ -200,8 +204,6 @@ local barrel = World.SpawnNetworkedObject(
     { x = 0.0, y = 0.0, z = 10.0 },
     { x = 0.0, y = 0.0, z = 0.0 }
 )
-
-log_info('sud spawnut, handle=' .. barrel)
 ```
 
 ---
@@ -221,68 +223,16 @@ World.DeleteObject(chest)
 Všechny settery jsou záměry — ECS se aktualizuje v PostUpdate po jejich enqueue.
 
 #### `World.SetTransform(handle, pos, rot)`
-
-Nastaví pozici a rotaci najednou. Zachová stávající scale.
-
-```lua
-World.SetTransform(
-    obj,
-    { x = 5.0, y = 0.0, z = 3.0 },
-    { x = 0.0, y = 90.0, z = 0.0 }
-)
-```
-
----
-
 #### `World.SetPosition(handle, pos)`
-
-Nastaví jen pozici. Rotace a scale zůstanou beze změny.
-
-```lua
--- Teleport objektu
-World.SetPosition(npc, { x = 100.0, y = 0.0, z = 50.0 })
-
--- Pohyb každý tick (v event handleru)
-RegisterEvent('input:state', function(input)
-    local pos = World.GetPosition(player_obj)
-    if pos then
-        World.SetPosition(player_obj, {
-            x = pos.x + input.move.x * 0.1,
-            y = pos.y,
-            z = pos.z + input.move.y * 0.1,
-        })
-    end
-end)
-```
-
----
-
 #### `World.SetRotation(handle, rot)`
-
-Nastaví jen rotaci jako Euler XYZ ve stupních. Pozice a scale zůstanou beze změny.
-
-```lua
--- Otočení dveří o 90°
-World.SetRotation(door, { x = 0.0, y = 90.0, z = 0.0 })
-
--- Postupná rotace
-local angle = 0.0
-RegisterEvent('onTick', function()
-    angle = (angle + 1.0) % 360.0
-    World.SetRotation(windmill, { x = 0.0, y = 0.0, z = angle })
-end)
-```
-
----
-
 #### `World.SetScale(handle, scale)`
 
-Nastaví scale. Přijímá číslo (uniform) nebo tabulku `{x, y, z}`.
-
 ```lua
-World.SetScale(obj, 2.0)                        -- uniformní zvětšení 2×
-World.SetScale(obj, { x = 1.0, y = 2.0, z = 1.0 }) -- jen na výšku
-World.SetScale(obj, 0.5)                        -- zmenšení na polovinu
+World.SetTransform(obj, { x=5, y=0, z=3 }, { x=0, y=90, z=0 })
+World.SetPosition(npc, { x=100, y=0, z=50 })
+World.SetRotation(door, { x=0, y=90, z=0 })
+World.SetScale(obj, 2.0)                            -- uniformní
+World.SetScale(obj, { x=1.0, y=2.0, z=1.0 })       -- neuniformní
 ```
 
 ---
@@ -292,70 +242,17 @@ World.SetScale(obj, 0.5)                        -- zmenšení na polovinu
 Vrací stav z cache aktualizované na konci minulého framu. Vrací `nil` pokud handle neexistuje.
 
 #### `World.GetPosition(handle)` → `{x, y, z}` | `nil`
-
-```lua
-local pos = World.GetPosition(obj)
-if pos then
-    log_info(string.format('pozice: %.2f, %.2f, %.2f', pos.x, pos.y, pos.z))
-end
-```
-
----
-
-#### `World.GetRotation(handle)` → `{x, y, z}` | `nil`
-
-Vrátí rotaci jako Euler XYZ ve stupních — stejný formát jako `SetRotation`.
-
-```lua
-local rot = World.GetRotation(obj)
-if rot then
-    log_info('yaw: ' .. rot.y)
-end
-```
-
----
-
+#### `World.GetRotation(handle)` → `{x, y, z}` | `nil`  *(Euler stupně)*
 #### `World.GetQuaternion(handle)` → `{x, y, z, w}` | `nil`
-
-Vrátí rotaci jako kvaternion. Použij pro přesné interpolace nebo výpočty bez gimbal locku.
-
-```lua
-local q = World.GetQuaternion(obj)
-if q then
-    -- slerp mezi dvěma rotacemi (implementováno v Lua)
-    local t = 0.5
-    local interp_w = q.w * (1 - t) + target_q.w * t
-    -- ...
-end
-```
-
----
-
 #### `World.GetScale(handle)` → `{x, y, z}` | `nil`
-
-```lua
-local s = World.GetScale(obj)
-if s then
-    log_debug(string.format('scale: %s %s %s', s.x, s.y, s.z))
-end
-```
-
----
-
 #### `World.GetTransform(handle)` → `{pos, rot, scale}` | `nil`
 
-Vrátí celý transform najednou — jeden lock místo tří. Preferuj před opakovanými gettery.
-
 ```lua
+-- GetTransform je preferovaný — jeden lock místo tří
 local tf = World.GetTransform(obj)
 if tf then
-    -- tf.pos  = {x, y, z}
-    -- tf.rot  = {x, y, z}  (Euler stupně)
-    -- tf.scale = {x, y, z}
-    log_info(string.format(
-        'pos=(%.1f,%.1f,%.1f) rot.y=%.1f',
-        tf.pos.x, tf.pos.y, tf.pos.z, tf.rot.y
-    ))
+    log_info(string.format('pos=(%.1f,%.1f,%.1f) rot.y=%.1f',
+        tf.pos.x, tf.pos.y, tf.pos.z, tf.rot.y))
 end
 ```
 
@@ -364,84 +261,35 @@ end
 ### 4.4 Model
 
 #### `World.SetModel(handle, model_name)`
-
-Změní jméno modelu entity. V Phase 4 to vyvolá i swap meshe (GPU unload/load). Prozatím ukládá název pro čtení přes `GetModel`.
-
-```lua
--- Swap modelu po poškození
-if hp < 50 then
-    World.SetModel(vehicle, 'car_damaged')
-else
-    World.SetModel(vehicle, 'car_normal')
-end
-```
-
----
-
 #### `World.GetModel(handle)` → `string` | `nil`
 
 ```lua
+if hp < 50 then
+    World.SetModel(vehicle, 'car_damaged')
+end
 local model = World.GetModel(obj)
-log_info('model entity: ' .. (model or 'neznámý'))
 ```
 
 ---
 
 ### 4.5 Animace
 
-Animační stav se ukládá na entitu. Phase 4 propojí s Bevy `AnimationPlayer`.
-
 #### `World.PlayAnimation(handle, name, looping?, speed?)`
-
 - `looping` — `bool`, default `true`
-- `speed` — `number`, default `1.0` (0.5 = poloviční rychlost, 2.0 = dvojitá)
-
-```lua
--- Základní spuštění animace (looping)
-World.PlayAnimation(npc, 'walk')
-
--- Jednorázová animace (např. death)
-World.PlayAnimation(npc, 'death', false)
-
--- Zpomalená animace
-World.PlayAnimation(npc, 'run', true, 0.75)
-
--- Animace útoku v poloviční rychlosti, neopakující se
-World.PlayAnimation(weapon_obj, 'attack', false, 0.5)
-```
-
----
+- `speed` — `number`, default `1.0`
 
 #### `World.StopAnimation(handle)`
-
-Zastaví aktuální animaci. `GetAnimation` bude od dalšího framu vracet `nil`.
-
-```lua
-World.StopAnimation(npc)
-```
-
----
-
 #### `World.GetAnimation(handle)` → `string` | `nil`
-
-Vrátí název aktuálně přehrávané animace nebo `nil` pokud žádná neběží.
-
-```lua
-local anim = World.GetAnimation(npc)
-if anim == 'walk' then
-    World.PlayAnimation(npc, 'run')
-end
-```
-
----
-
 #### `World.GetAnimationSpeed(handle)` → `number`
 
-Vrátí aktuální rychlost animace. Pokud entita nemá nastavenu animaci, vrátí `1.0`.
-
 ```lua
-local spd = World.GetAnimationSpeed(npc)
-log_debug('rychlost animace: ' .. spd)
+World.PlayAnimation(npc, 'walk')
+World.PlayAnimation(npc, 'death', false)         -- jednorázová
+World.PlayAnimation(npc, 'run', true, 0.75)      -- zpomalená
+
+if World.GetAnimation(npc) == 'walk' then
+    World.PlayAnimation(npc, 'run')
+end
 ```
 
 ---
@@ -449,41 +297,13 @@ log_debug('rychlost animace: ' .. spd)
 ### 4.6 Stav entity
 
 #### `World.IsValid(handle)` → `bool`
-
-`true` pokud handle mapuje na existující entitu v ECS. Po `DeleteObject` vrátí `false` od dalšího framu.
-
-```lua
-if not World.IsValid(obj) then
-    log_warn('entita již neexistuje, přeskakuji')
-    return
-end
-```
-
----
-
 #### `World.IsAlive(handle)` → `bool`
-
-`true` pokud entita existuje **a zároveň** má health > 0 (nebo nemá `Health` komponentu vůbec).
-`false` pokud handle neexistuje nebo zdraví ≤ 0.
-
-```lua
--- Útok jen na živé cíle
-if World.IsAlive(target) then
-    World.ApplyDamage(target, 25.0)
-end
-```
-
----
-
 #### `World.GetHealth(handle)` → `number` | `nil`
 
-Vrátí aktuální health. `nil` pokud entita nemá `Health` komponentu (většina non-player objektů).
-
 ```lua
-local hp = World.GetHealth(npc)
-if hp then
-    local pct = hp / 100.0
-    log_info(string.format('HP: %.0f%%', pct * 100))
+if World.IsAlive(target) then
+    local hp = World.GetHealth(target)
+    log_info('HP: ' .. (hp or '?'))
 end
 ```
 
@@ -493,185 +313,131 @@ end
 
 #### `World.ApplyDamage(target_handle, amount, source_handle?)` *(server only)*
 
-Enqueue damage záměr. Server combat systémy ho zpracují v dalším FixedUpdate ticku.
-
-- `target_handle` — handle cíle
-- `amount` — poškození (`f32`)
-- `source_handle` — volitelně handle útočníka (pro kill-feed apod.)
-
 ```lua
 assert(IS_SERVER)
-
--- Výbuch poškodí všechny entity v dosahu
-RegisterEvent('explosion:trigger', function(data)
-    for _, handle in ipairs(nearby_entities) do
-        if World.IsAlive(handle) then
-            World.ApplyDamage(handle, data.damage, data.source)
-        end
-    end
-end)
+if World.IsAlive(target) then
+    World.ApplyDamage(target, 25.0, attacker)
+end
 ```
 
 ---
 
 ## 5. Player
 
-Přístup ke statistikám a inventáři hráčů. Čtení je synchronní (z `PlayerStatsCache`), zápis je záměr přes `CommandQueue`.
+Přístup ke statistikám a inventáři hráčů.
 
-> Všechny `player_id` lze předávat jako `number` i jako `string` (pro bezpečný routing velkých u64).
+> Všechna `player_id` lze předávat jako `number` i `string`.
 
 ### `Player.GetStat(player_id, stat_name)` → `number` | `nil`
-
-```lua
-local xp = Player.GetStat(player_id, 'xp')
-if xp then
-    log_info('XP hráče: ' .. xp)
-end
-```
-
----
-
 ### `Player.GetStats(player_id)` → `table` | `nil`
-
-Vrátí celou tabulku statistik hráče.
-
-```lua
-local stats = Player.GetStats(player_id)
-if stats then
-    for name, value in pairs(stats) do
-        log_info(name .. ' = ' .. value)
-    end
-end
-```
-
----
-
 ### `Player.SetStat(player_id, name, value)` *(server only)*
 
 ```lua
-assert(IS_SERVER)
+local xp = Player.GetStat(player_id, 'xp')
 Player.SetStat(player_id, 'xp', 1000)
-Player.SetStat(player_id, 'level', 5)
 ```
 
 ---
 
 ### `Player.GetHealth(player_id)` → `number` | `nil`
 
-Vrátí aktuální HP hráče ze snapshotu.
-
 ```lua
 local hp = Player.GetHealth(player_id)
-log_info('HP: ' .. (hp or 'neznámé'))
 ```
 
 ---
 
 ### `Player.GetInventory(player_id)` → `table` | `nil`
-
-Vrátí inventář jako tabulku `{item_id = count}`.
-
-```lua
-local inv = Player.GetInventory(player_id)
-if inv then
-    log_info('mečů: ' .. (inv['sword'] or 0))
-end
-```
-
----
-
 ### `Player.GetItemCount(player_id, item_id)` → `integer`
-
-Vrátí počet kusů daného itemu. Nikdy nevrátí `nil` — pokud hráč item nemá, vrátí `0`.
+### `Player.GiveItem(player_id, item_id, count)` *(server only)*
+### `Player.TakeItem(player_id, item_id, count)` *(server only)*
 
 ```lua
 local arrows = Player.GetItemCount(player_id, 'arrow')
-if arrows < 10 then
-    log_warn('málo šípů!')
-end
-```
-
----
-
-### `Player.GiveItem(player_id, item_id, count)` *(server only)*
-
-Přidá (`count > 0`) nebo odebere (`count < 0`) itemy. Počet neklesne pod 0.
-
-```lua
-assert(IS_SERVER)
-Player.GiveItem(player_id, 'gold_coin', 50)    -- dej 50 zlatých
-Player.GiveItem(player_id, 'health_potion', -1) -- odeber 1 lektvar
-```
-
----
-
-### `Player.TakeItem(player_id, item_id, count)` *(server only)*
-
-Alias pro `GiveItem` se záporným počtem. Čitelnější pro odebírání.
-
-```lua
-assert(IS_SERVER)
+Player.GiveItem(player_id, 'gold_coin', 50)
 Player.TakeItem(player_id, 'ammo_9mm', 30)
 ```
 
 ---
 
-## 6. Engine — model registry
+### `Player.GetLocalStats()` → `{hp: number}` *(client only)*
 
-Ref-counted registr modelů. Říkáš Rustu, které modely chceš mít načtené v paměti.
+Vrátí snapshot HP lokálního hráče aktualizovaný serverem. Bezpečné volat v draw threadu.
+
+```lua
+assert(IS_CLIENT)
+CreateThread(function()
+    while true do
+        local stats = Player.GetLocalStats()
+        -- vykresli HP bar
+        Wait(0)
+    end
+end)
+```
+
+---
+
+## 6. Engine
 
 ### `Engine.RequestModel(name)`
-
-Inkrementuje ref-count modelu. Volej před tím, než ho budeš potřebovat.
-
-```lua
-Engine.RequestModel('blacksmith')
-Engine.RequestModel('barrel_explosive')
-```
-
----
-
 ### `Engine.HasModelLoaded(name)` → `bool`
-
-Vrátí `true` pokud je model registrován s `ref_count > 0`.
-
-> **Phase 3 stub:** Prozatím vždy vrátí `false`. Phase 4 přidá skutečný async load z GPU.
-
-```lua
--- Phase 4+ pattern: čekej na load
-Engine.RequestModel('heavy_tank')
--- Engine.HasModelLoaded vrátí false dokud není model na GPU
-```
-
----
-
 ### `Engine.SetModelAsNoLongerNeeded(name)`
 
-Dekrementuje ref-count. Při dosažení 0 může být model uvolněn z paměti.
+Ref-counted registry modelů. Nativní modely z `assets/models/` jsou dostupné pod jménem souboru bez přípony (např. `"player"` pro `player.glb`).
 
 ```lua
--- Po despawnu objektu model nepotřebujeme
-World.DeleteObject(tank)
-Engine.SetModelAsNoLongerNeeded('heavy_tank')
+Engine.RequestModel('player')
+Engine.SetModelAsNoLongerNeeded('player')
+```
+
+---
+
+### `Engine.SetCursorLocked(locked: bool)` *(client only)*
+
+Zapne/vypne kurzor myši. `true` = hra zachycuje myš (FPS mód), `false` = viditelný kurzor (menu).
+
+```lua
+assert(IS_CLIENT)
+Engine.SetCursorLocked(false)   -- odemkni kurzor pro menu
+Engine.SetCursorLocked(true)    -- zamkni zpět do hry
+```
+
+---
+
+### `Engine.Disconnect()` *(client only)*
+
+Odpojí klienta od serveru a vrátí ho do lobby.
+
+```lua
+assert(IS_CLIENT)
+Engine.Disconnect()
+```
+
+---
+
+### `Engine.Quit()` *(client only)*
+
+Ukončí aplikaci.
+
+```lua
+assert(IS_CLIENT)
+Engine.Quit()
 ```
 
 ---
 
 ## 7. Raycast
 
-### `Raycast.GetGroundPosition()` → `{x, y, z}`
+### `Raycast.GetGroundPosition()` → `{x, y, z}` *(client only)*
 
 Vrátí world-space pozici myši promítnutou na rovinu `Y = 0`.
-Na serveru vrací vždy `{0, 0, 0}` (raycast není k dispozici bez rendereru).
-
-> Klientský gameplay systém aktualizuje tuto hodnotu každý frame z camera forward ray.
+Na serveru vrací vždy `{0, 0, 0}`.
 
 ```lua
 assert(IS_CLIENT)
 
 RegisterEvent('input:state', function(input)
     local ground = Raycast.GetGroundPosition()
-    -- Otočení hráče směrem k pozici myši
     local dx = ground.x - player_pos.x
     local dz = ground.z - player_pos.z
     local yaw = math.atan(dx, dz) * (180.0 / math.pi)
@@ -685,21 +451,18 @@ end)
 
 Asynchronní SQL API. Callback se zavolá až po dokončení dotazu — nesmíš blokovat ECS loop.
 
-> Dostupné jen na serveru pokud je nakonfigurované `[database]` v `server.toml`. Bez DB vrátí volání runtime chybu.
+> Dostupné jen na serveru pokud je nakonfigurované `[database]` v `server.toml`.
 
 ### `Database.execute(sql, params, callback)`
 
-INSERT / UPDATE / DELETE. Callback dostane počet ovlivněných řádků (`integer`).
+INSERT / UPDATE / DELETE. Callback dostane počet ovlivněných řádků.
 
 ```lua
 assert(IS_SERVER)
-
 Database.execute(
-    'INSERT INTO kills (killer, victim, weapon) VALUES (?, ?, ?)',
-    { tostring(killer_id), tostring(victim_id), 'rifle' },
-    function(rows_affected)
-        log_info('záznam vložen, rows=' .. rows_affected)
-    end
+    'INSERT INTO kills (killer, victim) VALUES (?, ?)',
+    { tostring(killer_id), tostring(victim_id) },
+    function(rows) log_info('vloženo: ' .. rows) end
 )
 ```
 
@@ -707,18 +470,16 @@ Database.execute(
 
 ### `Database.query(sql, params, callback)`
 
-SELECT. Callback dostane tabulku řádků (`table of tables`).
+SELECT. Callback dostane tabulku řádků.
 
 ```lua
 assert(IS_SERVER)
-
 Database.query(
-    'SELECT item_id, count FROM inventory WHERE player_id = ?',
+    'SELECT xp FROM players WHERE id = ?',
     { tostring(player_id) },
     function(rows)
-        if not rows then return end
-        for _, row in ipairs(rows) do
-            log_info(row.item_id .. ': ' .. row.count)
+        if rows and rows[1] then
+            Player.SetStat(player_id, 'xp', rows[1].xp)
         end
     end
 )
@@ -729,15 +490,281 @@ Database.query(
 ### `Database.isConnected()` → `bool`
 
 ```lua
-if not Database.isConnected() then
-    log_warn('DB nedostupná, přeskakuji persistenci')
-    return
+if not Database.isConnected() then return end
+```
+
+---
+
+## 9. GUI — vykreslování
+
+Immediate-mode API. Dostupné **jen na klientovi**. Všechny souřadnice jsou normalizované `0.0–1.0` (origin vlevo nahoře). Barvy jsou `0–255` RGBA integers.
+
+> Volej z draw threadu (viz [Threading](#10-threading)) — `Wait(0)` každý frame zajistí plynulé vykreslování.
+
+---
+
+### 9.1 Primitivy
+
+#### `Gui.DrawRect(x, y, w, h, r, g, b, a)`
+
+Vyplněný obdélník. `x, y` = střed; `w, h` = rozměry.
+
+```lua
+Gui.DrawRect(0.5, 0.5, 0.3, 0.1, 30, 30, 30, 200)
+```
+
+---
+
+#### `Gui.DrawText(text, x, y, scale, r, g, b, a, font_id?)`
+
+Text s anchoringem vlevo nahoře. `scale = 1.0` ≈ 24 px.
+`font_id` — volitelný string, ID fontu z `assets/fonts/` (název souboru bez přípony, např. `"SephoraHayden"`).
+
+```lua
+Gui.DrawText('Hello World', 0.1, 0.05, 1.0, 255, 255, 255, 255)
+Gui.DrawText('Score: 100',  0.1, 0.10, 0.8, 255, 220, 100, 255, 'SephoraHayden')
+```
+
+---
+
+#### `Gui.DrawLine(x1, y1, x2, y2, r, g, b, a)`
+
+```lua
+-- Oddělovač
+Gui.DrawLine(0.1, 0.5, 0.9, 0.5, 255, 255, 255, 80)
+```
+
+---
+
+#### `Gui.DrawCircle(x, y, radius, r, g, b, a)`
+
+Obrys kruhu (24 segmentů). Pro vyplněný kruh viz `DrawDisc`.
+
+```lua
+Gui.DrawCircle(0.5, 0.5, 0.05, 255, 255, 255, 180)
+```
+
+---
+
+#### `Gui.DrawDisc(x, y, radius, r, g, b, a)`
+
+Vyplněný anti-aliased kruh (GPU textura).
+
+```lua
+Gui.DrawDisc(0.5, 0.5, 0.03, 255, 100, 100, 220)
+```
+
+---
+
+### 9.2 Pokročilé tvary
+
+#### `Gui.DrawRoundedRect(x, y, w, h, radius, r, g, b, a)`
+
+Obdélník se zaoblenými rohy.
+
+```lua
+Gui.DrawRoundedRect(0.5, 0.5, 0.3, 0.12, 0.015, 40, 40, 60, 220)
+```
+
+---
+
+#### `Gui.DrawBorder(x, y, w, h, thickness, r, g, b, a)`
+
+Obrys obdélníku bez výplně.
+
+```lua
+Gui.DrawBorder(0.5, 0.5, 0.3, 0.12, 0.002, 255, 255, 255, 120)
+```
+
+---
+
+#### `Gui.DrawShadow(x, y, w, h, spread, r, g, b, a)`
+
+Vrstvený drop-shadow. **Volej před** vykreslením prvku, ke kterému stín patří.
+
+```lua
+Gui.DrawShadow(0.5, 0.5, 0.3, 0.12, 0.012, 0, 0, 0, 160)
+Gui.DrawRoundedRect(0.5, 0.5, 0.3, 0.12, 0.015, 40, 40, 60, 220)
+```
+
+---
+
+### 9.3 Obrázky (sprites)
+
+#### `Gui.DrawSprite(id, x, y, w, h, r?, g?, b?, a?, opts?)`
+
+Vykreslí obrázek registrovaný v manifestu (`images { {id='...', path='...'} }`).
+
+**opts** (volitelná tabulka):
+| Klíč | Typ | Výchozí | Popis |
+|------|-----|---------|-------|
+| `fit` | `string` | `"stretch"` | `"stretch"` \| `"fit"` (letterbox) \| `"fill"` (crop ke středu) |
+| `uv` | `{u0,v0,u1,v1}` | celý obrázek | UV ořez v normalizovaných souřadnicích (0–1) |
+| `flip_x` | `bool` | `false` | Horizontální zrcadlení |
+| `flip_y` | `bool` | `false` | Vertikální zrcadlení |
+
+```lua
+-- Celoplošné pozadí (obrázek vyplní celou obrazovku)
+Gui.DrawSprite('esc_bg', 0.5, 0.5, 1.0, 1.0, 255, 255, 255, 180, { fit = 'fill' })
+
+-- Logo zachovávající poměr stran
+Gui.DrawSprite('logo', 0.5, 0.1, 0.4, 0.12, 255, 255, 255, 235, { fit = 'fit' })
+
+-- Ikona z sprite sheetu 2×2 (UV crop)
+Gui.DrawSprite('icons', 0.5, 0.5, 0.04, 0.04, 255, 255, 255, 200, {
+    uv = { 0.0, 0.0, 0.5, 0.5 }   -- levý horní čtverec
+})
+
+-- Zrcadlení
+Gui.DrawSprite('arrow', 0.8, 0.5, 0.03, 0.03, 255, 255, 255, 255, { flip_x = true })
+```
+
+---
+
+### 9.4 Vstup myši
+
+#### `Gui.GetCursorPos()` → `{x, y}`
+
+Pozice kurzoru v normalizovaných souřadnicích (0–1).
+
+#### `Gui.IsMouseOver(x, y, w, h)` → `bool`
+
+`true` pokud je kurzor v obdélníku (střed + rozměry).
+
+#### `Gui.IsMouseDown(btn?)` → `bool`
+
+`true` pokud je tlačítko myši stisknuto. `btn` = `"left"` (výchozí) | `"right"` | `"middle"`.
+
+#### `Gui.IsMouseClicked(btn?)` → `bool`
+
+`true` pokud bylo tlačítko myši právě puštěno (click = down→up v tomto framu).
+
+```lua
+local cx, cy = 0.5, 0.5
+local bw, bh = 0.2, 0.06
+
+local hov = Gui.IsMouseOver(cx, cy, bw, bh)
+local clk = Gui.IsMouseClicked()
+
+local bg = hov and {60, 80, 120, 230} or {40, 50, 80, 200}
+Gui.DrawRoundedRect(cx, cy, bw, bh, 0.01, bg[1], bg[2], bg[3], bg[4])
+Gui.DrawText('Klikni', cx - bw*0.5 + 0.01, cy - 0.01, 0.85, 255, 255, 255, 255)
+
+if clk then
+    log_info('tlačítko stisknuto')
 end
 ```
 
 ---
 
-## 9. Vestavěné události
+### 9.5 UI framework
+
+#### `UI.Window(opts)` → window objekt
+
+Vytvoří spravované okno s tlačítky, labely a separátory. Vrácený objekt volej metodami pro sestavení obsahu, pak každý frame voláním `:Render()`.
+
+**opts:**
+| Klíč | Typ | Popis |
+|------|-----|-------|
+| `title` | `string` | Titulek v headeru |
+| `width` | `number` | Šířka okna (0–1) |
+| `x`, `y` | `number` | Střed okna (0–1), default 0.5, 0.5 |
+
+**Metody:**
+
+| Metoda | Popis |
+|--------|-------|
+| `:Button(label, callback, opts?)` | Tlačítko; `opts = {style="danger"\|"accent"\|"normal"}` |
+| `:Label(text, opts?)` | Textový řádek; `opts = {dim=bool}` |
+| `:Sep()` | Horizontální oddělovač |
+| `:Open()` / `:Close()` | Programové otevření/zavření |
+| `:Toggle()` | Přepne otevřeno/zavřeno |
+| `:IsOpen()` → `bool` | Stav okna |
+| `:Render()` | Vykreslí okno — volej každý frame |
+
+```lua
+assert(IS_CLIENT)
+
+local menu = UI.Window({ title = 'Nastavení', width = 0.30 })
+menu:Button('Pokračovat', function() menu:Close() end)
+menu:Sep()
+menu:Button('Odpojit', function() Engine.Disconnect() end, { style = 'danger' })
+menu:Button('Konec', function() Engine.Quit() end, { style = 'danger' })
+
+RegisterEvent('input:state', function(payload)
+    if payload and payload.keys_just and payload.keys_just.options_menu then
+        menu:Toggle()
+        Engine.SetCursorLocked(not menu:IsOpen())
+    end
+end)
+
+CreateThread(function()
+    while true do
+        menu:Render()
+        Wait(0)
+    end
+end)
+```
+
+#### `UI.Theme()` → `table`
+
+Vrátí aktuální theme tabulku (barvy, rozměry panelu). Jen pro čtení.
+
+```lua
+local T = UI.Theme()
+-- T.bg, T.text, T.btn, T.btn_hover, T.btn_active, T.btn_danger, T.btn_accent
+-- T.header_h, T.btn_h, T.btn_gap, T.pad_x, T.pad_y, T.radius, T.border_w
+-- T.shadow_size, T.shadow_col, T.border, T.sep, T.text_dim
+-- T.fade_in, T.fade_out
+```
+
+---
+
+## 10. Threading
+
+### `CreateThread(fn)`
+
+Spustí funkci jako Lua coroutinu. Coroutina se okamžitě nezačne provádět — první tick nastane v příštím `PreUpdate` framu.
+
+### `Wait(ms)`
+
+Pozastaví aktuální coroutinu na `ms` milisekund. `Wait(0)` = pokračuj v příštím framu.
+
+> `Wait` volej **jen z coroutiny** spuštěné přes `CreateThread`. Volání v hlavním kódu způsobí chybu.
+
+```lua
+-- Draw loop — vykresluje každý frame
+CreateThread(function()
+    while true do
+        Gui.DrawRect(0.5, 0.5, 0.2, 0.05, 255, 0, 0, 180)
+        Wait(0)   -- příští frame
+    end
+end)
+
+-- Časovač — odpočítává 5 sekund
+CreateThread(function()
+    for i = 5, 1, -1 do
+        log_info('odpočet: ' .. i)
+        Wait(1000)
+    end
+    log_info('čas vypršel!')
+end)
+
+-- Polling s intervalem
+CreateThread(function()
+    while true do
+        local hp = Player.GetLocalStats().hp
+        if hp < 25 then
+            -- zobraz varování nízkého zdraví
+        end
+        Wait(200)   -- kontroluj každých 200 ms
+    end
+end)
+```
+
+---
+
+## 11. Vestavěné události
 
 Rust core emituje tyto události automaticky. Přihlás se přes `RegisterEvent`.
 
@@ -753,33 +780,16 @@ Rust core emituje tyto události automaticky. Přihlás se přes `RegisterEvent`
 
 ```lua
 RegisterEvent('playerConnecting', function(data)
-    -- data.id je string (bezpečné u64)
     local pid = data.id
     log_info('hráč ' .. pid .. ' se připojil')
     Player.SetStat(pid, 'xp', 0)
-    Player.GiveItem(pid, 'starter_pistol', 1)
     TriggerClientEvent('ui:welcome', pid, { message = 'Vítej!' })
 end)
 
-RegisterEvent('playerDropped', function(data)
-    log_info('hráč ' .. data.id .. ' odešel: ' .. data.reason)
-    -- uložit stav do DB
-end)
-
 RegisterEvent('onPlayerHit', function(data)
-    local hp = Player.GetHealth(data.victim)
     log_info(string.format(
-        'hráč %s zasažen hráčem %s za %.1f dmg (zbývá %.1f HP)',
-        data.victim, data.attacker, data.damage, hp or 0
-    ))
-end)
-
-RegisterEvent('onPlayerDeath', function(data)
-    TriggerClientEvent('ui:deathScreen', data.victim, {
-        killer = data.killer,
-        cause  = data.cause,
-    })
-    -- respawn za 5 sekund by musel být implementován přes coroutine/timer resource
+        'hráč %s zasažen hráčem %s za %.1f dmg',
+        data.victim, data.attacker, data.damage))
 end)
 ```
 
@@ -787,39 +797,48 @@ end)
 
 ### Client-side události
 
-| Název | Kdy | Payload |
-|-------|-----|---------|
-| `input:state` | Každý frame | `{move: {x, y}, keys: {jump, crouch, sprint, fire, reload, interact}}` |
+#### `input:state`
+
+Emitováno každý frame. Payload:
+
+```lua
+{
+    move = { x = number, y = number },  -- -1..1, camera-relative
+    keys = {
+        jump     = bool,
+        crouch   = bool,
+        sprint   = bool,
+        fire     = bool,
+        reload   = bool,
+        interact = bool,
+    },
+    keys_just = {
+        options_menu = bool,  -- true jen v framu kdy bylo stisknuto Escape
+    }
+}
+```
 
 ```lua
 assert(IS_CLIENT)
 
-local player_obj = nil
-
 RegisterEvent('input:state', function(input)
-    if not player_obj then return end
+    if not input then return end
 
-    -- Pohyb lokálního objektu podle vstupu
-    local pos = World.GetPosition(player_obj)
-    if not pos then return end
+    -- ESC menu toggle
+    if input.keys_just and input.keys_just.options_menu then
+        -- otevři/zavři menu
+    end
 
+    -- Pohyb
     local speed = input.keys.sprint and 0.15 or 0.08
-    World.SetPosition(player_obj, {
-        x = pos.x + input.move.x * speed,
-        y = pos.y,
-        z = pos.z + input.move.y * speed,
-    })
-
-    -- Animace podle pohybu
-    local moving = math.abs(input.move.x) + math.abs(input.move.y) > 0.1
-    if moving then
-        local anim = input.keys.sprint and 'run' or 'walk'
-        if World.GetAnimation(player_obj) ~= anim then
-            World.PlayAnimation(player_obj, anim)
-        end
-    else
-        if World.GetAnimation(player_obj) ~= nil then
-            World.PlayAnimation(player_obj, 'idle')
+    if player_obj then
+        local pos = World.GetPosition(player_obj)
+        if pos then
+            World.SetPosition(player_obj, {
+                x = pos.x + input.move.x * speed,
+                y = pos.y,
+                z = pos.z + input.move.y * speed,
+            })
         end
     end
 end)
@@ -827,114 +846,78 @@ end)
 
 ---
 
-## 10. Vzory a recepty
+## 12. Vzory a recepty
 
 ### Inicializace resource (robustní pattern)
-
-Sandboxe vznikají po síťovém handshake — klient může minout `playerConnecting`. Použij request/response handshake:
 
 ```lua
 -- server/main.lua
 RegisterEvent('sq:ready', function(_, sender)
-    -- Klient žádá o inicializační data
-    TriggerClientEvent('sq:init', sender, {
-        map   = 'downtown',
-        time  = 'noon',
-    })
+    TriggerClientEvent('sq:init', sender, { map = 'downtown', time = 'noon' })
 end)
 
 -- client/main.lua
 RegisterEvent('sq:init', function(data)
     log_info('inicializuji mapu: ' .. data.map)
-    -- spawni objekty, nastav UI atd.
 end)
 
--- Odeslat hned po načtení — server odpoví sq:init
 TriggerServerEvent('sq:ready')
 ```
 
 ---
 
-### Ochrana server-only kódu
+### ESC menu s UI.Window
 
 ```lua
--- Varianta 1: assert při načtení skriptu
-assert(IS_SERVER, 'combat.lua smí běžet jen na serveru')
+assert(IS_CLIENT)
 
--- Varianta 2: guard uvnitř handleru
-RegisterEvent('player:cheat', function(data, sender)
-    if not IS_SERVER then return end
-    -- ...
+local menu = UI.Window({ title = 'PAUZA', width = 0.28, x = 0.5, y = 0.5 })
+menu:Button('Pokračovat', function()
+    menu:Close()
+    Engine.SetCursorLocked(true)
+end)
+menu:Sep()
+menu:Button('Odpojit', function() Engine.Disconnect() end, { style = 'danger' })
+menu:Button('Ukončit hru', function() Engine.Quit() end, { style = 'danger' })
+
+RegisterEvent('input:state', function(payload)
+    if payload and payload.keys_just and payload.keys_just.options_menu then
+        menu:Toggle()
+        Engine.SetCursorLocked(not menu:IsOpen())
+    end
+end)
+
+CreateThread(function()
+    while true do
+        menu:Render()
+        Wait(0)
+    end
 end)
 ```
 
 ---
 
-### Sledování stavu entit v tabulce
+### HUD s draw threadem
 
 ```lua
--- server/npc_manager.lua
-local npcs = {}   -- { [handle] = { type, spawn_pos } }
+assert(IS_CLIENT)
 
-local function spawn_npc(model, pos)
-    local h = World.SpawnNetworkedObject(model, pos, {x=0,y=0,z=0})
-    npcs[h] = { type = model, spawn_pos = pos }
-    World.PlayAnimation(h, 'idle')
-    return h
-end
+CreateThread(function()
+    while true do
+        local stats = Player.GetLocalStats()
+        local hp = stats.hp or 100
 
-local function tick_npcs()
-    for h, info in pairs(npcs) do
-        if not World.IsAlive(h) then
-            -- respawn po smrti
-            World.DeleteObject(h)
-            npcs[h] = nil
-            spawn_npc(info.type, info.spawn_pos)
-        end
+        -- HP bar (vlevo dole)
+        local bw, bh = 0.20, 0.018
+        local bx, by = 0.13, 0.93
+        Gui.DrawRoundedRect(bx, by, bw, bh, 0.005, 20, 20, 20, 180)
+        Gui.DrawRoundedRect(bx - bw*0.5*(1-(hp/100)), by, bw*(hp/100), bh, 0.005,
+            math.floor(200*(1-hp/100)), math.floor(200*(hp/100)), 30, 220)
+        Gui.DrawText(string.format('HP: %d', hp), bx - bw*0.5 + 0.006, by - 0.007, 0.7,
+            255, 255, 255, 220, 'SephoraHayden')
+
+        Wait(0)
     end
-end
-
-RegisterEvent('onPlayerPosition', function()
-    tick_npcs()
-end)
-
--- Inicializace
-spawn_npc('zombie', {x=20, y=0, z=10})
-spawn_npc('zombie', {x=25, y=0, z=15})
-```
-
----
-
-### Cross-resource komunikace
-
-Resources nesdílejí globály — vše přes event bus:
-
-```lua
--- resource A (core/inventory) — server/api.lua
-RegisterEvent('inventory:give', function(data, _)
-    Player.GiveItem(data.player, data.item, data.count)
-    TriggerEvent('inventory:changed', {
-        player = data.player,
-        item   = data.item,
-        delta  = data.count,
-    })
-end)
-
--- resource B (example/shop) — server/shop.lua
-local function buy_item(player_id, item_id, price)
-    local gold = Player.GetItemCount(player_id, 'gold')
-    if gold < price then
-        TriggerClientEvent('ui:error', player_id, { text = 'Nedostatek zlatých' })
-        return
-    end
-    -- Zaplatit
-    TriggerEvent('inventory:give', { player = player_id, item = 'gold', count = -price })
-    -- Dostat item
-    TriggerEvent('inventory:give', { player = player_id, item = item_id, count = 1 })
-end
-
-RegisterEvent('shop:buy', function(data, sender)
-    buy_item(tostring(sender), data.item, data.price)
 end)
 ```
 
@@ -943,32 +926,27 @@ end)
 ### Persist dat při odpojení
 
 ```lua
--- server/persistence.lua
 assert(IS_SERVER)
 
 RegisterEvent('playerDropped', function(data)
     local pid = data.id
+    if not Database.isConnected() then return end
     local stats = Player.GetStats(pid)
-    local inv   = Player.GetInventory(pid)
-    if not stats or not Database.isConnected() then return end
-
+    if not stats then return end
     Database.execute(
-        'INSERT INTO player_state (player_id, xp, level) VALUES (?, ?, ?) '
-        .. 'ON CONFLICT(player_id) DO UPDATE SET xp=excluded.xp, level=excluded.level',
-        { pid, stats.xp or 0, stats.level or 1 },
+        'INSERT INTO player_state (id, xp) VALUES (?,?) '
+        .. 'ON CONFLICT(id) DO UPDATE SET xp=excluded.xp',
+        { pid, stats.xp or 0 },
         function(_) end
     )
 end)
 
 RegisterEvent('playerConnecting', function(data)
     local pid = data.id
-    Database.query(
-        'SELECT xp, level FROM player_state WHERE player_id = ?',
-        { pid },
+    Database.query('SELECT xp FROM player_state WHERE id = ?', { pid },
         function(rows)
             if rows and rows[1] then
-                Player.SetStat(pid, 'xp',   rows[1].xp)
-                Player.SetStat(pid, 'level', rows[1].level)
+                Player.SetStat(pid, 'xp', rows[1].xp)
             end
         end
     )
@@ -977,23 +955,24 @@ end)
 
 ---
 
-### Animace podle zdraví
+### Cross-resource komunikace
 
 ```lua
-RegisterEvent('onPlayerHit', function(data)
-    local hp = Player.GetHealth(data.victim) or 0
-    -- Informovat klienta o stavu (klient nemá přímý přístup k HP)
-    TriggerClientEvent('player:hpUpdate', data.victim, { hp = hp, max = 100 })
+-- resource A: core/inventory
+RegisterEvent('inventory:give', function(data)
+    Player.GiveItem(data.player, data.item, data.count)
+    TriggerEvent('inventory:changed', data)
 end)
 
--- client/ui.lua
-RegisterEvent('player:hpUpdate', function(data)
-    local pct = data.hp / data.max
-    if pct < 0.25 then
-        -- Vizuální efekt nízkého zdraví
-        TriggerEvent('vfx:lowHealth', { intensity = 1.0 - pct })
+-- resource B: example/shop
+local function buy(player_id, item_id, price)
+    if Player.GetItemCount(player_id, 'gold') < price then
+        TriggerClientEvent('ui:error', player_id, { text = 'Nedostatek zlatých' })
+        return
     end
-end)
+    TriggerEvent('inventory:give', { player = player_id, item = 'gold',  count = -price })
+    TriggerEvent('inventory:give', { player = player_id, item = item_id, count = 1 })
+end
 ```
 
 ---
@@ -1004,8 +983,9 @@ end)
 |----------|----------|
 | `string`, `table`, `math`, `utf8`, `coroutine` | `io`, `os`, `package` |
 | `print`, `log_*` | `require`, `dofile`, `loadfile` |
-| Všechna `World.*`, `Player.*`, `Engine.*` API | `load`, `loadstring`, `debug` |
+| Všechna `World.*`, `Player.*`, `Engine.*`, `Gui.*`, `UI.*` API | `load`, `loadstring`, `debug` |
 | `RegisterEvent`, `TriggerEvent`, `TriggerServerEvent`, `TriggerClientEvent` | Přímý přístup k filesystému |
-| `Database.*` (server + DB configured) | Globální sdílení mezi resources |
+| `CreateThread`, `Wait` | Globální sdílení mezi resources |
+| `Database.*` (server + DB configured) | |
 
 Každý resource = vlastní izolovaná VM. Globál definovaný v resource A není viditelný v resource B. Veškerá cross-resource komunikace probíhá přes `TriggerEvent` / `RegisterEvent`.

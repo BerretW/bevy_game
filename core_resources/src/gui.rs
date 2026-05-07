@@ -56,6 +56,8 @@ pub enum DrawCommand {
     /// Sprite / obrázek. image_id odkazuje na registrovaný obrázek z manifestu.
     /// x, y = střed (normalizované); w, h = rozměry (normalizované).
     /// color = RGBA tint (255,255,255,255 = beze změny).
+    /// uv = volitelný UV ořez [u0,v0,u1,v1] (normalizovaně 0–1).
+    /// fit = způsob přizpůsobení obrázku do dest. boxu.
     Sprite {
         image_id: String,
         x: f32,
@@ -63,7 +65,23 @@ pub enum DrawCommand {
         w: f32,
         h: f32,
         color: [u8; 4],
+        uv: Option<[f32; 4]>,
+        fit: SpriteFit,
+        flip_x: bool,
+        flip_y: bool,
     },
+}
+
+/// Způsob přizpůsobení obrázku do cílového boxu.
+#[derive(Debug, Clone, Default)]
+pub enum SpriteFit {
+    /// Roztáhne na celý box (ignoruje poměr stran). Výchozí.
+    #[default]
+    Stretch,
+    /// Letterbox: celý obrázek viditelný, zachová poměr stran, okraje prázdné.
+    Fit,
+    /// Crop-to-fill: vyplní celý box, zachová poměr stran, přebývající části ořízne.
+    Fill,
 }
 
 // ---------------------------------------------------------------------------
