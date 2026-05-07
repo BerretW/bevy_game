@@ -10,7 +10,6 @@
 mod config;
 mod console;
 mod gameplay;
-mod nui;
 
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
@@ -171,8 +170,6 @@ fn main() {
             ClientNetPlugin,
             ClientHandshakePlugin,
             ClientLuaRpcPlugin,
-            // Phase 4 — NUI overlay (WebView2 na Windows).
-            nui::NuiPlugin { cache_root },
             ClientCorePlugin,
             FramepacePlugin,
         ))
@@ -180,8 +177,7 @@ fn main() {
         .run();
 }
 
-/// Client-specifická logika. Phase 2 = log online; Phase 4 přidá NUI
-/// (Dioxus / WebView), audio mixer napojený na `audio.*`, atd.
+/// Client-specifická logika. Phase 2 = log online; Phase 4 přidá GUI framework, audio mixer atd.
 pub struct ClientCorePlugin;
 
 impl Plugin for ClientCorePlugin {

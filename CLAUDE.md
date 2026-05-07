@@ -238,16 +238,8 @@ files {
 
 ### Phase 4 — WebUI, DB & QOL
 
-- [X] **NUI (Native UI) overlay** — `wry` WebView2 embeddovaný do herního okna jako child window
-  - [X] `manifest.lua` DSL: `ui_page 'ui/index.html'` — deklaruje NUI stránku resource
-  - [X] Transparentní host HTML (`nui_host.html`) s dynamickými iframy per resource
-  - [X] Custom protocol `nui://resource__name/path` — servíruje soubory z resource cache
-  - [X] Custom protocol `POST nui://resource__name/callback/name` — JS → Lua callback routing
-  - [X] `NuiOutQueue` + `NuiInQueue` — Arc<Mutex> sdílené fronty Lua ↔ WebView
-  - [X] Lua API: `SendNUIMessage(data)`, `RegisterNUICallback(name, handler)`, `SetNUIFocus(hasFocus, hasCursor?)`
-  - [X] FiveM-kompatibilní: JS `window.addEventListener('message', handler)` + `fetch('nui://...', {method:'POST'})`
-  - [X] **Bevy 0.18 oprava:** `WinitWindows` přesunuto na thread-local `WINIT_WINDOWS` (ne NonSend resource) — `create_nui_webview` používá `WINIT_WINDOWS.with_borrow()`
 - [X] **Dual resource loading** — `resolve_path_relative_to_exe` s třístupňovým fallbackem: exe_dir → CWD → `../resources` (pro `cargo run` z build directory)
+- [ ] **Vlastní GUI framework** — WebView NUI (wry/WebView2) byl odstraněn (průhlednost DWM nefungovala spolehlivě); implementovat vlastní in-game GUI nad Bevy UI nebo egui
 - [ ] Integrovat `sqlx` a namapovat Lua Database exporty (základ přítomen jako stub)
 - [ ] Umožnit Lua resources registrovat vlastní WGSL shadery a aplikovat je na materiály
 

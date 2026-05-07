@@ -1,4 +1,4 @@
-﻿//! `ResourcesPlugin` — Bevy plugin, ktery drzi VFS, watcher a sandbox registry.
+//! `ResourcesPlugin` — Bevy plugin, ktery drzi VFS, watcher a sandbox registry.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,7 +11,6 @@ use crate::cmd_queue::{
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
 use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegistry};
-use crate::nui_bridge::{NuiInQueue, NuiOutQueue};
 use crate::resolver::resolve_load_order;
 use crate::sandbox::{LocalEventBus, LuaSandbox, RaycastBridge};
 use crate::types::{ResourceId, Side};
@@ -80,19 +79,14 @@ impl Plugin for ResourcesPlugin {
             .after(process_lua_commands)
             .before(dispatch_local_events));
 
-        // Phase 4 — Player stats cache + entity map + DB callback queue
+        // Player stats cache + entity map + DB callback queue
         app.init_resource::<PlayerStatsCache>();
         app.init_resource::<PlayerEntityMap>();
         app.init_resource::<DbCallbackQueue>();
         app.init_resource::<DatabaseBridgeResource>();
         app.add_systems(PostUpdate, dispatch_db_callbacks);
 
-        // Phase 4 — NUI queues (out = Lua → WebView; in = WebView → Lua)
-        app.init_resource::<NuiOutQueue>();
-        app.init_resource::<NuiInQueue>();
-        app.add_systems(PostUpdate, dispatch_nui_callbacks);
-
-        // Phase 4 — stats lokálního hráče (klient čte přes Player.GetLocalStats())
+        // Stats lokálního hráče (klient čte přes Player.GetLocalStats())
         app.init_resource::<LocalPlayerStats>();
 
         app.add_systems(Startup, initial_load);
@@ -129,7 +123,6 @@ fn initial_load(
     stats_cache: Res<PlayerStatsCache>,
     entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
-    nui_out: Res<NuiOutQueue>,
     local_stats: Res<LocalPlayerStats>,
 ) {
     rebuild(
@@ -144,7 +137,6 @@ fn initial_load(
         stats_cache.clone(),
         entity_cache.clone(),
         db_bridge_res.0.clone(),
-        nui_out.clone(),
         local_stats.clone(),
     );
 }
@@ -162,7 +154,6 @@ fn hot_reload_on_dirty(
     stats_cache: Res<PlayerStatsCache>,
     entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
-    nui_out: Res<NuiOutQueue>,
     local_stats: Res<LocalPlayerStats>,
 ) {
     if events.is_empty() {
@@ -185,7 +176,6 @@ fn hot_reload_on_dirty(
         stats_cache.clone(),
         entity_cache.clone(),
         db_bridge_res.0.clone(),
-        nui_out.clone(),
         local_stats.clone(),
     );
 }
@@ -202,7 +192,6 @@ fn rebuild(
     stats_cache: PlayerStatsCache,
     entity_cache: EntityStateCache,
     db_bridge: Option<DbBridge>,
-    nui_out: NuiOutQueue,
     local_stats: LocalPlayerStats,
 ) {
     let report = vfs.rescan();
@@ -215,11 +204,9 @@ fn rebuild(
         vfs.root().display()
     );
 
-    // Rebuild Model Registry ze stream/ slozek
     let stream_models = vfs.scan_stream_models();
     model_registry.rebuild_from_scan(stream_models);
 
-    // Resolve load order
     let order = match resolve_load_order(vfs.manifests()) {
         Ok(o) => o,
         Err(e) => {
@@ -247,7 +234,6 @@ fn rebuild(
             stats_cache.clone(),
             entity_cache.clone(),
             db_bridge.clone(),
-            Some(nui_out.clone()),
             ls,
         ) {
             Ok(sandbox) => {
@@ -270,7 +256,6 @@ fn rebuild(
 }
 
 /// Phase 3.8 — Drain LocalEventBus a dispatch do vsech sandboxu.
-/// Bezi v PostUpdate po process_lua_commands.
 fn dispatch_local_events(
     local_bus: Res<LocalEventBus>,
     registry: NonSend<SandboxRegistry>,
@@ -300,7 +285,7 @@ fn dispatch_local_events(
     }
 }
 
-/// Phase 4 — Drain DbCallbackQueue a dispatch výsledků do příslušných sandboxů.
+/// Drain DbCallbackQueue a dispatch výsledků do příslušných sandboxů.
 fn dispatch_db_callbacks(
     db_queue: Res<DbCallbackQueue>,
     registry: NonSend<SandboxRegistry>,
@@ -316,28 +301,6 @@ fn dispatch_db_callbacks(
             warn!(
                 "[db_callbacks] sandbox '{}' not found for callback {}",
                 entry.resource_id, entry.callback_id
-            );
-        }
-    }
-}
-
-/// Phase 4 — Drain NuiInQueue a dispatch NUI callbacks do příslušných sandboxů.
-/// Volá se v PostUpdate; frontu plní NuiPlugin z custom protocol POST requestů.
-fn dispatch_nui_callbacks(
-    nui_in: Res<NuiInQueue>,
-    registry: NonSend<SandboxRegistry>,
-) {
-    let msgs = nui_in.drain();
-    if msgs.is_empty() {
-        return;
-    }
-    for msg in msgs {
-        if let Some(sandbox) = registry.sandboxes.get(&msg.resource_id) {
-            sandbox.invoke_nui_callback(&msg.callback_name, &msg.data);
-        } else {
-            warn!(
-                "[nui_callbacks] sandbox '{}' not found for callback '{}'",
-                msg.resource_id, msg.callback_name
             );
         }
     }

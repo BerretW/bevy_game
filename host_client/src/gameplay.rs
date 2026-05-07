@@ -26,7 +26,6 @@ use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
-use crate::nui::NuiFocusState;
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
 const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
@@ -283,21 +282,11 @@ fn update_camera_look_from_mouse(
 
 fn apply_cursor_mode(
     mode: Res<CameraModeState>,
-    focus: Res<NuiFocusState>,
     mut cursor_q: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     let Ok(mut cursor) = cursor_q.single_mut() else { return };
-
-    if focus.has_focus {
-        // NUI focus — uvolni cursor pro interakci s webovým UI
-        cursor.visible = focus.has_cursor;
-        cursor.grab_mode = CursorGrabMode::None;
-    } else {
-        // Normalni gameplay — relativni ovladani mysi
-        cursor.visible = false;
-        cursor.grab_mode = CursorGrabMode::Locked;
-    }
-
+    cursor.visible = false;
+    cursor.grab_mode = CursorGrabMode::Locked;
     let _ = mode.mode;
 }
 
@@ -485,20 +474,10 @@ fn collect_and_send_input(
     cfg: Res<ClientConfigResource>,
     mouse: Res<ButtonInput<MouseButton>>,
     look: Res<CameraLookState>,
-    focus: Res<NuiFocusState>,
     mut senders: Query<&mut MessageSender<PlayerInput>>,
     mut tick: Local<u32>,
 ) {
     *tick = tick.wrapping_add(1);
-
-    // Pokud má NUI focus, posíláme nulový input — hráč ovládá UI, ne postavu.
-    if focus.has_focus {
-        let zero = PlayerInput { client_tick: *tick, ..Default::default() };
-        for mut sender in senders.iter_mut() {
-            let _ = sender.send::<InputChannel>(zero.clone());
-        }
-        return;
-    }
 
     let bindings = &cfg.0.input.keys;
     let mouse_b = &cfg.0.input.mouse;
