@@ -12,5 +12,6 @@ client_scripts { 'client/hud.lua' }
 ui_page 'ui/index.html'
 
 files {
+    'client/hud.lua',
     'ui/index.html',
 }

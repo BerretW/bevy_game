@@ -14,7 +14,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use bevy::prelude::Resource;
+use bevy::prelude::*;
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib};
 use serde_json::Value as Json;
 
@@ -229,6 +229,7 @@ impl LuaSandbox {
 
         // Pokud má resource ui_page, ihned enqueujeme AddFrame → NuiPlugin přidá iframe.
         if let (Some(ref nq), Some(ref page)) = (&nui_out, &manifest.ui_page) {
+            info!("[sandbox] {} — enqueueing NUI AddFrame for ui_page: '{}'", manifest.id, page);
             nq.push(NuiOutMsg::AddFrame {
                 resource_host: resource_id_to_host(&manifest.id),
                 page: page.clone(),

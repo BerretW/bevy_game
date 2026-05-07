@@ -246,6 +246,8 @@ files {
   - [X] `NuiOutQueue` + `NuiInQueue` — Arc<Mutex> sdílené fronty Lua ↔ WebView
   - [X] Lua API: `SendNUIMessage(data)`, `RegisterNUICallback(name, handler)`, `SetNUIFocus(hasFocus, hasCursor?)`
   - [X] FiveM-kompatibilní: JS `window.addEventListener('message', handler)` + `fetch('nui://...', {method:'POST'})`
+  - [X] **Bevy 0.18 oprava:** `WinitWindows` přesunuto na thread-local `WINIT_WINDOWS` (ne NonSend resource) — `create_nui_webview` používá `WINIT_WINDOWS.with_borrow()`
+- [X] **Dual resource loading** — `resolve_path_relative_to_exe` s třístupňovým fallbackem: exe_dir → CWD → `../resources` (pro `cargo run` z build directory)
 - [ ] Integrovat `sqlx` a namapovat Lua Database exporty (základ přítomen jako stub)
 - [ ] Umožnit Lua resources registrovat vlastní WGSL shadery a aplikovat je na materiály
 

@@ -21,7 +21,8 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy::winit::WinitWindows;
+// V Bevy 0.18 je WinitWindows thread-local static, ne NonSend resource.
+use bevy::winit::WINIT_WINDOWS;
 
 use core_resources::{host_to_resource_id_str, NuiInMsg, NuiInQueue, NuiOutMsg, NuiOutQueue, ResourceId};
 
@@ -82,24 +83,27 @@ pub struct NuiState {
 fn create_nui_webview(
     mut nui_state: NonSendMut<NuiState>,
     primary_window: Query<(Entity, &Window), With<PrimaryWindow>>,
-    winit_windows: Option<NonSend<WinitWindows>>,
     cache_root: Res<NuiCacheRoot>,
     nui_in: Res<NuiInQueue>,
 ) {
     if nui_state.webview.is_some() {
         return; // již vytvořen
     }
-    let Some(winit_windows) = winit_windows else {
-        return; // WinitWindows ještě není k dispozici — zkusíme příští frame
-    };
+    
+    trace!("[nui] create_nui_webview: trying");
+    
     let Some((entity, window)) = primary_window.iter().next() else {
         warn!("[nui] PrimaryWindow not found — NUI disabled");
         return;
     };
-    let Some(winit_win) = winit_windows.get_window(entity) else {
-        warn!("[nui] WinitWindows entry missing — NUI disabled");
+
+    // V Bevy 0.18 je WinitWindows thread-local static, ne NonSend resource.
+    // Musíme použít WINIT_WINDOWS.with_borrow().
+    let has_window = WINIT_WINDOWS.with_borrow(|ww| ww.get_window(entity).is_some());
+    if !has_window {
+        trace!("[nui] WinitWindows not yet available — retrying next frame");
         return;
-    };
+    }
 
     let w: f64 = window.physical_width() as f64;
     let h: f64 = window.physical_height() as f64;
@@ -109,31 +113,37 @@ fn create_nui_webview(
 
     // wry 0.46 custom_protocol handler bere (request, async_responder) — synchronně
     // zavoláme responder.respond() okamžitě, čímž emulujeme blocking protokol.
-    let webview_result = WebViewBuilder::new()
-        .with_bounds(Rect {
-            position: LogicalPosition::new(0.0_f64, 0.0_f64).into(),
-            size: LogicalSize::new(w, h).into(),
-        })
-        .with_transparent(true)
-        .with_devtools(cfg!(debug_assertions))
-        .with_html(NUI_HOST_HTML)
-        .with_custom_protocol(
-            "nui".to_string(),
-            move |_id: WebViewId, request: Request<Vec<u8>>| -> Response<Cow<'static, [u8]>> {
-                handle_nui_request(&cache_root_path, &nui_in_clone, request)
-            },
-        )
-        // WindowWrapper<winit::window::Window> dereferencujeme na &winit::window::Window
-        // přes **winit_win (WindowWrapper implementuje Deref<Target = winit::window::Window>).
-        .build_as_child(&**winit_win);
+    let webview_result = WINIT_WINDOWS.with_borrow(|ww| {
+        let winit_win = ww.get_window(entity)
+            .expect("WinitWindows entry must exist (checked above)");
+        WebViewBuilder::new()
+            .with_bounds(Rect {
+                position: LogicalPosition::new(0.0_f64, 0.0_f64).into(),
+                size: LogicalSize::new(w, h).into(),
+            })
+            .with_transparent(true)
+            .with_devtools(cfg!(debug_assertions))
+            .with_html(NUI_HOST_HTML)
+            .with_custom_protocol(
+                "nui".to_string(),
+                move |_id: WebViewId, request: Request<Vec<u8>>| -> Response<Cow<'static, [u8]>> {
+                    handle_nui_request(&cache_root_path, &nui_in_clone, request)
+                },
+            )
+            // WindowWrapper<winit::window::Window> dereferencujeme na &winit::window::Window
+            // přes **winit_win (WindowWrapper implementuje Deref<Target = winit::window::Window>).
+            .build_as_child(&**winit_win)
+    });
+    
+    // (No log here, result is logged below)
 
     match webview_result {
         Ok(wv) => {
-            info!("[nui] WebView created ({}x{})", w, h);
+            info!("[nui] WebView CREATED successfully ({}x{})", w, h);
             nui_state.webview = Some(wv);
         }
         Err(e) => {
-            error!("[nui] WebView creation failed: {} — NUI disabled", e);
+            error!("[nui] WebView creation FAILED: {} — NUI disabled", e);
         }
     }
 }
@@ -147,9 +157,19 @@ fn flush_nui_out(
     nui_out: Res<NuiOutQueue>,
     mut focus: ResMut<NuiFocusState>,
 ) {
-    let Some(ref wv) = nui_state.webview else { return };
+    let Some(ref wv) = nui_state.webview else {
+        trace!("[nui] flush_nui_out: WebView not ready, messages stay in queue");
+        return;
+    };
 
-    for msg in nui_out.drain() {
+    let msgs = nui_out.drain();
+    if msgs.is_empty() {
+        return;
+    }
+    
+    debug!("[nui] processing {} message(s) from NuiOutQueue", msgs.len());
+
+    for msg in msgs {
         let js = match msg {
             NuiOutMsg::Dispatch { resource_host, json } => {
                 // Escapujeme json pro bezpečné vložení do JS string literálu.
@@ -172,8 +192,11 @@ fn flush_nui_out(
             }
         };
 
+        debug!("[nui] evaluating: {}", js);
         if let Err(e) = wv.evaluate_script(&js) {
             warn!("[nui] evaluate_script error: {}", e);
+        } else {
+            trace!("[nui] script evaluated successfully");
         }
     }
 }
@@ -211,6 +234,8 @@ fn handle_nui_request(
     let host = uri.host().unwrap_or("");
     let path = uri.path();
     let method = request.method().as_str();
+
+    debug!("[nui] {} {} nui://{}{}", method, request.method().as_str(), host, path);
 
     if method == "POST" {
         return handle_nui_callback(nui_in, host, path, request.body());
@@ -251,7 +276,10 @@ fn serve_nui_file(
     let file_rel = path.trim_start_matches('/');
 
     if file_rel.is_empty() {
-        return ok_html_response(b"<!DOCTYPE html><html><body></body></html>");
+        // Cesta je prázdná — vrátit 404 místo prázdné stránky
+        // (JavaScript by měl žádat úplnou cestu, např. 'ui/index.html')
+        debug!("[nui] empty file path for {}, returning 404", host);
+        return error_response(404, "file path required");
     }
 
     // Bezpečnostní kontrola — zakázáno path traversal

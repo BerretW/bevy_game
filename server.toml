@@ -110,7 +110,7 @@ root = "resources"
 
 # Hot-reload: při změně souboru pod `root` server rescanuje VFS a obnoví
 # Lua sandboxy. V dev buildu má smysl true, v production false.
-hot_reload = true
+hot_reload = false
 
 # Debounce window pro filesystem eventy (ms). Editor často při uložení
 # vystřelí 3–5 eventů během pár desítek ms; tahle hodnota určuje, jak

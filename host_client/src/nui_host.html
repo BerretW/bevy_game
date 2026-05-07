@@ -31,10 +31,15 @@ var frames = {};
 // Dispatch JSON zprávu do iframe daného resource.
 // Voláno z Rust: webview.evaluate_script("window.__nui_dispatch('host','json')")
 window.__nui_dispatch = function(host, jsonStr) {
+  console.log('[nui] dispatching to:', host, 'data:', jsonStr);
   var f = frames[host];
-  if (!f) return;
+  if (!f) {
+    console.warn('[nui] frame not found:', host);
+    return;
+  }
   try {
     f.contentWindow.postMessage(JSON.parse(jsonStr), '*');
+    console.log('[nui] message sent to frame:', host);
   } catch (e) {
     console.error('[nui] dispatch error for', host, e);
   }
@@ -48,14 +53,20 @@ window.__nui_set_focus = function(hasFocus, hasCursor) {
 // Přidá transparentní iframe pro daný resource.
 // page = cesta k HTML souboru relativně ke kořenu resource (z ui_page v manifest.lua)
 window.__nui_add_frame = function(host, page) {
-  if (frames[host]) return;
+  console.log('[nui] adding frame:', host, 'with page:', page);
+  if (frames[host]) {
+    console.warn('[nui] frame', host, 'already exists, skipping');
+    return;
+  }
   var iframe = document.createElement('iframe');
   iframe.className = 'nui-frame';
   iframe.src = 'nui://' + host + '/' + (page || '');
+  console.log('[nui] iframe src:', iframe.src);
   iframe.setAttribute('allowtransparency', 'true');
   iframe.setAttribute('allow', 'autoplay');
   frames[host] = iframe;
   document.getElementById('nui-root').appendChild(iframe);
+  console.log('[nui] iframe appended to nui-root');
 };
 
 // Odstraní iframe resource (hot-reload, unload).

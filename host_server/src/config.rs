@@ -18,19 +18,23 @@ use serde::Deserialize;
 /// teprve potom v CWD (viz [`resolve_path_relative_to_exe`]).
 pub const DEFAULT_CONFIG_FILE: &str = "server.toml";
 
-/// Vrátí absolutní cestu pro daný (typicky relativní) path:
+/// Vrátí absolutní cestu pro daný (typicky relativní) path s fallback mechanismem:
 ///
 /// 1. Když je `rel` **absolutní**, vrátíme ho beze změny.
 /// 2. Zkusíme `<dir(.exe)>/<rel>` — pokud existuje, vrátíme absolutní cestu.
 ///    Tím distribuce s rozložením `.exe + resources/ + server.toml` funguje
 ///    bez ohledu na CWD, ze kterého admin server spustí.
-/// 3. Když ani to neexistuje, vrátíme `rel` tak jak je. OS pak interpretuje
-///    relativně k CWD — což je očekávané chování pro `cargo run` z projekt
-///    rootu (`resources/` ležící vedle `Cargo.toml`).
+/// 3. Zkusíme `<cwd>/<rel>` — pokud existuje (pro `cargo run` z projektu rootu).
+/// 4. Pokud je `rel == "resources"`, zkusíme fallback na `<project_root>/resources`
+///    (pro `cargo run` z build directory).
+/// 5. Když ani to neexistuje, vrátíme `rel` tak jak je. OS pak interpretuje
+///    relativně k CWD.
 pub fn resolve_path_relative_to_exe(rel: &Path) -> PathBuf {
     if rel.is_absolute() {
         return rel.to_path_buf();
     }
+
+    // 1. Vedle exe
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let candidate = exe_dir.join(rel);
@@ -39,6 +43,34 @@ pub fn resolve_path_relative_to_exe(rel: &Path) -> PathBuf {
             }
         }
     }
+
+    // 2. V CWD
+    let cwd_candidate = std::env::current_dir()
+        .ok()
+        .map(|cwd| cwd.join(rel));
+    if let Some(candidate) = cwd_candidate {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    // 3. Pro "resources" — zkusíme fallback na ../resources
+    // (využitečné když je server zkompilován v target/debug)
+    if rel == Path::new("resources") {
+        if let Ok(exe) = std::env::current_exe() {
+            // Try: <exe_dir>/../resources
+            if let Some(exe_dir) = exe.parent() {
+                if let Some(parent) = exe_dir.parent() {
+                    let candidate = parent.join("resources");
+                    if candidate.exists() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Fallback: vrátíme path tak jak je
     rel.to_path_buf()
 }
 
