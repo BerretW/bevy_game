@@ -83,6 +83,14 @@ fn fragment(
         pbr_input.material.metallic             = mix(pbr_input.material.metallic, 0.0, snow_factor);
     }
 
+    // 6. UV1 — druhá vrstva masek (bevy_masks2): AO + emissive
+#ifdef VERTEX_UVS_B
+    let ao       = clamp(in.uv_b.x, 0.0, 1.0);
+    let emissive = clamp(in.uv_b.y, 0.0, 1.0);
+    pbr_input.occlusion         *= vec3(ao);
+    pbr_input.material.emissive *= emissive;
+#endif
+
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);

@@ -13,6 +13,8 @@ import os
 from mathutils import Vector
 
 ATTR_NAME = "bevy_masks"
+ATTR_NAME2 = "bevy_masks2"
+UV_MASKS2_NAME = "_ads_masks2_uv"
 ADS_VERSION = "1.1"
 
 TEXTURE_SLOT_FIELDS = (
@@ -103,6 +105,46 @@ def ensure_mask_attribute(mesh: bpy.types.Mesh):
     if ATTR_NAME not in color_attributes:
         color_attributes.new(name=ATTR_NAME, type="BYTE_COLOR", domain="CORNER")
     color_attributes.active_color = color_attributes[ATTR_NAME]
+
+
+def ensure_masks2_attribute(mesh: bpy.types.Mesh):
+    """Create bevy_masks2 with AO=1.0 (no occlusion), emissive=0.0 defaults."""
+    color_attributes = mesh.color_attributes
+    created = ATTR_NAME2 not in color_attributes
+    if created:
+        color_attributes.new(name=ATTR_NAME2, type="BYTE_COLOR", domain="CORNER")
+    layer = color_attributes[ATTR_NAME2]
+    if created:
+        for item in layer.data:
+            item.color = (1.0, 0.0, 0.0, 1.0)  # R=1 (AO full), G=0 (no emissive)
+    color_attributes.active_color = layer
+
+
+def encode_masks2_to_uv(mesh: bpy.types.Mesh):
+    """Bake bevy_masks2 R,G channels into _ads_masks2_uv UV map (TEXCOORD_1).
+    Returns the UV layer name, or None if masks2 attribute is absent."""
+    color_attributes = mesh.color_attributes
+    if ATTR_NAME2 not in color_attributes:
+        return None
+    layer = color_attributes[ATTR_NAME2]
+    uv_layer = mesh.uv_layers.get(UV_MASKS2_NAME)
+    if uv_layer is None:
+        uv_layer = mesh.uv_layers.new(name=UV_MASKS2_NAME)
+    if uv_layer is None:
+        return None
+    src = layer.data
+    dst = uv_layer.data
+    count = min(len(src), len(dst))
+    for i in range(count):
+        c = src[i].color
+        dst[i].uv = (c[0], c[1])  # R→U (AO), G→V (emissive)
+    return UV_MASKS2_NAME
+
+
+def remove_temp_uv(mesh: bpy.types.Mesh, name: str):
+    uv_layer = mesh.uv_layers.get(name)
+    if uv_layer:
+        mesh.uv_layers.remove(uv_layer)
 
 
 def fill_alpha_channel(mesh: bpy.types.Mesh, alpha_value: float):
@@ -755,16 +797,55 @@ def _build_graph_standard_pbr(mat, nodes, links):
     normal_map.location = (-120, -150)
     links.new(normal.outputs[0], normal_map.inputs[1])
 
+    # bevy_masks2 — TEXCOORD_1: R=AO (1=none), G=emissive
+    attr2 = nodes.new("ShaderNodeAttribute")
+    attr2.attribute_name = ATTR_NAME2
+    attr2.location = (200, -200)
+    sep2 = nodes.new("ShaderNodeSeparateColor")
+    sep2.location = (400, -200)
+    links.new(attr2.outputs[0], sep2.inputs[0])
+
+    ao_rgb = nodes.new("ShaderNodeCombineColor")
+    ao_rgb.location = (590, -200)
+    links.new(sep2.outputs[0], ao_rgb.inputs[0])
+    links.new(sep2.outputs[0], ao_rgb.inputs[1])
+    links.new(sep2.outputs[0], ao_rgb.inputs[2])
+
+    ao_mul = nodes.new("ShaderNodeMixRGB")
+    ao_mul.blend_type = "MULTIPLY"
+    ao_mul.inputs[0].default_value = 1.0
+    ao_mul.location = (590, 260)
+    links.new(snow_mix.outputs[0], ao_mul.inputs[1])
+    links.new(ao_rgb.outputs[0], ao_mul.inputs[2])
+
+    emissive_rgb = nodes.new("ShaderNodeCombineColor")
+    emissive_rgb.location = (590, -340)
+    links.new(sep2.outputs[1], emissive_rgb.inputs[0])
+    links.new(sep2.outputs[1], emissive_rgb.inputs[1])
+    links.new(sep2.outputs[1], emissive_rgb.inputs[2])
+
+    emissive_mul = nodes.new("ShaderNodeMixRGB")
+    emissive_mul.blend_type = "MULTIPLY"
+    emissive_mul.inputs[0].default_value = 1.0
+    emissive_mul.location = (590, 120)
+    links.new(alb.outputs[0], emissive_mul.inputs[1])
+    links.new(emissive_rgb.outputs[0], emissive_mul.inputs[2])
+
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.location = (560, 260)
-    links.new(snow_mix.outputs[0], bsdf.inputs[0])
+    bsdf.location = (820, 260)
+    links.new(ao_mul.outputs[0], bsdf.inputs[0])
     links.new(metal_snow, bsdf.inputs[1])
     links.new(rough_snow, bsdf.inputs[2])
     links.new(normal_map.outputs[0], bsdf.inputs[5])
     links.new(alb.outputs[1], bsdf.inputs[4])
+    try:
+        links.new(emissive_mul.outputs[0], bsdf.inputs["Emission Color"])
+        bsdf.inputs["Emission Strength"].default_value = 1.0
+    except KeyError:
+        pass
 
     out = nodes.new("ShaderNodeOutputMaterial")
-    out.location = (860, 260)
+    out.location = (1120, 260)
     links.new(bsdf.outputs[0], out.inputs[0])
 
 
@@ -900,15 +981,36 @@ def _build_graph_layered_env(mat, nodes, links):
     normal_map.location = (-500, -180)
     links.new(nrm_mix.outputs[0], normal_map.inputs[1])
 
+    # bevy_masks2 — TEXCOORD_1: R=AO (1=none), G=emissive
+    attr2 = nodes.new("ShaderNodeAttribute")
+    attr2.attribute_name = ATTR_NAME2
+    attr2.location = (-80, -360)
+    sep2 = nodes.new("ShaderNodeSeparateColor")
+    sep2.location = (120, -360)
+    links.new(attr2.outputs[0], sep2.inputs[0])
+
+    ao_rgb = nodes.new("ShaderNodeCombineColor")
+    ao_rgb.location = (320, -360)
+    links.new(sep2.outputs[0], ao_rgb.inputs[0])
+    links.new(sep2.outputs[0], ao_rgb.inputs[1])
+    links.new(sep2.outputs[0], ao_rgb.inputs[2])
+
+    ao_mul = nodes.new("ShaderNodeMixRGB")
+    ao_mul.blend_type = "MULTIPLY"
+    ao_mul.inputs[0].default_value = 1.0
+    ao_mul.location = (320, 200)
+    links.new(snow_mix.outputs[0], ao_mul.inputs[1])
+    links.new(ao_rgb.outputs[0], ao_mul.inputs[2])
+
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.location = (220, 220)
-    links.new(snow_mix.outputs[0], bsdf.inputs[0])
+    bsdf.location = (560, 200)
+    links.new(ao_mul.outputs[0], bsdf.inputs[0])
     links.new(metal_snow, bsdf.inputs[1])
     links.new(rough_snow, bsdf.inputs[2])
     links.new(normal_map.outputs[0], bsdf.inputs[5])
 
     out = nodes.new("ShaderNodeOutputMaterial")
-    out.location = (520, 220)
+    out.location = (860, 200)
     links.new(bsdf.outputs[0], out.inputs[0])
 
 
@@ -985,16 +1087,37 @@ def _build_graph_vehicle_glass(mat, nodes, links):
     rough_dirt = _mix_float(nodes, links, dirt_mul.outputs[0], rough_crack, 0.8, -100, -200, "GlassRoughDirt")
     rough_wet = _mix_float(nodes, links, wet_val.outputs[0], rough_dirt, 0.01, 120, -200, "GlassRoughWet")
 
+    # bevy_masks2 — TEXCOORD_1: R=AO (1=none)
+    attr2 = nodes.new("ShaderNodeAttribute")
+    attr2.attribute_name = ATTR_NAME2
+    attr2.location = (220, -280)
+    sep2 = nodes.new("ShaderNodeSeparateColor")
+    sep2.location = (400, -280)
+    links.new(attr2.outputs[0], sep2.inputs[0])
+
+    ao_rgb = nodes.new("ShaderNodeCombineColor")
+    ao_rgb.location = (560, -280)
+    links.new(sep2.outputs[0], ao_rgb.inputs[0])
+    links.new(sep2.outputs[0], ao_rgb.inputs[1])
+    links.new(sep2.outputs[0], ao_rgb.inputs[2])
+
+    ao_mul = nodes.new("ShaderNodeMixRGB")
+    ao_mul.blend_type = "MULTIPLY"
+    ao_mul.inputs[0].default_value = 1.0
+    ao_mul.location = (560, 200)
+    links.new(dirt_mix.outputs[0], ao_mul.inputs[1])
+    links.new(ao_rgb.outputs[0], ao_mul.inputs[2])
+
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
-    bsdf.location = (360, 220)
+    bsdf.location = (760, 200)
     bsdf.inputs[17].default_value = 1.0  # Transmission
     bsdf.inputs[14].default_value = 0.8  # Specular IOR Level
-    links.new(dirt_mix.outputs[0], bsdf.inputs[0])
+    links.new(ao_mul.outputs[0], bsdf.inputs[0])
     links.new(rough_wet, bsdf.inputs[2])
     links.new(alpha_wet.outputs[0], bsdf.inputs[4])
 
     out = nodes.new("ShaderNodeOutputMaterial")
-    out.location = (660, 220)
+    out.location = (1060, 200)
     links.new(bsdf.outputs[0], out.inputs[0])
 
     mat.blend_method = "BLEND"
@@ -1073,6 +1196,24 @@ class BEVY_OT_InitProject(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BEVY_OT_InitMasks2(bpy.types.Operator):
+    bl_idname = "bevy.init_masks2"
+    bl_label = "Initialize bevy_masks2"
+    bl_description = "Create/activate bevy_masks2 vertex color channel (AO=1, emissive=0)"
+
+    def execute(self, context):
+        targets = [obj for obj in context.selected_objects if obj.type == "MESH"]
+        if not targets and context.active_object and context.active_object.type == "MESH":
+            targets = [context.active_object]
+        if not targets:
+            self.report({"WARNING"}, "No mesh object selected")
+            return {"CANCELLED"}
+        for obj in targets:
+            ensure_masks2_attribute(obj.data)
+        self.report({"INFO"}, f"Initialized masks2 for {len(targets)} mesh object(s)")
+        return {"FINISHED"}
+
+
 class BEVY_OT_SetPaint(bpy.types.Operator):
     bl_idname = "bevy.set_paint"
     bl_label = "Set Paint Mask"
@@ -1084,18 +1225,36 @@ class BEVY_OT_SetPaint(bpy.types.Operator):
             self.report({"WARNING"}, "Active object must be a mesh")
             return {"CANCELLED"}
 
-        ensure_mask_attribute(obj.data)
+        brush = context.tool_settings.vertex_paint.brush
 
+        # bevy_masks2 modes — switch active color attribute to masks2
+        if self.mode in ("INIT2", "AO", "EMISSIVE", "ERASE2"):
+            ensure_masks2_attribute(obj.data)
+            if context.object.mode != "PAINT_VERTEX":
+                bpy.ops.object.mode_set(mode="PAINT_VERTEX")
+            if self.mode == "AO":
+                brush.color = (1.0, 0.0, 0.0)   # R=1: full AO (no occlusion)
+            elif self.mode == "EMISSIVE":
+                brush.color = (0.0, 1.0, 0.0)   # G=1: full emissive
+            elif self.mode == "ERASE2":
+                brush.color = (1.0, 0.0, 0.0)   # R=1: reset to AO=1 (no effect)
+            return {"FINISHED"}
+
+        # bevy_masks modes
+        ensure_mask_attribute(obj.data)
         if context.object.mode != "PAINT_VERTEX":
             bpy.ops.object.mode_set(mode="PAINT_VERTEX")
 
-        brush = context.tool_settings.vertex_paint.brush
-        if self.mode == "L1":
-            brush.color = (1.0, 0.0, 0.0)
+        if self.mode == "NORMAL_SUPP":
+            brush.color = (1.0, 0.0, 0.0)   # R=1: suppress normal map
+        elif self.mode == "L1":
+            brush.color = (1.0, 0.0, 0.0)   # R=1: blend to layer 1
+        elif self.mode == "DIRT":
+            brush.color = (0.0, 1.0, 0.0)   # G=1: full dirt
         elif self.mode == "BLOOD":
             brush.color = (0.0, 1.0, 0.0)
         elif self.mode == "WET":
-            brush.color = (0.0, 0.0, 1.0)
+            brush.color = (0.0, 0.0, 1.0)   # B=1: fully wet
         elif self.mode == "ERASE":
             brush.color = (0.0, 0.0, 0.0)
         else:
@@ -1213,6 +1372,7 @@ class BEVY_OT_ConvertToDrawable(bpy.types.Operator):
             else:
                 obj.bevy_toolkit_obj.is_col = False
                 ensure_mask_attribute(obj.data)
+                ensure_masks2_attribute(obj.data)
                 if settings.auto_embed_collision:
                     proxy_obj, created = duplicate_collision_proxy(obj, context.collection)
                     created_col += 1 if created else 0
@@ -1412,9 +1572,16 @@ class BEVY_OT_Export(bpy.types.Operator):
         if len(warnings) > 8:
             self.report({"WARNING"}, f"... and {len(warnings) - 8} more consistency warning(s)")
 
+        encoded_uv_meshes = []
         for obj in target_meshes:
             if not is_collision_object(obj):
                 ensure_mask_attribute(obj.data)
+                uv_name = encode_masks2_to_uv(obj.data)
+                if uv_name:
+                    idx = list(obj.data.uv_layers.keys()).index(uv_name)
+                    if idx != 1:
+                        self.report({"WARNING"}, f"'{obj.name}': {UV_MASKS2_NAME} is at UV index {idx}, expected 1 (TEXCOORD_1). Add exactly one primary UV map before exporting.")
+                    encoded_uv_meshes.append(obj.data)
 
         original_active = context.view_layer.objects.active
         original_selection = [obj for obj in context.selected_objects]
@@ -1450,6 +1617,9 @@ class BEVY_OT_Export(bpy.types.Operator):
                     obj.select_set(True)
             if original_active and original_active.name in bpy.data.objects:
                 context.view_layer.objects.active = original_active
+
+        for mesh in encoded_uv_meshes:
+            remove_temp_uv(mesh, UV_MASKS2_NAME)
 
         if "FINISHED" not in gltf_result:
             self.report({"ERROR"}, "GLB export failed")
@@ -1682,18 +1852,27 @@ class BEVY_PT_Panel(bpy.types.Panel):
 
             paint_box = layout.box()
             paint_box.label(text="Vertex Masks", icon="VPAINT_HLT")
-            paint_box.label(text="R=L1 blend, G=blood, B=wet, A=tint U")
+
+            paint_box.label(text="bevy_masks  (COLOR_0)")
+            paint_box.label(text="R=NormSupp/L1  G=dirt  B=wet  A=palette")
             paint_box.operator("bevy.init_project", text="Initialize bevy_masks")
-
             row = paint_box.row(align=True)
-            row.operator("bevy.set_paint", text="L1 (R)").mode = "L1"
-            row.operator("bevy.set_paint", text="Blood (G)").mode = "BLOOD"
+            row.operator("bevy.set_paint", text="Norm/L1 (R)").mode = "NORMAL_SUPP"
+            row.operator("bevy.set_paint", text="Dirt (G)").mode = "DIRT"
             row.operator("bevy.set_paint", text="Wet (B)").mode = "WET"
-            row.operator("bevy.set_paint", text="Erase RGB").mode = "ERASE"
-
+            row.operator("bevy.set_paint", text="Erase").mode = "ERASE"
             row = paint_box.row(align=True)
             row.prop(settings, "alpha_fill_value")
-            row.operator("bevy.fill_alpha_mask", text="Fill A")
+            row.operator("bevy.fill_alpha_mask", text="Fill A (palette)")
+
+            paint_box.separator(factor=0.5)
+            paint_box.label(text="bevy_masks2  (→ TEXCOORD_1)")
+            paint_box.label(text="R=AO (1=none)  G=emissive")
+            paint_box.operator("bevy.init_masks2", text="Initialize bevy_masks2")
+            row = paint_box.row(align=True)
+            row.operator("bevy.set_paint", text="AO (R)").mode = "AO"
+            row.operator("bevy.set_paint", text="Emissive (G)").mode = "EMISSIVE"
+            row.operator("bevy.set_paint", text="Erase").mode = "ERASE2"
 
         export_box = layout.box()
         export_box.label(text="Export", icon="EXPORT")
@@ -1707,6 +1886,7 @@ classes = (
     BevyMaterialProps,
     BevyExportProps,
     BEVY_OT_InitProject,
+    BEVY_OT_InitMasks2,
     BEVY_OT_SetPaint,
     BEVY_OT_FillAlphaMask,
     BEVY_OT_GenerateCol,

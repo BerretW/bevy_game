@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bevy::gltf::{Gltf, GltfAssetLabel, GltfMaterialName};
 use bevy::light::NotShadowCaster;
+use bevy::math::Affine2;
 use bevy::prelude::*;
 use bevy::prelude::On;
 use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
@@ -204,15 +205,22 @@ fn process_mesh_node(
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) {
-    // Sanitizace vertex colors — zajistí, že shader vždy dostane platná data
+    // Sanitizace vertex dat — zajistí, že shadery vždy dostanou platná data
     if let Ok(mesh_h) = mesh_handles.get(entity) {
         if let Some(mesh) = meshes.get_mut(mesh_h.id()) {
+            let n = mesh.count_vertices();
             if !mesh.contains_attribute(Mesh::ATTRIBUTE_COLOR) {
-                let n = mesh.count_vertices();
                 // Neutrální: žádné efekty (R=0,G=0,B=0), default paleta (A=0)
                 mesh.insert_attribute(
                     Mesh::ATTRIBUTE_COLOR,
                     vec![[0.0f32, 0.0, 0.0, 0.0]; n],
+                );
+            }
+            if !mesh.contains_attribute(Mesh::ATTRIBUTE_UV_1) {
+                // Neutrální UV1 (bevy_masks2): AO=1.0 (žádný efekt), emissive=0.0
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_UV_1,
+                    vec![[1.0f32, 0.0]; n],
                 );
             }
         }
@@ -307,9 +315,11 @@ fn build_standard_pbr(
     let palette = def.textures.get("palette").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let snow    = def.textures.get("snow")   .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
 
+    let tiling = p.tiling.unwrap_or(1.0);
     let mut base = StandardMaterial {
         perceptual_roughness: 0.5,
         metallic: 0.0,
+        uv_transform: Affine2::from_scale(Vec2::splat(tiling)),
         ..default()
     };
     if let Some(h) = albedo { base.base_color_texture          = Some(h); }
@@ -342,9 +352,11 @@ fn build_layered_env(
     let layer1_albedo = def.textures.get("layer1_albedo") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let layer1_normal = def.textures.get("layer1_normal") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
 
+    let l0_tiling = p.l0_tiling.or(p.tiling).unwrap_or(1.0);
     let mut base = StandardMaterial {
         perceptual_roughness: 0.5,
         metallic: 0.0,
+        uv_transform: Affine2::from_scale(Vec2::splat(l0_tiling)),
         ..default()
     };
     if let Some(h) = albedo { base.base_color_texture          = Some(h); }
@@ -379,6 +391,7 @@ fn build_vehicle_glass(
     let glass_tint  = p.tint.map(|t| Color::srgba(t[0], t[1], t[2], glass_alpha))
                             .unwrap_or(Color::srgba(0.9, 0.95, 1.0, glass_alpha));
 
+    let glass_tiling = p.tiling.unwrap_or(1.0);
     let mut base = StandardMaterial {
         alpha_mode: AlphaMode::Blend,
         perceptual_roughness: 0.05,
@@ -386,6 +399,7 @@ fn build_vehicle_glass(
         double_sided: true,
         cull_mode: None,
         base_color: glass_tint,
+        uv_transform: Affine2::from_scale(Vec2::splat(glass_tiling)),
         ..default()
     };
     if let Some(h) = albedo { base.base_color_texture = Some(h); }

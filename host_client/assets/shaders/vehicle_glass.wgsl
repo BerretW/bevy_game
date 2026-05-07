@@ -60,6 +60,12 @@ fn fragment(
         wet * 0.4
     );
 
+    // 4. UV1 — bevy_masks2: AO (sklo nemá emissive)
+#ifdef VERTEX_UVS_B
+    let ao = clamp(in.uv_b.x, 0.0, 1.0);
+    pbr_input.occlusion *= vec3(ao);
+#endif
+
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
