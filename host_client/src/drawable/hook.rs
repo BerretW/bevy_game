@@ -76,8 +76,14 @@ pub fn attach_drawable_intent(
 // ---------------------------------------------------------------------------
 
 /// Prochází `Gltf::source` (raw gltf crate data) a mapuje jméno každé image
-/// na handle načtený přes `GltfAssetLabel::Texture(index)`.
+/// na handle načtený přes `GltfAssetLabel::Texture(texture_index)`.
 /// Vyžaduje načtení modelu s `GltfLoaderSettings::include_source = true`.
+///
+/// Dvě normalizace:
+/// - image_index → texture_index: Bevy labeluje sub-assety jako Texture(tex_idx),
+///   nikoli Image(img_idx), takže musíme najít texturu která odkazuje na daný image.
+/// - name stem: Blender exportuje image name s příponou ("foo.png"), ale manifest
+///   ukládá jen stem ("foo") přes _image_basename(). Strippujeme příponu pro match.
 fn build_embedded_image_map(
     gltf: Option<&Gltf>,
     model_path: &str,
@@ -87,12 +93,29 @@ fn build_embedded_image_map(
     let Some(gltf) = gltf else { return map };
     let Some(source) = gltf.source.as_ref() else { return map };
 
+    // image_index → first texture_index that references it
+    let mut image_to_tex: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    for texture in source.textures() {
+        image_to_tex
+            .entry(texture.source().index())
+            .or_insert(texture.index());
+    }
+
     for image in source.images() {
         let Some(name) = image.name() else { continue };
-        let label = GltfAssetLabel::Texture(image.index());
+        let Some(&tex_idx) = image_to_tex.get(&image.index()) else { continue };
+
+        // Strip extension so "foo.png" matches manifest entry "foo"
+        let stem = std::path::Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(name);
+
+        let label = GltfAssetLabel::Texture(tex_idx);
         let path = label.from_asset(model_path.to_string());
         let handle: Handle<Image> = asset_server.load(path);
-        map.insert(name.to_string(), handle);
+        map.insert(stem.to_string(), handle);
     }
     map
 }
