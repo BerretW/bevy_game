@@ -87,6 +87,22 @@ pub trait DbExecutorTrait: Send + Sync + 'static {
 
     /// Je pool připojený a ready?
     fn is_connected(&self) -> bool;
+
+    /// Non-SELECT dotaz s přímým Rust callbackem (bez Lua fronty).
+    fn execute_rust(
+        &self,
+        sql: String,
+        params: Vec<Json>,
+        callback: Box<dyn FnOnce(DbQueryResult) + Send + 'static>,
+    );
+
+    /// SELECT dotaz s přímým Rust callbackem (bez Lua fronty).
+    fn query_rust(
+        &self,
+        sql: String,
+        params: Vec<Json>,
+        callback: Box<dyn FnOnce(DbQueryResult) + Send + 'static>,
+    );
 }
 
 // ---------------------------------------------------------------------------

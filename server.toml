@@ -184,9 +184,10 @@ filter = "wgpu=warn,naga=warn"
 # -----------------------------------------------------------------------------
 [database]
 
-# Connection string. SQLite pro dev, Postgres pro prod.
+# Connection string. SQLite pro dev, Postgres nebo MySQL pro prod.
 url = "sqlite://server.db?mode=rwc"
 # url = "postgres://bevy:bevy@localhost/bevy_game"
+# url = "mysql://bevy:bevy@localhost/bevy_game"
 
 # Velikost connection poolu (default 8).
 pool_size = 8

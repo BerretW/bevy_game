@@ -1,17 +1,23 @@
--- ESC menu — pause overlay shown when the player presses Escape in-game.
--- Engine.SetCursorLocked(false) releases the mouse while the menu is open.
+-- ESC menu — pause overlay.
+-- DrawRect(x, y, w, h): x,y = CENTER (FiveM/GTA5 convention).
+-- DrawText(text, x, y, ...): x,y = TOP-LEFT (Bevy Anchor::TOP_LEFT).
 
 local open = false
 
--- Layout (normalised 0-1 screen coords, origin top-left)
-local PANEL_W, PANEL_H = 0.28, 0.36
-local PANEL_X = (1.0 - PANEL_W) / 2.0
-local PANEL_Y = (1.0 - PANEL_H) / 2.0
+-- Panel: center coords
+local PANEL_CX, PANEL_CY = 0.50, 0.50
+local PANEL_W,  PANEL_H  = 0.28, 0.36
+
+-- Derived edges used for text anchoring and line endpoints
+local PANEL_LEFT   = PANEL_CX - PANEL_W * 0.5   -- 0.36
+local PANEL_TOP    = PANEL_CY - PANEL_H * 0.5   -- 0.32
+local PANEL_RIGHT  = PANEL_CX + PANEL_W * 0.5   -- 0.64
+local PANEL_BOTTOM = PANEL_CY + PANEL_H * 0.5   -- 0.68
 
 local BTN_W, BTN_H = 0.20, 0.055
-local BTN_X = PANEL_X + (PANEL_W - BTN_W) / 2.0
+local BTN_CX       = PANEL_CX            -- buttons centered horizontally
+local BTN_Y_BASE   = PANEL_TOP + 0.105 + BTN_H * 0.5  -- center y of first button
 
--- Colours (r, g, b, a)
 local C_OVERLAY = { 0,   0,   0,   120 }
 local C_PANEL   = { 20,  22,  28,  230 }
 local C_TITLE   = { 220, 220, 220, 255 }
@@ -44,67 +50,58 @@ local function do_action(idx)
     end
 end
 
--- Toggle on Escape and handle keyboard shortcuts while open
 RegisterEvent("input:state", function(payload)
     if not payload then return end
-
-    -- Toggle menu on Escape just-pressed
     if payload.keys_just and payload.keys_just.options_menu then
         if open then close_menu() else open_menu() end
-        return
     end
 end)
 
--- Render loop
 CreateThread(function()
     while true do
         if open then
-            -- Fullscreen dim overlay
-            Gui.DrawRect(0, 0, 1, 1,
+            -- Fullscreen dim overlay (center = screen center, covers everything)
+            Gui.DrawRect(0.5, 0.5, 1.0, 1.0,
                 C_OVERLAY[1], C_OVERLAY[2], C_OVERLAY[3], C_OVERLAY[4])
 
             -- Panel background
-            Gui.DrawRect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H,
+            Gui.DrawRect(PANEL_CX, PANEL_CY, PANEL_W, PANEL_H,
                 C_PANEL[1], C_PANEL[2], C_PANEL[3], C_PANEL[4])
 
-            -- Title
+            -- Title (DrawText is top-left anchored)
             Gui.DrawText("PAUSED",
-                PANEL_X + 0.035, PANEL_Y + 0.025, 1.5,
+                PANEL_LEFT + 0.035, PANEL_TOP + 0.025, 1.5,
                 C_TITLE[1], C_TITLE[2], C_TITLE[3], C_TITLE[4])
 
             -- Separator
-            local sep_y = PANEL_Y + 0.075
+            local sep_y = PANEL_TOP + 0.075
             Gui.DrawLine(
-                PANEL_X + 0.01, sep_y, PANEL_X + PANEL_W - 0.01, sep_y,
+                PANEL_LEFT + 0.010, sep_y,
+                PANEL_RIGHT - 0.010, sep_y,
                 80, 90, 110, 200)
 
             -- Buttons
-            local by_base = PANEL_Y + 0.105
             for i, btn in ipairs(BUTTONS) do
-                local by = by_base + btn.yOff
-                Gui.DrawRect(BTN_X, by, BTN_W, BTN_H, btn.r, btn.g, btn.b, 230)
-                Gui.DrawText(btn.label,
-                    BTN_X + 0.018, by + (BTN_H - 0.018) / 2.0, 0.9,
-                    C_TXT[1], C_TXT[2], C_TXT[3], C_TXT[4])
-                -- Button number hint (keyboard shortcut)
+                local bcy  = BTN_Y_BASE + btn.yOff
+                local btop = bcy - BTN_H * 0.5
+
+                if Gui.Button(BTN_CX, bcy, BTN_W, BTN_H, btn.label, btn.r, btn.g, btn.b) then
+                    do_action(i)
+                end
+
+                -- Keyboard shortcut hint (right side of button)
                 Gui.DrawText(tostring(i),
-                    BTN_X + BTN_W - 0.025, by + (BTN_H - 0.018) / 2.0, 0.75,
+                    BTN_CX + BTN_W * 0.5 - 0.025,
+                    btop + (BTN_H - 0.018) * 0.5,
+                    0.75,
                     120, 120, 120, 200)
             end
 
-            -- Hint text
+            -- Bottom hint
             Gui.DrawText("Press 1 / 2 / 3 to select",
-                PANEL_X + 0.015, PANEL_Y + PANEL_H - 0.035, 0.7,
+                PANEL_LEFT + 0.015, PANEL_BOTTOM - 0.038, 0.7,
                 100, 100, 100, 200)
         end
         Wait(0)
     end
-end)
-
--- Keyboard number shortcuts while menu is open
-RegisterEvent("input:state", function(payload)
-    if not open then return end
-    -- Number keys are not in input:state yet; handle via a separate polling thread
-    -- until key bindings are extended (Phase 5).
-    -- For now the menu can be closed with Escape (handled above).
 end)

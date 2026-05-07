@@ -83,6 +83,46 @@ impl DbExecutorTrait for SqlxExecutor {
     fn is_connected(&self) -> bool {
         *self.connected.lock().unwrap_or_else(|p| p.into_inner())
     }
+
+    fn execute_rust(
+        &self,
+        sql: String,
+        params: Vec<Json>,
+        callback: Box<dyn FnOnce(DbQueryResult) + Send + 'static>,
+    ) {
+        let pool = self.pool.clone();
+        self.tokio.spawn(async move {
+            let mut q = sqlx::query(&sql);
+            for p in &params {
+                q = bind_json(q, p);
+            }
+            let result = match q.execute(&pool).await {
+                Ok(r) => DbQueryResult::RowsAffected(r.rows_affected()),
+                Err(e) => DbQueryResult::Error(e.to_string()),
+            };
+            callback(result);
+        });
+    }
+
+    fn query_rust(
+        &self,
+        sql: String,
+        params: Vec<Json>,
+        callback: Box<dyn FnOnce(DbQueryResult) + Send + 'static>,
+    ) {
+        let pool = self.pool.clone();
+        self.tokio.spawn(async move {
+            let mut q = sqlx::query(&sql);
+            for p in &params {
+                q = bind_json(q, p);
+            }
+            let result = match q.fetch_all(&pool).await {
+                Ok(rows) => DbQueryResult::Rows(rows.into_iter().map(row_to_map).collect()),
+                Err(e) => DbQueryResult::Error(e.to_string()),
+            };
+            callback(result);
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +208,8 @@ pub struct DatabasePlugin;
 
 impl Plugin for DatabasePlugin {
     fn build(&self, app: &mut App) {
-        // Registrujeme sqlx::Any driver — bez tohoto volání Any pool nefunguje.
+        // Registrujeme sqlx::Any drivery — SQLite, PostgreSQL, MySQL.
+        // Bez tohoto volání AnyPool nefunguje pro žádný backend.
         sqlx::any::install_default_drivers();
 
         app.init_resource::<DatabaseConfig>();

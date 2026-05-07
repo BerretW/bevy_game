@@ -116,6 +116,9 @@ pub struct InputSnapshot {
     pub mouse_pressed: HashSet<String>,
     pub mouse_just_pressed: HashSet<String>,
     pub mouse_just_released: HashSet<String>,
+    /// Normalized cursor position (0.0–1.0, top-left origin). (0,0) when cursor is hidden.
+    pub cursor_x: f32,
+    pub cursor_y: f32,
 }
 
 #[derive(Resource, Clone)]
@@ -1552,13 +1555,82 @@ fn install_runtime_api_inner(
                     Ok(())
                 },
             )?)?;
+            // Mouse / cursor helpers (client)
+            let ib = input_bridge.clone();
+            gui_ns.set("GetCursorPos", lua.create_function(move |lua, ()| {
+                let snap = ib.0.lock().unwrap_or_else(|p| p.into_inner());
+                let t = lua.create_table()?;
+                t.set("x", snap.cursor_x)?;
+                t.set("y", snap.cursor_y)?;
+                Ok(t)
+            })?)?;
+
+            let ib = input_bridge.clone();
+            gui_ns.set("IsMouseOver", lua.create_function(move |_, (x, y, w, h): (f32, f32, f32, f32)| {
+                let snap = ib.0.lock().unwrap_or_else(|p| p.into_inner());
+                Ok(snap.cursor_x >= x - w * 0.5 && snap.cursor_x <= x + w * 0.5
+                    && snap.cursor_y >= y - h * 0.5 && snap.cursor_y <= y + h * 0.5)
+            })?)?;
+
+            let ib = input_bridge.clone();
+            gui_ns.set("IsMouseDown", lua.create_function(move |_, btn: Option<String>| {
+                let btn = btn.unwrap_or_else(|| "left".to_string());
+                let snap = ib.0.lock().unwrap_or_else(|p| p.into_inner());
+                Ok(snap.mouse_pressed.contains(&btn.to_lowercase()))
+            })?)?;
+
+            let ib = input_bridge.clone();
+            gui_ns.set("IsMouseClicked", lua.create_function(move |_, btn: Option<String>| {
+                let btn = btn.unwrap_or_else(|| "left".to_string());
+                let snap = ib.0.lock().unwrap_or_else(|p| p.into_inner());
+                Ok(snap.mouse_just_pressed.contains(&btn.to_lowercase()))
+            })?)?;
         } else {
             for fname in &["DrawRect", "DrawText", "DrawLine", "DrawCircle", "DrawSprite"] {
                 gui_ns.set(*fname, lua.create_function(|_, _: MultiValue| Ok(()))?)?;
             }
+            gui_ns.set("GetCursorPos", lua.create_function(|lua, ()| {
+                let t = lua.create_table()?;
+                t.set("x", 0.0f32)?;
+                t.set("y", 0.0f32)?;
+                Ok(t)
+            })?)?;
+            for fname in &["IsMouseOver", "IsMouseDown", "IsMouseClicked"] {
+                gui_ns.set(*fname, lua.create_function(|_, _: MultiValue| -> mlua::Result<bool> { Ok(false) })?)?;
+            }
         }
 
         globals.set("Gui", gui_ns)?;
+
+        // Gui.Button — pure-Lua convenience: draws a rect + returns true on click.
+        // Automatically brightens on hover, darkens while held.
+        // Signature: Gui.Button(x, y, w, h, label, r, g, b, a) -> bool
+        lua.load(r#"
+local _g = Gui
+function _g.Button(x, y, w, h, label, r, g, b, a)
+    local hovered = _g.IsMouseOver(x, y, w, h)
+    local held    = hovered and _g.IsMouseDown()
+    local clicked = hovered and _g.IsMouseClicked()
+    local cr = r or 80
+    local cg = g or 80
+    local cb = b or 80
+    if held then
+        cr = math.max(0,   math.floor(cr * 0.70))
+        cg = math.max(0,   math.floor(cg * 0.70))
+        cb = math.max(0,   math.floor(cb * 0.70))
+    elseif hovered then
+        cr = math.min(255, cr + 40)
+        cg = math.min(255, cg + 40)
+        cb = math.min(255, cb + 40)
+    end
+    _g.DrawRect(x, y, w, h, cr, cg, cb, a or 230)
+    if label and label ~= "" then
+        local th = 0.018
+        _g.DrawText(label, x - w * 0.5 + 0.018, y - h * 0.5 + (h - th) * 0.5, 0.9, 215, 215, 215, 255)
+    end
+    return clicked
+end
+"#).exec()?;
     }
 
     // -- Input namespace — synchronous key/mouse query (Phase 4) ---------------

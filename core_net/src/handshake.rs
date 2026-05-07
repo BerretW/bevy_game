@@ -31,6 +31,7 @@ use lightyear::prelude::*;
 
 use core_resources::{ResourceId, ResourcesDirty, ServerResourceAllowlist};
 
+use crate::auth::ServerAuthConfig;
 use crate::digest::ResourceDigest;
 use crate::digest_cache::ResourceDigestCache;
 use crate::net_plugin::HandshakeChannel;
@@ -62,18 +63,6 @@ impl Default for ServerHandshakeConfig {
 /// instead of consuming `MessageReceiver<ClientReady>` a second time.
 #[derive(Component)]
 pub struct ClientHandshakeComplete;
-
-/// Server-side auth configuration — whether username/password is required.
-#[derive(Resource, Clone, Debug)]
-pub struct ServerAuthConfig {
-    pub require_auth: bool,
-}
-
-impl Default for ServerAuthConfig {
-    fn default() -> Self {
-        Self { require_auth: false }
-    }
-}
 
 pub struct ServerHandshakePlugin;
 

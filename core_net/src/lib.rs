@@ -26,10 +26,10 @@ pub use digest::{
     ResourceDigestSet,
 };
 pub use digest_cache::{DigestPlugin, ResourceDigestCache};
-pub use auth::{ClientAuthPlugin, ServerAuthPlugin};
+pub use auth::{ClientAuthPlugin, ServerAuthConfig, ServerAuthPlugin};
 pub use handshake::{
     ClientHandshakeComplete, ClientHandshakeConfig, ClientHandshakePlugin, ClientHandshakeState,
-    HandshakeStatus, ServerAuthConfig, ServerHandshakeConfig, ServerHandshakePlugin,
+    HandshakeStatus, ServerHandshakeConfig, ServerHandshakePlugin,
 };
 pub use lua_rpc::{ClientLuaRpcPlugin, ServerLuaRpcPlugin};
 pub use core_shared::Health;

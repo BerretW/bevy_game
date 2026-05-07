@@ -283,7 +283,7 @@ fn handle_keyboard_input(
                 };
             }
             Key::Enter => {
-                submit(&mut ui_state, &bridges, 1);
+                submit(&mut ui_state, &bridges, 0);
             }
             _ => {}
         }
@@ -302,7 +302,7 @@ fn submit(ui: &mut AuthUiState, bridges: &GameBridges, action: u8) {
         ui.status_ok  = false;
         return;
     }
-    let verb = if action == 1 { "login" } else { "register" };
+    let verb = if action == 0 { "login" } else { "register" };
     ui.status_msg = format!("Sending {} request…", verb);
     ui.status_ok  = true;
     bridges.auth.push_outgoing(PendingAuthCredentials {
@@ -325,7 +325,7 @@ fn handle_button_clicks(
     if handshake.status != HandshakeStatus::AwaitingAuth { return; }
     for (ia, btn) in q.iter() {
         if *ia == Interaction::Pressed {
-            let action = match btn { AuthBtn::Login => 1u8, AuthBtn::Register => 2u8 };
+            let action = match btn { AuthBtn::Login => 0u8, AuthBtn::Register => 1u8 };
             submit(&mut ui_state, &bridges, action);
         }
     }

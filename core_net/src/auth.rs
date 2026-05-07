@@ -1,33 +1,44 @@
-//! Phase 4 — username/password authentication.
+//! Phase 4 — username/password authentication (pure Rust, no Lua).
 //!
 //! Sekvence (auth_required = true):
 //!
 //! ```text
 //!   Client                            Server
-//!     | <-- ServerHello (auth_req) --  |
-//!     | [download + ClientReady] -->   |
-//!     |                               [ClientHandshakeComplete]
-//!     | <-- AuthChallenge ----------   |  ServerAuthPlugin observer
+//!     | --- lightyear connect -------> |
+//!     | <-- AuthChallenge ----------   |  send_challenge_on_connect observer
 //!     |                                |
-//!     | [player types /login in console]
+//!     | [native UI: user types creds]  |
 //!     | -- AuthCredentials ----------> |  server_receive_credentials
-//!     |                               [emit auth:credentials to LocalEventBus]
-//!     |                               [Lua core/auth queries DB]
-//!     |                               [Auth.MarkPlayerAuthenticated(...)]
-//!     | <-- AuthResult (success) ----- |  server_send_auth_results
-//!     | [auth:result event to Lua]     |
+//!     |                               [DB query: login or register]
+//!     | <-- AuthResult (ok/fail) ----- |  server_send_auth_results
+//!     | [handshake continues: download resources]
 //! ```
 //!
 //! Hesla jsou posílána v plaintextu přes šifrovaný lightyear kanál.
-//! Server hashuje hesla blake3 před uložením / porovnáváním.
+//! Server hashuje blake3 před porovnáváním / ukládáním do DB.
+//! Celý auth flow probíhá čistě v Rustu — žádné Lua hooky.
+
+use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use lightyear::prelude::*;
 
-use core_resources::{GameBridges, LocalEventBus};
+use core_resources::{
+    DatabaseBridgeResource, DbQueryResult, GameBridges, LocalEventBus, PendingAuthResult,
+};
 
 use crate::net_plugin::AuthChannel;
 use crate::protocol::{AuthChallenge, AuthCredentials, AuthResult};
+
+// ---------------------------------------------------------------------------
+// Server auth resource — holds pending results from async DB tasks
+// ---------------------------------------------------------------------------
+
+/// Server config injected by host_server.
+#[derive(Resource, Clone)]
+pub struct ServerAuthConfig {
+    pub require_auth: bool,
+}
 
 // ---------------------------------------------------------------------------
 // ServerAuthPlugin
@@ -37,33 +48,75 @@ pub struct ServerAuthPlugin;
 
 impl Plugin for ServerAuthPlugin {
     fn build(&self, app: &mut App) {
-        // Auth challenge goes out immediately on connect — before resource download —
-        // so the client can authenticate before it ever requests any Lua files.
+        app.init_resource::<ServerAuthConfig>();
         app.add_observer(send_challenge_on_connect);
         app.add_systems(
             Update,
-            (server_receive_credentials, server_send_auth_results).chain(),
+            (
+                ensure_users_table,
+                server_receive_credentials,
+                server_send_auth_results,
+            ),
         );
     }
 }
 
-/// Observer on `Add<Connected>`: if auth is required, add player to the PendingAuth
-/// set and send AuthChallenge immediately (before resource download).
+impl Default for ServerAuthConfig {
+    fn default() -> Self {
+        Self { require_auth: false }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ensure users table exists (runs once after DB connects)
+// ---------------------------------------------------------------------------
+
+fn ensure_users_table(db: Res<DatabaseBridgeResource>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    let Some(bridge) = &db.0 else { return };
+    if !bridge.executor.is_connected() {
+        return;
+    }
+    *done = true;
+    bridge.executor.execute_rust(
+        "CREATE TABLE IF NOT EXISTS users (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE,\
+            password_hash TEXT NOT NULL,\
+            account_id TEXT NOT NULL\
+        )"
+        .to_string(),
+        vec![],
+        Box::new(|result| match result {
+            DbQueryResult::RowsAffected(_) => {
+                info!("[auth/server] users table ready");
+            }
+            DbQueryResult::Error(e) => {
+                error!("[auth/server] failed to ensure users table: {}", e);
+            }
+            _ => {}
+        }),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Observer: send AuthChallenge immediately on connect
+// ---------------------------------------------------------------------------
+
 fn send_challenge_on_connect(
     trigger: On<Add, Connected>,
-    mut remote_ids: Query<(&RemoteId, &mut MessageSender<AuthChallenge>)>,
+    mut remote_ids: Query<(&RemoteId, Option<&mut MessageSender<AuthChallenge>>)>,
     bridges: Res<GameBridges>,
+    auth_cfg: Res<ServerAuthConfig>,
 ) {
-    if !bridges.auth.is_required() {
+    if !auth_cfg.require_auth {
         return;
     }
 
     let entity = trigger.entity;
-    let Ok((remote_id, mut sender)) = remote_ids.get_mut(entity) else {
-        warn!(
-            "[auth/server] entity {:?} has no MessageSender<AuthChallenge>",
-            entity
-        );
+    let Ok((remote_id, sender_opt)) = remote_ids.get_mut(entity) else {
         return;
     };
 
@@ -72,22 +125,37 @@ fn send_challenge_on_connect(
         _ => 0,
     };
 
+    // Always register as pending — decouple from whether sender exists yet.
     bridges.auth.add_pending(client_id);
-    sender.send::<AuthChannel>(AuthChallenge);
-    info!(
-        "[auth/server] AuthChallenge sent to client {} — awaiting credentials",
-        client_id
-    );
+
+    if let Some(mut sender) = sender_opt {
+        sender.send::<AuthChannel>(AuthChallenge);
+        info!(
+            "[auth/server] AuthChallenge sent to client {} — awaiting credentials",
+            client_id
+        );
+    } else {
+        warn!(
+            "[auth/server] no MessageSender<AuthChallenge> for client {} — pending but no challenge sent",
+            client_id
+        );
+    }
 }
 
-/// Polls `MessageReceiver<AuthCredentials>` from each peer entity.
-/// Hashes the password (blake3) and emits `auth:credentials` to LocalEventBus
-/// for the core/auth Lua resource to handle the DB query.
+// ---------------------------------------------------------------------------
+// Receive credentials → run DB query (async, Tokio)
+// ---------------------------------------------------------------------------
+
 fn server_receive_credentials(
     mut receivers: Query<(&mut MessageReceiver<AuthCredentials>, &RemoteId)>,
-    local_bus: Res<LocalEventBus>,
+    db: Res<DatabaseBridgeResource>,
     bridges: Res<GameBridges>,
+    auth_cfg: Res<ServerAuthConfig>,
 ) {
+    if !auth_cfg.require_auth {
+        return;
+    }
+
     for (mut rx, remote_id) in receivers.iter_mut() {
         let client_id = match remote_id.0 {
             PeerId::Netcode(id) => id,
@@ -95,38 +163,201 @@ fn server_receive_credentials(
         };
 
         for cred in rx.receive() {
-            // Only process credentials from players actually pending auth.
             if !bridges.auth.is_pending(client_id) {
-                debug!("[auth/server] ignoring credentials from already-authed client {}", client_id);
+                debug!(
+                    "[auth/server] ignoring credentials from already-authed client {}",
+                    client_id
+                );
                 continue;
             }
 
-            let action = if cred.action == 1 { "register" } else { "login" };
-            // Hash password with blake3 before passing to Lua — plaintext never touches Lua.
-            let password_hash = format!("{}", blake3::hash(cred.password.as_bytes()).to_hex());
-            // Generate a suggested account_id for new registrations (blake3 of name+time).
-            let suggested = generate_account_id(&cred.username);
-
-            let payload = serde_json::json!({
-                "player_id": client_id.to_string(),
-                "action": action,
-                "username": cred.username,
-                "password_hash": password_hash,
-                "suggested_account_id": suggested,
-            });
-            let bytes = serde_json::to_vec(&payload).unwrap_or_default();
-            local_bus.push("auth:credentials".to_string(), bytes);
+            // action 0 = login, 1 = register  (matches auth_ui.rs + sandbox.rs convention)
+            let is_register = cred.action == 1;
+            let password_hash = blake3::hash(cred.password.as_bytes())
+                .to_hex()
+                .to_string();
+            let username = cred.username.trim().to_string();
 
             info!(
-                "[auth/server] received {} attempt from client {} (user='{}')",
-                action, client_id, cred.username
+                "[auth/server] {} attempt from client {} (user='{}')",
+                if is_register { "register" } else { "login" },
+                client_id,
+                username
             );
+
+            // No DB → reject immediately.
+            let Some(bridge) = &db.0 else {
+                push_result(
+                    &bridges.auth.results,
+                    client_id,
+                    false,
+                    "",
+                    "Server database is not configured.",
+                );
+                continue;
+            };
+
+            if !is_register {
+                // ---- LOGIN ----
+                let results = bridges.auth.results.clone();
+                let pending = bridges.auth.pending.clone();
+                bridge.executor.query_rust(
+                    "SELECT account_id, password_hash FROM users WHERE username = ?".into(),
+                    vec![serde_json::Value::String(username.clone())],
+                    Box::new(move |result| match result {
+                        DbQueryResult::Rows(rows) if !rows.is_empty() => {
+                            let stored = rows[0]
+                                .get("password_hash")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if stored == password_hash {
+                                let account_id = rows[0]
+                                    .get("account_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                pending
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .remove(&client_id);
+                                push_result(&results, client_id, true, &account_id, "");
+                                info!(
+                                    "[auth/server] client {} logged in as '{}'",
+                                    client_id, account_id
+                                );
+                            } else {
+                                push_result(
+                                    &results,
+                                    client_id,
+                                    false,
+                                    "",
+                                    "Invalid username or password.",
+                                );
+                            }
+                        }
+                        DbQueryResult::Rows(_) => {
+                            push_result(
+                                &results,
+                                client_id,
+                                false,
+                                "",
+                                "Invalid username or password.",
+                            );
+                        }
+                        DbQueryResult::Error(e) => {
+                            error!("[auth/server] DB login query error: {}", e);
+                            push_result(&results, client_id, false, "", "Database error.");
+                        }
+                        _ => {}
+                    }),
+                );
+            } else {
+                // ---- REGISTER ----
+                let results = bridges.auth.results.clone();
+                let pending = bridges.auth.pending.clone();
+                let executor = bridge.executor.clone();
+
+                // Step 1: check username is free
+                bridge.executor.query_rust(
+                    "SELECT COUNT(*) as cnt FROM users WHERE username = ?".into(),
+                    vec![serde_json::Value::String(username.clone())],
+                    Box::new(move |check_result| {
+                        let taken = match &check_result {
+                            DbQueryResult::Rows(rows) if !rows.is_empty() => rows[0]
+                                .get("cnt")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0)
+                                > 0,
+                            _ => false,
+                        };
+
+                        if taken {
+                            push_result(
+                                &results,
+                                client_id,
+                                false,
+                                "",
+                                "Username is already taken.",
+                            );
+                            return;
+                        }
+
+                        // Step 2: insert new user
+                        let account_id = generate_account_id(&username);
+                        let results2 = results.clone();
+                        let pending2 = pending.clone();
+                        let account_id2 = account_id.clone();
+                        executor.execute_rust(
+                            "INSERT INTO users (username, password_hash, account_id) VALUES (?, ?, ?)"
+                                .into(),
+                            vec![
+                                serde_json::Value::String(username.clone()),
+                                serde_json::Value::String(password_hash.clone()),
+                                serde_json::Value::String(account_id.clone()),
+                            ],
+                            Box::new(move |insert_result| match insert_result {
+                                DbQueryResult::RowsAffected(_) => {
+                                    pending2
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .remove(&client_id);
+                                    push_result(
+                                        &results2,
+                                        client_id,
+                                        true,
+                                        &account_id2,
+                                        "",
+                                    );
+                                    info!(
+                                        "[auth/server] client {} registered as '{}'",
+                                        client_id, account_id2
+                                    );
+                                }
+                                DbQueryResult::Error(e) => {
+                                    error!(
+                                        "[auth/server] DB insert error for '{}': {}",
+                                        username, e
+                                    );
+                                    push_result(
+                                        &results2,
+                                        client_id,
+                                        false,
+                                        "",
+                                        "Registration failed.",
+                                    );
+                                }
+                                _ => {}
+                            }),
+                        );
+                    }),
+                );
+            }
         }
     }
 }
 
-/// Drains PendingAuthResult queue (filled by Lua via `Auth.MarkPlayerAuthenticated` /
-/// `Auth.RejectPlayer`) and sends `AuthResult` back to the appropriate peer entity.
+fn push_result(
+    results: &Arc<Mutex<Vec<PendingAuthResult>>>,
+    player_id: u64,
+    success: bool,
+    account_id: &str,
+    error: &str,
+) {
+    results
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(PendingAuthResult {
+            player_id,
+            success,
+            account_id: account_id.to_string(),
+            error: error.to_string(),
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Drain result queue → send AuthResult back to clients
+// ---------------------------------------------------------------------------
+
 fn server_send_auth_results(
     mut senders: Query<(&mut MessageSender<AuthResult>, &RemoteId)>,
     bridges: Res<GameBridges>,
@@ -144,17 +375,6 @@ fn server_send_auth_results(
                 _ => continue,
             };
             if client_id == result.player_id {
-                if result.success {
-                    info!(
-                        "[auth/server] player {} authenticated as '{}'",
-                        client_id, result.account_id
-                    );
-                } else {
-                    info!(
-                        "[auth/server] auth failed for player {}: {}",
-                        client_id, result.error
-                    );
-                }
                 sender.send::<AuthChannel>(AuthResult {
                     success: result.success,
                     account_id: result.account_id.clone(),
@@ -166,22 +386,24 @@ fn server_send_auth_results(
         }
         if !sent {
             warn!(
-                "[auth/server] could not find sender for auth result to player {}",
+                "[auth/server] no sender found for auth result to player {}",
                 result.player_id
             );
         }
     }
 }
 
-/// Generates a suggested account_id for new user registrations.
-/// Uses blake3(username_lower + timestamp_nanos) → 64-char hex, prefixed with "user:".
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 fn generate_account_id(username: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
     let data = format!("{}:{}", username.to_lowercase(), nanos);
-    format!("{}", blake3::hash(data.as_bytes()).to_hex())
+    blake3::hash(data.as_bytes()).to_hex().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -196,10 +418,6 @@ impl Plugin for ClientAuthPlugin {
     }
 }
 
-/// Polls `MessageReceiver<AuthChallenge>` and `MessageReceiver<AuthResult>` each frame.
-/// - AuthChallenge → emits `auth:challenge {}` to LocalEventBus
-/// - AuthResult    → emits `auth:result {success, account_id, error}` to LocalEventBus
-/// Also drains `auth_bridge.outgoing` and sends `AuthCredentials` via lightyear.
 fn client_process_auth(
     mut challenge_rx: Query<&mut MessageReceiver<AuthChallenge>>,
     mut result_rx: Query<&mut MessageReceiver<AuthResult>>,
@@ -207,16 +425,14 @@ fn client_process_auth(
     bridges: Res<GameBridges>,
     local_bus: Res<LocalEventBus>,
 ) {
-    // Receive AuthChallenge → emit local event
+    // Receive AuthChallenge (informational — UI is driven by HandshakeStatus::AwaitingAuth)
     for mut rx in challenge_rx.iter_mut() {
         for _challenge in rx.receive() {
-            info!("[auth/client] AuthChallenge received — auth required");
-            let bytes = serde_json::to_vec(&serde_json::json!({})).unwrap_or_default();
-            local_bus.push("auth:challenge".to_string(), bytes);
+            info!("[auth/client] AuthChallenge received — showing login UI");
         }
     }
 
-    // Receive AuthResult → signal bridge + emit local event for Lua
+    // Receive AuthResult → signal bridge
     for mut rx in result_rx.iter_mut() {
         for result in rx.receive() {
             if result.success {
@@ -226,8 +442,7 @@ fn client_process_auth(
                 warn!("[auth/client] auth failed: {}", result.error);
                 bridges.auth.set_client_error(result.error.clone());
             }
-
-            // Also emit to LocalEventBus so Lua resources know the outcome
+            // Emit to Lua LocalEventBus so resources can react (e.g. show welcome)
             let payload = serde_json::json!({
                 "success": result.success,
                 "account_id": result.account_id,
@@ -238,7 +453,7 @@ fn client_process_auth(
         }
     }
 
-    // Drain outgoing credentials (queued by Lua via Auth.SendCredentials) and send
+    // Drain outgoing credentials queued by native UI and send via lightyear
     let outgoing = bridges.auth.drain_outgoing();
     if !outgoing.is_empty() {
         for mut sender in cred_senders.iter_mut() {

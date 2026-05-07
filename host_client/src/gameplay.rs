@@ -672,8 +672,15 @@ fn mousebutton_name(btn: &MouseButton) -> String {
 fn update_input_bridge(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    window_q: Query<&Window, With<PrimaryWindow>>,
     bridges: Res<GameBridges>,
 ) {
+    let (cursor_x, cursor_y) = window_q
+        .single()
+        .ok()
+        .and_then(|w| w.cursor_position().map(|p| (p.x / w.width(), p.y / w.height())))
+        .unwrap_or((0.0, 0.0));
+
     bridges.input.update(InputSnapshot {
         pressed:             keys.get_pressed().map(keycode_name).collect::<HashSet<_>>(),
         just_pressed:        keys.get_just_pressed().map(keycode_name).collect::<HashSet<_>>(),
@@ -681,6 +688,8 @@ fn update_input_bridge(
         mouse_pressed:       mouse.get_pressed().map(mousebutton_name).collect::<HashSet<_>>(),
         mouse_just_pressed:  mouse.get_just_pressed().map(mousebutton_name).collect::<HashSet<_>>(),
         mouse_just_released: mouse.get_just_released().map(mousebutton_name).collect::<HashSet<_>>(),
+        cursor_x,
+        cursor_y,
     });
 }
 
