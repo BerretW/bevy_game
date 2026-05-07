@@ -8,8 +8,13 @@ use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 
 use core_resources::ModelName;
 
-use super::manifest::{DrawableManifest, EntityDef, MaterialDef, TextureSource};
-use super::material::{DrawableExtension, DrawableMaterial, DrawableParams};
+use super::manifest::{DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
+use super::material::{
+    DrawableParams,
+    LayeredEnvExtension, LayeredEnvMaterial,
+    StandardPbrExtension, StandardPbrMaterial,
+    VehicleGlassExtension, VehicleGlassMaterial,
+};
 use super::registry::{DrawableManifestRegistry, GltfHandleCache, TextureRegistry};
 
 // ---------------------------------------------------------------------------
@@ -92,6 +97,16 @@ fn build_embedded_image_map(
 }
 
 // ---------------------------------------------------------------------------
+// Interní store — sdružuje 3 asset kolekce pro předání do process_mesh_node
+// ---------------------------------------------------------------------------
+
+struct MaterialStores<'a> {
+    std_pbr: &'a mut Assets<StandardPbrMaterial>,
+    layered: &'a mut Assets<LayeredEnvMaterial>,
+    glass:   &'a mut Assets<VehicleGlassMaterial>,
+}
+
+// ---------------------------------------------------------------------------
 // Systém 2: hook_drawable_scenes
 // ---------------------------------------------------------------------------
 
@@ -112,7 +127,9 @@ pub fn hook_drawable_scenes(
     mat_names: Query<&GltfMaterialName>,
     mesh_handles: Query<&Mesh3d>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut drawable_materials: ResMut<Assets<DrawableMaterial>>,
+    mut std_materials: ResMut<Assets<StandardPbrMaterial>>,
+    mut env_materials: ResMut<Assets<LayeredEnvMaterial>>,
+    mut glass_materials: ResMut<Assets<VehicleGlassMaterial>>,
     mut texture_reg: ResMut<TextureRegistry>,
     asset_server: Res<AssetServer>,
 ) {
@@ -128,6 +145,12 @@ pub fn hook_drawable_scenes(
             let gltf = entry.as_ref().and_then(|(h, _)| gltfs.get(h));
             let path = entry.map(|(_, p)| p.as_str()).unwrap_or("");
             build_embedded_image_map(gltf, path, &asset_server)
+        };
+
+        let mut stores = MaterialStores {
+            std_pbr: &mut std_materials,
+            layered: &mut env_materials,
+            glass:   &mut glass_materials,
         };
 
         for entity in scene_spawner.iter_instance_entities(scene_ready.0) {
@@ -146,7 +169,7 @@ pub fn hook_drawable_scenes(
                         &mat_names,
                         &mesh_handles,
                         &mut meshes,
-                        &mut drawable_materials,
+                        &mut stores,
                         &mut texture_reg,
                         &asset_server,
                     );
@@ -177,7 +200,7 @@ fn process_mesh_node(
     mat_names: &Query<&GltfMaterialName>,
     mesh_handles: &Query<&Mesh3d>,
     meshes: &mut Assets<Mesh>,
-    drawable_materials: &mut Assets<DrawableMaterial>,
+    stores: &mut MaterialStores<'_>,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) {
@@ -205,32 +228,77 @@ fn process_mesh_node(
         return;
     };
 
-    match mat_def.template.as_str() {
+    let applied = match mat_def.template.as_str() {
         "standard_pbr" => {
-            let drawable_mat = build_standard_pbr(mat_def, embedded_images, texture_reg, asset_server);
-            let handle = drawable_materials.add(drawable_mat);
+            let mat = build_standard_pbr(mat_def, embedded_images, texture_reg, asset_server);
+            let handle = stores.std_pbr.add(mat);
             commands
                 .entity(entity)
                 .remove::<MeshMaterial3d<StandardMaterial>>()
                 .insert(MeshMaterial3d(handle));
+            true
+        }
+        "layered_env" => {
+            let mat = build_layered_env(mat_def, embedded_images, texture_reg, asset_server);
+            let handle = stores.layered.add(mat);
+            commands
+                .entity(entity)
+                .remove::<MeshMaterial3d<StandardMaterial>>()
+                .insert(MeshMaterial3d(handle));
+            true
+        }
+        "vehicle_glass" => {
+            let mat = build_vehicle_glass(mat_def, embedded_images, texture_reg, asset_server);
+            let handle = stores.glass.add(mat);
+            commands
+                .entity(entity)
+                .remove::<MeshMaterial3d<StandardMaterial>>()
+                .insert(MeshMaterial3d(handle));
+            true
         }
         other => {
             warn!("[drawable] '{}': neznámý template '{}', přeskočeno", node_name, other);
-            return;
+            false
         }
-    }
+    };
 
-    if !cast_shadows {
+    if applied && !cast_shadows {
         commands.entity(entity).insert(NotShadowCaster);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sdílený helper: MaterialParams → DrawableParams
+// ---------------------------------------------------------------------------
+
+fn build_params(p: &MaterialParams) -> DrawableParams {
+    DrawableParams {
+        tint: p.tint.map(Vec4::from).unwrap_or(Vec4::ONE),
+        weather: Vec4::new(
+            p.snow_level.unwrap_or(0.0),
+            p.dirt_level.unwrap_or(0.0),
+            p.wetness   .unwrap_or(0.0),
+            p.porosity  .unwrap_or(0.0),
+        ),
+        tiling: Vec4::new(
+            p.tiling   .unwrap_or(1.0),
+            p.l0_tiling.unwrap_or(1.0),
+            p.l1_tiling.unwrap_or(1.0),
+            0.0,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Buildery per template
+// ---------------------------------------------------------------------------
 
 fn build_standard_pbr(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
-) -> DrawableMaterial {
+) -> StandardPbrMaterial {
     let p = &def.params;
 
     let albedo  = def.textures.get("albedo") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
@@ -254,27 +322,78 @@ fn build_standard_pbr(
         base.base_color = Color::srgba(t[0], t[1], t[2], t[3]);
     }
 
-    DrawableMaterial {
+    StandardPbrMaterial {
         base,
-        extension: DrawableExtension {
-            palette,
-            snow,
-            params: DrawableParams {
-                tint:    p.tint.map(Vec4::from).unwrap_or(Vec4::ONE),
-                weather: Vec4::new(
-                    p.snow_level.unwrap_or(0.0),
-                    p.dirt_level.unwrap_or(0.0),
-                    p.wetness  .unwrap_or(0.0),
-                    p.porosity .unwrap_or(0.0),
-                ),
-                tiling: Vec4::new(
-                    p.tiling   .unwrap_or(1.0),
-                    p.l0_tiling.unwrap_or(1.0),
-                    p.l1_tiling.unwrap_or(1.0),
-                    0.0,
-                ),
-            },
-        },
+        extension: StandardPbrExtension { palette, snow, params: build_params(p) },
+    }
+}
+
+fn build_layered_env(
+    def: &MaterialDef,
+    embedded_images: &HashMap<String, Handle<Image>>,
+    texture_reg: &mut TextureRegistry,
+    asset_server: &AssetServer,
+) -> LayeredEnvMaterial {
+    let p = &def.params;
+
+    let albedo        = def.textures.get("albedo")        .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let mrao          = def.textures.get("mrao")          .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let normal        = def.textures.get("normal")        .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let layer1_albedo = def.textures.get("layer1_albedo") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let layer1_normal = def.textures.get("layer1_normal") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+
+    let mut base = StandardMaterial {
+        perceptual_roughness: 0.5,
+        metallic: 0.0,
+        ..default()
+    };
+    if let Some(h) = albedo { base.base_color_texture          = Some(h); }
+    if let Some(h) = normal { base.normal_map_texture          = Some(h); }
+    if let Some(h) = mrao {
+        base.metallic_roughness_texture = Some(h.clone());
+        base.occlusion_texture          = Some(h);
+    }
+    if let Some(t) = p.tint {
+        base.base_color = Color::srgba(t[0], t[1], t[2], t[3]);
+    }
+
+    LayeredEnvMaterial {
+        base,
+        extension: LayeredEnvExtension { layer1_albedo, layer1_normal, params: build_params(p) },
+    }
+}
+
+fn build_vehicle_glass(
+    def: &MaterialDef,
+    embedded_images: &HashMap<String, Handle<Image>>,
+    texture_reg: &mut TextureRegistry,
+    asset_server: &AssetServer,
+) -> VehicleGlassMaterial {
+    let p = &def.params;
+
+    let albedo = def.textures.get("albedo").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let normal = def.textures.get("normal").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+
+    // Průhlednost ze tint alpha, fallback 0.3 (tmavé záhadné sklo)
+    let glass_alpha = p.tint.map(|t| t[3]).unwrap_or(0.3);
+    let glass_tint  = p.tint.map(|t| Color::srgba(t[0], t[1], t[2], glass_alpha))
+                            .unwrap_or(Color::srgba(0.9, 0.95, 1.0, glass_alpha));
+
+    let mut base = StandardMaterial {
+        alpha_mode: AlphaMode::Blend,
+        perceptual_roughness: 0.05,
+        metallic: 0.0,
+        double_sided: true,
+        cull_mode: None,
+        base_color: glass_tint,
+        ..default()
+    };
+    if let Some(h) = albedo { base.base_color_texture = Some(h); }
+    if let Some(h) = normal { base.normal_map_texture = Some(h); }
+
+    VehicleGlassMaterial {
+        base,
+        extension: VehicleGlassExtension { params: build_params(p) },
     }
 }
 

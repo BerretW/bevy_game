@@ -7,7 +7,13 @@ mod registry;
 pub use hook::{attach_drawable_intent, hook_drawable_scenes, observe_scene_ready};
 pub use loader::DrawableManifestLoader;
 pub use manifest::DrawableManifest;
-pub use material::{DrawableExtension, DrawableMaterial};
+#[allow(unused_imports)]
+pub use material::{DrawableExtension, DrawableMaterial, DrawableParams};
+pub use material::{
+    LayeredEnvExtension, LayeredEnvMaterial,
+    StandardPbrExtension, StandardPbrMaterial,
+    VehicleGlassExtension, VehicleGlassMaterial,
+};
 pub use registry::{DrawableManifestRegistry, GltfHandleCache, TextureRegistry};
 
 use bevy::pbr::MaterialPlugin;
@@ -19,8 +25,12 @@ impl Plugin for DrawablePlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DrawableManifest>()
             .register_asset_loader(DrawableManifestLoader)
-            .init_asset::<DrawableExtension>()
-            .add_plugins(MaterialPlugin::<DrawableMaterial>::default())
+            .init_asset::<StandardPbrExtension>()
+            .init_asset::<LayeredEnvExtension>()
+            .init_asset::<VehicleGlassExtension>()
+            .add_plugins(MaterialPlugin::<StandardPbrMaterial>::default())
+            .add_plugins(MaterialPlugin::<LayeredEnvMaterial>::default())
+            .add_plugins(MaterialPlugin::<VehicleGlassMaterial>::default())
             .init_resource::<DrawableManifestRegistry>()
             .init_resource::<GltfHandleCache>()
             .init_resource::<TextureRegistry>()

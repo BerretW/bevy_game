@@ -1,92 +1,90 @@
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::pbr_functions as pbr_functions
-#import bevy_pbr::pbr_types as pbr_types
+// layered_env.wgsl — LayeredEnvExtension fragment shader
+//
+// Dvouvrstvý environment materiál. Vrstva 0 (base) pochází ze StandardMaterial,
+// vrstva 1 je definována v extension bindingách a míchá se pomocí vertex color R.
+//
+// Vertex color konvence (ATTRIBUTE_COLOR):
+//   R = blend faktor vrstev (0=jen vrstva 0, 1=jen vrstva 1)
+//   G = krev/špína maska
+//   B = vlhkost/kaluž maska
+//   A = nevyužito (layered_env nepoužívá paletu)
 
-struct LayeredMaterialParams {
-    l0_tiling: f32,
-    l1_tiling: f32,
-    porosity: f32,
-    wetness: f32,
-    snow_level: f32,
-    dirt_level: f32,
-    pad1: f32,
-    pad2: f32,
-};
+#import bevy_pbr::{
+    pbr_fragment::pbr_input_from_standard_material,
+    forward_io::{VertexOutput, FragmentOutput},
+    pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
+}
 
-@group(2) @binding(0) var<uniform> params: LayeredMaterialParams;
+struct DrawableParams {
+    tint:    vec4<f32>,  // RGBA multiplikátor
+    weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
+    tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=nevyužito
+}
 
-// Sdílený sampler pro všechno
-@group(2) @binding(1) var shared_sampler: sampler;
-
-// Layer 0 (Base)
-@group(2) @binding(2) var l0_albedo_tex: texture_2d<f32>;
-@group(2) @binding(3) var l0_mrao_tex: texture_2d<f32>;
-@group(2) @binding(4) var l0_normal_tex: texture_2d<f32>;
-
-// Layer 1 (Overlay)
-@group(2) @binding(5) var l1_albedo_tex: texture_2d<f32>;
-@group(2) @binding(6) var l1_mrao_tex: texture_2d<f32>;
-@group(2) @binding(7) var l1_normal_tex: texture_2d<f32>;
-
-// Ekologie
-@group(2) @binding(8) var snow_tex: texture_2d<f32>;
+@group(2) @binding(100) var layer1_albedo_texture: texture_2d<f32>;
+@group(2) @binding(101) var layer1_albedo_sampler: sampler;
+@group(2) @binding(102) var layer1_normal_texture: texture_2d<f32>;
+@group(2) @binding(103) var layer1_normal_sampler: sampler;
+@group(2) @binding(104) var<uniform> params: DrawableParams;
 
 @fragment
-fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let uv0 = in.uv * params.l0_tiling;
-    let uv1 = in.uv * params.l1_tiling;
+fn fragment(
+    in: VertexOutput,
+    @builtin(front_facing) is_front: bool,
+) -> FragmentOutput {
+    let masks = in.color;       // R=layer_blend, G=dirt, B=wet
+    var pbr_in = in;
+    pbr_in.color = vec4<f32>(1.0);
 
-    // 1. BLENDING VRSTEV (Červený kanál)
-    let blend_mask = in.color.r;
+    var pbr_input = pbr_input_from_standard_material(pbr_in, is_front);
 
-    let alb0 = textureSample(l0_albedo_tex, shared_sampler, uv0).rgb;
-    let alb1 = textureSample(l1_albedo_tex, shared_sampler, uv1).rgb;
-    var final_albedo = mix(alb0, alb1, blend_mask);
+    // 1. Tint ze StandardMaterial params (nastavuje se v Rustu)
+    pbr_input.material.base_color *= params.tint;
 
-    let mrao0 = textureSample(l0_mrao_tex, shared_sampler, uv0);
-    let mrao1 = textureSample(l1_mrao_tex, shared_sampler, uv1);
-    var final_roughness = mix(mrao0.g, mrao1.g, blend_mask);
-    var final_metallic = mix(mrao0.r, mrao1.r, blend_mask);
-    var final_ao = mix(mrao0.b, mrao1.b, blend_mask);
+    // 2. Míchání vrstev: vertex R = blend faktor
+    let blend = clamp(masks.r, 0.0, 1.0);
+    if blend > 0.001 {
+        let uv1 = in.uv * params.tiling.z;     // l1_tiling
+        let l1_col = textureSample(layer1_albedo_texture, layer1_albedo_sampler, uv1);
+        pbr_input.material.base_color = mix(pbr_input.material.base_color, l1_col, blend);
+        // Normála druhé vrstvy se míchá lineárně v tangent-space před normalizací.
+        // pbr_input.N je world-space — pro přesné míchání normál by bylo potřeba
+        // tangent frame, zde proto blendujeme jen albedo. Vrstva 0 normálová mapa
+        // (z StandardMaterial.normal_map_texture) zůstává.
+    }
 
-    let norm0 = textureSample(l0_normal_tex, shared_sampler, uv0).rgb;
-    let norm1 = textureSample(l1_normal_tex, shared_sampler, uv1).rgb;
-    var final_normal_map = mix(norm0, norm1, blend_mask);
-
-    // 2. ŠPÍNA (Zelený kanál)
-    let dirt_mask = in.color.g * params.dirt_level;
-    final_albedo = mix(final_albedo, vec3<f32>(0.15, 0.12, 0.1), dirt_mask);
-    final_roughness = mix(final_roughness, 0.9, dirt_mask);
-
-    // 3. VLHKOST A KALUŽE (Modrý kanál)
-    let is_puddle = in.color.b * params.wetness;
-    let wet_darken = mix(1.0, mix(1.0, 0.4, params.porosity), params.wetness);
-    
-    final_albedo *= mix(wet_darken, 0.8, is_puddle);
-    final_roughness = mix(final_roughness, 0.02, is_puddle);
-    final_normal_map = mix(final_normal_map, vec3<f32>(0.5, 0.5, 1.0), is_puddle);
-
-    // 4. SNÍH (Směr nahoru)
-    let up_factor = max(0.0, in.world_normal.y); 
-    let snow_mask = smoothstep(0.4, 0.8, up_factor * params.snow_level * 2.0);
-    
-    let snow_color = textureSample(snow_tex, shared_sampler, in.world_position.xz * 0.2).rgb;
-    final_albedo = mix(final_albedo, snow_color, snow_mask);
-    final_roughness = mix(final_roughness, 0.8, snow_mask);
-    final_metallic = mix(final_metallic, 0.0, snow_mask);
-
-    // 5. BEVY PBR OUTPUT
-    var pbr_input = pbr_functions::pbr_input_new();
-    pbr_input.material.base_color = vec4<f32>(final_albedo, 1.0);
-    pbr_input.material.perceptual_roughness = final_roughness;
-    pbr_input.material.metallic = final_metallic;
-    pbr_input.material.occlusion = final_ao;
-    pbr_input.frag_coord = in.position;
-    pbr_input.world_position = in.world_position;
-    pbr_input.world_normal = pbr_functions::prepare_world_normal(
-        final_normal_map, false, in.world_normal
+    // 3. Špína / krev: vertex G × dirt_level
+    let dirt_factor = clamp(masks.g * params.weather.y, 0.0, 1.0);
+    pbr_input.material.base_color = mix(
+        pbr_input.material.base_color,
+        pbr_input.material.base_color * vec4<f32>(0.38, 0.28, 0.18, 1.0),
+        dirt_factor
     );
-    pbr_input.is_orthographic = false;
 
-    return pbr_functions::pbr(pbr_input);
+    // 4. Vlhkost: vertex B × wetness
+    let wet_factor = clamp(masks.b * params.weather.z, 0.0, 1.0);
+    pbr_input.material.base_color           = mix(
+        pbr_input.material.base_color,
+        pbr_input.material.base_color * 0.65,
+        wet_factor
+    );
+    pbr_input.material.perceptual_roughness = mix(
+        pbr_input.material.perceptual_roughness,
+        max(0.04, pbr_input.material.perceptual_roughness - params.weather.w * 0.45),
+        wet_factor
+    );
+
+    // 5. Sníh: snow_level (globální, nereaguje na vertex B tady — vrstva prostředí)
+    let snow_factor = clamp(params.weather.x, 0.0, 1.0);
+    if snow_factor > 0.001 {
+        let snow_col = vec4<f32>(0.92, 0.95, 1.0, 1.0);    // bílá se studeným nádechem
+        pbr_input.material.base_color           = mix(pbr_input.material.base_color, snow_col, snow_factor);
+        pbr_input.material.perceptual_roughness = mix(pbr_input.material.perceptual_roughness, 0.95, snow_factor);
+        pbr_input.material.metallic             = mix(pbr_input.material.metallic, 0.0, snow_factor);
+    }
+
+    var out: FragmentOutput;
+    out.color = apply_pbr_lighting(pbr_input);
+    out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    return out;
 }
