@@ -10,6 +10,7 @@
 mod auth_ui;
 mod config;
 mod console;
+mod drawable;
 mod gameplay;
 mod gui_render;
 mod lobby;
@@ -194,6 +195,8 @@ fn main() {
             gui_render::GuiRenderPlugin,
             // Native assets (fonts, models) from `assets/` directory.
             native_assets::NativeAssetsPlugin,
+            // Drawable system: .drawable manifests, material swap, vertex color sanitization.
+            drawable::DrawablePlugin,
             ClientCorePlugin,
             FramepacePlugin,
         ))

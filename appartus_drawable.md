@@ -1,9 +1,10 @@
 
+
 # Apparatus Drawable System (ADS) – Technical Design Document
 
 ## 1. Úvod a Filosofie
 
-**Apparatus Drawable** (dále jen "Drawable") je základní stavební blok pro reprezentaci herních objektů (assets) v enginu. Namísto tradičního přístupu (načtení prostého 3D modelu) je Drawable **data-driven kontejner**, který sdružuje:
+**Apparatus Drawable** (dále jen "Drawable") je základní stavební blok pro reprezentaci herních objektů (assets) v enginu. Namísto tradičního přístupu (načtení prostého 3D modelu a jeho ručního nastavování v editoru enginu) je Drawable **data-driven kontejner**, který sdružuje:
 
 1. **Vizuální data:** Hierarchii meshů a vertex data (obsahující masky).
 2. **Fyzikální data:** Zjednodušenou geometrii a parametry (hmotnost, tření, statický/dynamický stav) pro fyzikální engine (např. Rapier/Avian).
@@ -17,7 +18,7 @@ Tento systém umožňuje oddělit práci grafiků/designerů v Blenderu od hern�
 
 Z hlediska distribuce se jeden Drawable skládá ze dvou souborů stejného jména:
 
-1. `[asset_name].glb` – **Binární kontejner (Tělo).** Obsahuje surovou geometrii, hierarchii uzlů (nodes) a případně vložené (embedded) obrazové soubory.
+1. `[asset_name].glb` – **Binární kontejner (Tělo).** Obsahuje surovou geometrii, hierarchii uzlů (nodes), Vertex Colors (použité jako masky materiálu) a případně vložené (embedded) obrazové soubory.
 2. `[asset_name].toml` – **Manifest (Duše).** Definuje sémantiku uzlů uvnitř GLB a mapuje materiály na shadery.
 
 ---
@@ -36,11 +37,11 @@ version = "1.1"
 "Metal_Rust_Mat" = {
     template = "standard_pbr",
     textures = {
-        albedo = { name = "barrel_01_d.dds", source = "embedded" },
-        mrao = { name = "rust_generic_mrao.dds", source = "shared" },
-        normal = { name = "rust_generic_n.dds", source = "shared" },
-        palette = { name = "default_lut.dds", source = "shared" },
-        snow = { name = "snow_01_d.dds", source = "shared" }
+        albedo = { name = "barrel_01_d", source = "embedded" },
+        mrao = { name = "rust_generic_mrao", source = "shared" },
+        normal = { name = "rust_generic_n", source = "shared" },
+        palette = { name = "default_lut", source = "shared" },
+        snow = { name = "snow_01_d", source = "shared" }
     },
     params = {
         tint = [1.0, 1.0, 1.0, 1.0],
@@ -71,7 +72,7 @@ version = "1.1"
 
 ### 3.2. Rust Serde Struktury
 
-Zde je návrh struktur pro deserializaci:
+Zde je návrh struktur pro deserializaci v Rustu:
 
 ```rust
 use serde::Deserialize;
@@ -109,7 +110,6 @@ pub enum TextureSource {
     Embedded,
 }
 
-// Zjednodušený přístup pro parametry (lze řešit i přes untyped serde_json::Value pro větší flexibilitu)
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct MaterialParams {
     pub tint: Option<[f32; 4]>,
@@ -199,33 +199,66 @@ Na základě definice v TOML se entita (uzel z GLB) radikálně upraví.
 Pokud uzel odpovídá `EntityDef::MESH`:
 
 1. Ponecháme mu komponenty `Transform` a `Mesh3d`.
-2. Z `MeshMaterial3d` přečteme původní (placeholder) materiál z GLTF a získáme jeho jméno (vyžaduje přístup k Gltf assetu nebo iteraci `Assets<StandardMaterial>`).
+2. Z `MeshMaterial3d` přečteme původní (placeholder) materiál z GLTF a získáme jeho jméno.
 3. Najdeme toto jméno v sekci `[materials]` v Manifestu.
 4. **Získání Textur:** Systém projde sloty (albedo, normal...).
-   * Pokud `source == "shared"`: Vyžádá Handle z globálního `TextureRegistry`.
-   * Pokud `source == "embedded"`: Najde texturu podle jména přímo uvnitř načtené struktury Bevy `Gltf` (`gltf.named_textures.get(&tex_info.name)`).
+   * Pokud `source == "shared"`: Vyžádá Handle z globálního `TextureRegistry` (viz sekce 6).
+   * Pokud `source == "embedded"`: Najde texturu podle jména přímo uvnitř načtené struktury Bevy `Gltf`.
 5. **Aplikace Shaderu:** Na základě hodnoty `template` se vytvoří instance příslušného Custom Shaderu (např. `StandardPbrMaterial` nebo `LayeredEnvMaterial`), naplní se Handles textur a parametry.
-6. Původní `MeshMaterial3d<StandardMaterial>` se nahradí za `MeshMaterial3d<StandardPbrMaterial>`.
+6. Původní `MeshMaterial3d<StandardMaterial>` se nahradí za `MeshMaterial3d<CustomMaterial>`.
 
 #### 3.B. Fyzikální uzly (`type = "COLLISION"`)
 
 Pokud uzel odpovídá `EntityDef::COLLISION`:
 
-1. **Odstranění Vizuálu:** Odstraníme komponenty `Mesh3d` a `MeshMaterial3d`, případně nastavíme `Visibility::Hidden`. Fyzika nesmí být vidět.
-2. **Generování Collideru:** Podle `shape` vygenerujeme Collider.
-   * Pro tvary jako `BOX` nebo `SPHERE` můžeme číst rozměry z (nyní odstraněného) meshe, nebo (lépe) je vypočítat z Bounding Boxu mesh geometrie.
+1. **Odstranění Vizuálu:** Odstraníme komponenty `Mesh3d` a `MeshMaterial3d` (nebo přidáme `Visibility::Hidden`). Fyzika nesmí být vidět.
+2. **Generování Collideru:** Podle `shape` vygenerujeme Collider z fyzikálního enginu (Avian).
+   * Pro tvary jako `BOX` nebo `SPHERE` spočítáme rozměry z (nyní odstraněného) Bounding Boxu mesh geometrie.
    * Pro `CONVEX` získáme pozice vertexů z meshe a vytvoříme `Collider::convex_hull(vertices)`.
 3. **Nastavení RigidBody:**
    * Vložíme `RigidBody::Static` (pokud `is_static == true`), jinak `RigidBody::Dynamic`.
-   * Nastavíme hmotnost: `ColliderMassProperties::Mass(def.mass)`.
-   * Nastavíme materiál: `Friction::new(def.friction)` a `Restitution::new(def.restitution)`.
-4. *(Volitelně)* Pokud má kontejnerový kořen také mít RigidBody, zvážíme spojení colliderů na kořenovou entitu (Collider hierarchies).
+   * Nastavíme hmotnost a fyzikální materiál (tření, odrazivost).
 
 ---
 
-## 5. Globální Texture Registry (VRAM optimalizace)
+## 5. Pipeline pro Vertex Colors (Masky materiálu)
 
-Aby se zabránilo vícenásobnému načítání stejných `.dds` textur, engine udržuje centrální resource.
+Zásadním prvkem vizuálu jsou Vertex Colors, které slouží jako data (nikoliv barvy) pro míchání vrstev v našich Uber-Shaderech. Blender plugin tato data ukládá během exportu.
+
+### 5.1. Logika mapování kanálů
+
+Ve WGSL shaderu (`in.color`) reprezentují kanály následující vlastnosti:
+
+* `R (Red)`: Faktor pro prolínání vrstev (`l0_albedo` vs `l1_albedo`).
+* `G (Green)`: Maska pro zobrazení krve nebo špíny (reaguje na globální proměnnou prostředí).
+* `B (Blue)`: Maska pro tvorbu kaluží a zadržování vlhkosti.
+* `A (Alpha)`: UV souřadnice (U) pro vzorkování palety barev (Tinting).
+
+### 5.2. Zpracování v Bevy (Sanitizace)
+
+Standardní glTF načte barvy do atributu `Mesh::ATTRIBUTE_COLOR` jako `vec4<f32>`. Ne všechny modely (zvláště ty stažené z internetu, nikoliv exportované přes náš plugin) ale tento atribut mají.
+
+**Ošetření chybějících Vertex Colors:**
+Aby nedošlo k havárii shaderu nebo neočekávanému vizuálu (např. celý model krvavý kvůli chybějícím datům), musí proces Scene Hookingu u `type = "MESH"` zkontrolovat existenci tohoto atributu.
+
+```rust
+// Při aplikaci nového materiálu na MESH entitu:
+if let Some(mut mesh) = meshes.get_mut(mesh_handle) {
+    if !mesh.contains_attribute(Mesh::ATTRIBUTE_COLOR) {
+        // Model nemá Vertex Colors. Naplníme neutrálními daty:
+        // R=0 (Základní vrstva), G=0 (Čisto), B=0 (Sucho), A=0 (Default paleta)
+        let num_vertices = mesh.count_vertices();
+        let default_colors = vec![[0.0, 0.0, 0.0, 0.0]; num_vertices];
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, default_colors);
+    }
+}
+```
+
+---
+
+## 6. Globální Texture Registry (VRAM optimalizace)
+
+Aby se zabránilo vícenásobnému načítání stejných `.dds` textur do paměti GPU, engine udržuje centrální resource pro všechny `source = "shared"` textury.
 
 ```rust
 #[derive(Resource, Default)]
@@ -239,7 +272,7 @@ impl TextureRegistry {
             return handle.clone();
         }
       
-        // Předpoklad: Všechny sdílené textury jsou uloženy ve stream/textures/
+        // Předpoklad: Všechny sdílené textury jsou ve stream/textures/
         let path = format!("stream/textures/{}.dds", name); 
         let handle: Handle<Image> = asset_server.load(path);
         self.loaded_textures.insert(name.to_string(), handle.clone());
@@ -247,13 +280,6 @@ impl TextureRegistry {
     }
 }
 ```
-
----
-
-## 6. Integrace Počasí a Masek
-
-1. **Vertex Colors (Masky):** GLB obsahuje Vertex Colors. Bevy je naimportuje do atributu `Mesh::ATTRIBUTE_COLOR`. Náš WGSL shader tyto hodnoty v `FragmentInput` (`in.color`) automaticky uvidí a využije je jako mísící faktory (R, G, B, A).
-2. **Globální Počasí:** Pro minimalizaci aktualizací se v enginu založí `GlobalEnvironmentBuffer` resource, který se do shaderu posílá jako BindGroup. To umožní okamžitou změnu počasí (deště/sněhu) pro všechny Apparatus Drawables najednou, bez nutnosti měnit Uniformy jednotlivých materiálů.
 
 ---
 
@@ -267,4 +293,5 @@ impl TextureRegistry {
     * Zaregistrovat je pomocí `MaterialPlugin`.
 4. [ ] **Scene Hooking System:** Napsat systém, který reaguje na spawnované GLTF scény s `DrawableSpawnIntent`.
 5. [ ] **Material Swapper:** Logika ve Scene Hookingu, která parsne GLTF nody a vymění materiály za Custom Materials, včetně správného resolvementu textur (Shared vs. Embedded).
-6. [ ] **Physics Swapper:** Logika ve Scene Hookingu, která najde `COL_` nody, skryje je a vytvoří na nich Collidery z Avian/Rapier na základě geometrie meshe.
+6. [ ] **Vertex Colors Sanitization:** Doplnit logiku, která při výměně materiálu zkontroluje a případně doplní atribut `Mesh::ATTRIBUTE_COLOR` nulovými hodnotami.
+7. [ ] **Physics Swapper:** Logika ve Scene Hookingu, která najde fyzikální nody (`COL_`), skryje jejich vizuál a vytvoří na nich Collidery z Avian/Rapier na základě geometrie původního meshe a tagu `shape` z TOMLu.

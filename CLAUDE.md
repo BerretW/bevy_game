@@ -239,6 +239,7 @@ files {
 ### Phase 4 — WebUI, DB & QOL
 
 - [X] **Dual resource loading** — `resolve_path_relative_to_exe` s třístupňovým fallbackem: exe_dir → CWD → `../resources` (pro `cargo run` z build directory)
+- [X] **ADS Blender toolkit refresh** — `blender_plugin/bevy_toolkit.py` exportuje ADS-compliant `.toml` (`asset_name`, `version`, `[materials]`, `[entities]`), podporuje `MESH`/`COLLISION` metadata, texture source (`shared`/`embedded`), vertex mask workflow včetně alpha kanálu, export scope (`ALL`/`SELECTED`/`ACTIVE_COLLECTION`), konzistenční validační warningy před exportem a Sollumz-like workflow (`Convert to Drawable Model`, `Convert to Drawable`, `Create Drawable`, material conversion/embed utility) včetně robustního mapování textur z Principled BSDF graphu, template-specific preview node graphů pro `standard_pbr`/`layered_env`/`vehicle_glass` a deterministického parentingu COL proxy objektů
 - [X] **Vlastní GUI framework** — immediate-mode Lua drawing API (`Gui.*`) + Lua threading (`CreateThread` / `Wait`)
   - [X] `GuiDrawBuffer(Arc<Mutex<Vec<DrawCommand>>>)` — sdílený buffer Lua ↔ Bevy
   - [X] `Gui.DrawRect(x, y, w, h, r, g, b, a)` — vyplněný obdélník (normalizované 0–1 souřadnice)
@@ -260,6 +261,18 @@ files {
   - [X] `resources/example/esc_menu/` — ESC pauza menu (`UI.Window` framework)
 - [ ] Integrovat `sqlx` a namapovat Lua Database exporty (základ přítomen jako stub)
 - [ ] Umožnit Lua resources registrovat vlastní WGSL shadery a aplikovat je na materiály
+- [X] **Apparatus Drawable System (ADS)** — data-driven asset container (`[name].glb` + `[name].drawable` TOML manifest)
+  - [X] `DrawableManifest` serde struktury (`MaterialDef`, `EntityDef::MESH/COLLISION`, `TextureInfo`, `MaterialParams`)
+  - [X] `DrawableManifestLoader` — Bevy `AssetLoader` pro příponu `.drawable` (TOML 1.1)
+  - [X] `DrawableManifestRegistry` — mapa `model_name → Handle<DrawableManifest>`, plněná z `NativeAssetsPlugin`
+  - [X] `TextureRegistry` — globální cache sdílených DDS textur (`source = "shared"`)
+  - [X] `DrawableMaterial` = `ExtendedMaterial<StandardMaterial, DrawableExtension>` s weather parametry
+  - [X] `drawable_extension.wgsl` — fragment shader: vertex color masky (R=layer, G=dirt, B=wet, A=palette), sníh, špína, vlhkost, 1D paleta LUT
+  - [X] `SceneReadyId` observer (`On<SceneInstanceReady>`) + `hook_drawable_scenes` polling systém
+  - [X] Vertex color sanitizace (fill `[0,0,0,0]` pokud mesh nemá `ATTRIBUTE_COLOR`)
+  - [X] Material swap: GLTF `StandardMaterial` → `DrawableMaterial` podle `[entities]`/`[materials]` v manifestu
+  - [X] COL_ uzly: Schování (`Visibility::Hidden`) — Phase 5 přidá Avian colliders
+  - [X] `NativeAssetsPlugin` rozšířen o scan `assets/models/*.drawable`
 
 ---
 
@@ -777,6 +790,8 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
 
 ```text
 /Cargo.toml                      workspace root, sjednocené [workspace.dependencies] (+ serde_json)
+/blender_plugin/                Blender authoring tooling pro Apparatus Drawable workflow
+  bevy_toolkit.py                 ADS exporter (`.glb` + `.toml`), material/texture metadata, collision entity metadata, vertex mask painting
 /core_shared/                    sdílené typy mezi serverem a klientem
   src/lib.rs                       SharedPlugin, LuaEvent (Bevy Message), LuaEventRegistry
 /core_resources/                 VFS + manifest + Lua sandbox (Phase 1–3)
@@ -815,6 +830,15 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
   src/gameplay.rs                  ClientGameplayPlugin, update_raycast_bridge, collect_and_send_input,
                                      publish_input_state_to_lua (`input:state` local bus event),
                                      3D player visual attach + 1st/3rd person camera follow
+  src/native_assets.rs             NativeAssetsPlugin — scan assets/fonts/*.{ttf,otf}, assets/models/*.{glb,gltf,drawable}
+  src/drawable/                    Apparatus Drawable System (ADS)
+    manifest.rs                      DrawableManifest (serde), MaterialDef, EntityDef, CollisionShape
+    loader.rs                        DrawableManifestLoader (AssetLoader, ext=.drawable)
+    registry.rs                      DrawableManifestRegistry, TextureRegistry (shared DDS cache)
+    material.rs                      DrawableExtension + DrawableMaterial (ExtendedMaterial<StandardMaterial, DrawableExtension>)
+    hook.rs                          observe_scene_ready, attach_drawable_intent, hook_drawable_scenes
+    mod.rs                           DrawablePlugin
+  assets/shaders/drawable_extension.wgsl   Fragment shader: vertex color masky, sníh, špína, vlhkost, paleta LUT
 /cache/resources/                lokální cache klienta (download během handshake; gitignored)
 /resources/                      game content (Lua + assets) — *server-side autoritativní*
   core/init/                       bootstrap resource (root, no deps)

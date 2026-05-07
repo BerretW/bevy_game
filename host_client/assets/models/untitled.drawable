@@ -1,0 +1,9 @@
+asset_name = "untitled"
+version = "1.1"
+
+[materials]
+"standard.011" = { template = "standard_pbr", textures = { albedo = { name = "nbx_gutters_metalpipe_01_ab", source = "embedded" }, mrao = { name = "nbx_gutters_metalpipe_01_ctrl", source = "embedded" }, normal = { name = "nbx_gutters_metalpipe_01_nm", source = "embedded" }, palette = { name = "agu_guama_hut04_pal", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 4.63, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0695876, snow_level = 0.0, dirt_level = 0.0 } }
+
+[entities]
+"COL_Cube" = { type = "COLLISION", shape = "CONVEX", mass = 1.0, is_static = false, friction = 0.6, restitution = 0.2, tags = [] }
+"Cube" = { type = "MESH", cast_shadows = true }

@@ -31,6 +31,8 @@ pub struct ModelEntry {
     pub path: PathBuf,
     /// Počet Lua sandboxů, které model aktuálně "drží".
     pub ref_count: usize,
+    /// True = registrován přes `register_native` (assets/models/); přežije `rebuild_from_scan`.
+    pub native: bool,
 }
 
 /// Globální registry modelů. Builduje se z VFS scan a udržuje ref-counting.
@@ -51,7 +53,7 @@ impl ModelRegistry {
             );
             return;
         }
-        self.models.insert(name, ModelEntry { path, ref_count: 0 });
+        self.models.insert(name, ModelEntry { path, ref_count: 0, native: false });
     }
 
     /// Zvýší ref count pro daný model. Vrací `true`, pokud model existuje.
@@ -86,7 +88,7 @@ impl ModelRegistry {
         if self.models.contains_key(&name) {
             return;
         }
-        self.models.insert(name, ModelEntry { path: PathBuf::from(bevy_path), ref_count: 0 });
+        self.models.insert(name, ModelEntry { path: PathBuf::from(bevy_path), ref_count: 0, native: true });
     }
 
     /// Cesta na disk pro daný model (pro Phase 4 asset loading).
@@ -95,10 +97,11 @@ impl ModelRegistry {
     }
 
     /// Úplný rebuild ze scan výsledků (při hot-reload VFS).
+    /// Native modely (assets/models/) jsou zachovány — VFS scan je nepřepíše.
     pub fn rebuild_from_scan(&mut self, new_models: HashMap<String, PathBuf>) {
-        self.models.clear();
+        self.models.retain(|_, entry| entry.native);
         for (name, path) in new_models {
-            self.models.insert(name, ModelEntry { path, ref_count: 0 });
+            self.models.entry(name).or_insert(ModelEntry { path, ref_count: 0, native: false });
         }
         info!("[model_registry] rebuilt — {} model(s) registered", self.models.len());
     }

@@ -57,7 +57,15 @@
       "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\.cargo\\\\registry\\\\src\" -Recurse -Filter \"Cargo.toml\" | Where-Object { $_.FullName -match \"wry-0\\\\.46\" } | Select-Object -First 1 -ExpandProperty DirectoryName)",
       "Read(//c/Users/adolf/.cargo/registry/**)",
       "Bash(xargs grep -l \"pub struct RenderLayers\")",
-      "Bash(New-Item -ItemType Directory -Force -Path \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\resources\\\\core\\\\auth\\\\server\",\"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\resources\\\\core\\\\auth\\\\client\")"
+      "Bash(New-Item -ItemType Directory -Force -Path \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\resources\\\\core\\\\auth\\\\server\",\"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\resources\\\\core\\\\auth\\\\client\")",
+      "Bash(find /root/.cargo/registry/src/ -name \"*.rs\" -path \"*bevy_render*0.18*\" 2>/dev/null | head -5; find C:/Users/adolf/.cargo/registry/src/ -name \"scene_spawner.rs\" -path \"*0.18*\" 2>/dev/null | head -5)",
+      "Read(//root/.cargo/registry/**)",
+      "Bash(cargo doc *)",
+      "Read(//c/Users/adolf/GIT/bevy_game/%CARGO_HOME%/registry/**)",
+      "Bash(grep -rn \"pub struct Gltf\" \"%USERPROFILE%\\\\.cargo\\\\registry\\\\src\" --include=\"*.rs\" 2>nul | head -5)",
+      "Read(//c/Users/adolf/GIT/bevy_game/%USERPROFILE%/.cargo/registry/**)",
+      "Bash(cargo metadata *)",
+      "Bash(python -c \"import sys,json; deps=[d for d in json.load\\(sys.stdin\\)['packages'] if 'gltf' in d['name'].lower\\(\\)]; print\\('\\\\n'.join\\([d['name']+' '+d['version']+' '+d['manifest_path'] for d in deps]\\)\\)\")"
     ]
   }
 }

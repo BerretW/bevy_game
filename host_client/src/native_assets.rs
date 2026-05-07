@@ -14,6 +14,7 @@ use bevy::prelude::*;
 
 use core_resources::ModelRegistry;
 
+use crate::drawable::{DrawableManifestRegistry, GltfHandleCache};
 use crate::gui_render::GuiFontRegistry;
 
 pub struct NativeAssetsPlugin;
@@ -41,10 +42,13 @@ fn load_native_assets(
     asset_server: Res<AssetServer>,
     mut font_reg: ResMut<GuiFontRegistry>,
     mut model_reg: ResMut<ModelRegistry>,
+    mut drawable_reg: ResMut<DrawableManifestRegistry>,
+    mut gltf_cache: ResMut<GltfHandleCache>,
 ) {
     let root = asset_root();
     load_native_fonts(&asset_server, &mut font_reg, &root);
-    register_native_models(&asset_server, &mut model_reg, &root);
+    register_native_models(&asset_server, &mut model_reg, &mut gltf_cache, &root);
+    load_native_drawables(&asset_server, &mut drawable_reg, &root);
 }
 
 fn load_native_fonts(asset_server: &AssetServer, font_reg: &mut GuiFontRegistry, root: &PathBuf) {
@@ -72,7 +76,36 @@ fn load_native_fonts(asset_server: &AssetServer, font_reg: &mut GuiFontRegistry,
     }
 }
 
-fn register_native_models(asset_server: &AssetServer, model_reg: &mut ModelRegistry, root: &PathBuf) {
+fn load_native_drawables(
+    asset_server: &AssetServer,
+    drawable_reg: &mut DrawableManifestRegistry,
+    root: &PathBuf,
+) {
+    use crate::drawable::DrawableManifest;
+
+    let model_dir = root.join("models");
+    let entries = match std::fs::read_dir(&model_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "drawable" { continue; }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let rel = format!("models/{}.drawable", stem);
+        let handle: Handle<DrawableManifest> = asset_server.load(rel);
+        drawable_reg.0.insert(stem.to_string(), handle);
+        info!("[native_assets] drawable manifest registered: '{}'", stem);
+    }
+}
+
+fn register_native_models(
+    asset_server: &AssetServer,
+    model_reg: &mut ModelRegistry,
+    gltf_cache: &mut GltfHandleCache,
+    root: &PathBuf,
+) {
     let model_dir = root.join("models");
     let entries = match std::fs::read_dir(&model_dir) {
         Ok(e) => e,
@@ -90,7 +123,15 @@ fn register_native_models(asset_server: &AssetServer, model_reg: &mut ModelRegis
 
         let bevy_path = format!("models/{}.{}", stem, ext);
         model_reg.register_native(stem.to_string(), bevy_path.clone());
-        let _: Handle<bevy::gltf::Gltf> = asset_server.load(&bevy_path);
+        // include_source = true: zachová raw gltf::Gltf v Gltf::source →
+        // umožní lookup embedded textur podle jména přes gltf.images().
+        let handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
+            bevy_path.clone(),
+            |s: &mut bevy::gltf::GltfLoaderSettings| {
+                s.include_source = true;
+            },
+        );
+        gltf_cache.0.insert(stem.to_string(), (handle, bevy_path));
         info!("[native_assets] model registered: '{}'", stem);
     }
 }

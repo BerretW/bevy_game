@@ -48,7 +48,7 @@ CreateThread(function()
         -- Obrázek jako crosshair: Gui.DrawSprite('crosshair', cx, cy, 0.02, 0.02)
 
         -- FPS counter (pravý horní roh)
-        Gui.DrawText(string.format("FPS: %.1f", fps), 0.88, 0.01, 0.4, 200, 200, 200, 200,'SephoraHayden')
+        Gui.DrawText(string.format("FPS: %.1f", fps), 0.88, 0.01, 0.4, 200, 0, 0, 200,'roboto')
 
         Wait(0) -- pokračuj v příštím frame
     end
