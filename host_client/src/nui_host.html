@@ -23,6 +23,10 @@ html, body {
 </style>
 </head>
 <body>
+<!-- DIAGNOSTIKA host HTML — viditelná okamžitě bez JS nebo iframů -->
+<div style="position:fixed;top:0;left:0;background:red;color:yellow;font-size:32px;font-weight:bold;padding:16px;z-index:9999;border:4px solid lime;">
+  HOST HTML LOADED
+</div>
 <div id="nui-root"></div>
 <script>
 'use strict';
@@ -64,6 +68,7 @@ window.__nui_add_frame = function(host, page) {
   console.log('[nui] iframe src:', iframe.src);
   iframe.setAttribute('allowtransparency', 'true');
   iframe.setAttribute('allow', 'autoplay');
+  iframe.style.background = 'transparent';
   frames[host] = iframe;
   document.getElementById('nui-root').appendChild(iframe);
   console.log('[nui] iframe appended to nui-root');

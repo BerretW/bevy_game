@@ -66,6 +66,10 @@ lightyear = { workspace = true }
 # NUI overlay — WebView embedded do herního okna (Phase 4)
 wry = { workspace = true }
 
+# Win32 API pro WS_EX_NOREDIRECTIONBITMAP na WebView child HWND (transparentní overlay)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+
 # Klientský config (`client.toml` v %APPDATA%).
 serde = { workspace = true }
 toml = { workspace = true }

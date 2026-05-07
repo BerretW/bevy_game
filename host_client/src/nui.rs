@@ -19,6 +19,19 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
+// Win32: po vytvoření WebView child okna přidáme WS_EX_NOREDIRECTIONBITMAP.
+// To říká DWM aby nepoužíval GDI redirection bitmap pro toto okno — WebView2 si
+// směřuje vlastní DComp vizulní strom a transparentnost pak správně funguje
+// přes Bevy DirectX swap chain.
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::HWND as SysHWND,
+    UI::WindowsAndMessaging::{
+        FindWindowExW, GetWindowLongPtrW, SetWindowLongPtrW,
+        GWL_EXSTYLE, WS_EX_NOREDIRECTIONBITMAP,
+    },
+};
+
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 // V Bevy 0.18 je WinitWindows thread-local static, ne NonSend resource.
@@ -122,6 +135,7 @@ fn create_nui_webview(
                 size: LogicalSize::new(w, h).into(),
             })
             .with_transparent(true)
+            .with_background_color((0, 0, 0, 0))
             .with_devtools(cfg!(debug_assertions))
             .with_html(NUI_HOST_HTML)
             .with_custom_protocol(
@@ -140,6 +154,36 @@ fn create_nui_webview(
     match webview_result {
         Ok(wv) => {
             info!("[nui] WebView CREATED successfully ({}x{})", w, h);
+            // Přidáme WS_EX_NOREDIRECTIONBITMAP na WRY_WEBVIEW child HWND.
+            // Bez tohoto flagu DWM kompozituje child okno přes GDI redirection bitmap
+            // (opaque bílá), která překrývá Bevy DirectX swap chain.
+            // FindWindowExW najde child "WRY_WEBVIEW" okno přímo pod parent HWND.
+            #[cfg(windows)]
+            WINIT_WINDOWS.with_borrow(|ww| {
+                if let Some(winit_win) = ww.get_window(entity) {
+                    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(rh) = winit_win.window_handle() {
+                        if let RawWindowHandle::Win32(h) = rh.as_raw() {
+                            let parent_hwnd = h.hwnd.get() as SysHWND;
+                            // Najdi WRY_WEBVIEW child okno
+                            let class: Vec<u16> = "WRY_WEBVIEW\0".encode_utf16().collect();
+                            let child = unsafe {
+                                FindWindowExW(parent_hwnd, 0, class.as_ptr(), std::ptr::null())
+                            };
+                            if child != 0 {
+                                unsafe {
+                                    let ex = GetWindowLongPtrW(child, GWL_EXSTYLE);
+                                    SetWindowLongPtrW(child, GWL_EXSTYLE,
+                                        ex | WS_EX_NOREDIRECTIONBITMAP as isize);
+                                }
+                                info!("[nui] WS_EX_NOREDIRECTIONBITMAP set on WRY_WEBVIEW HWND");
+                            } else {
+                                warn!("[nui] WRY_WEBVIEW child window not found");
+                            }
+                        }
+                    }
+                }
+            });
             nui_state.webview = Some(wv);
         }
         Err(e) => {
