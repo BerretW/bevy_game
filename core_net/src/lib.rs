@@ -36,7 +36,7 @@ pub use sim::{
     PLAYER_MOVE_SPEED,
 };
 pub use net_plugin::{
-    ClientNetConfig, ClientNetPlugin, HandshakeChannel, InputChannel, LuaRpcChannel,
+    ClientNetConfig, ClientNetPlugin, ConnectClient, HandshakeChannel, InputChannel, LuaRpcChannel,
     ProtocolPlugin, ServerNetConfig, ServerNetPlugin, FIXED_TIMESTEP_HZ, NETCODE_PROTOCOL_ID,
 };
 pub use protocol::{

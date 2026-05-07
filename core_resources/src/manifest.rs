@@ -37,6 +37,20 @@ impl ResourceKind {
     }
 }
 
+/// Font declaration: `fonts { {id='roboto', path='fonts/Roboto.ttf'} }`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FontDef {
+    pub id: String,
+    pub path: String,
+}
+
+/// Image declaration: `images { {id='icon', path='images/heart.webp'} }`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageDef {
+    pub id: String,
+    pub path: String,
+}
+
 /// Statická data jednoho resource načtená z `manifest.lua`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -51,6 +65,8 @@ pub struct Manifest {
     pub client_scripts: Vec<String>,
     pub server_scripts: Vec<String>,
     pub files: Vec<String>,
+    pub fonts: Vec<FontDef>,
+    pub images: Vec<ImageDef>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -64,6 +80,8 @@ struct ManifestBuilder {
     client_scripts: Vec<String>,
     server_scripts: Vec<String>,
     files: Vec<String>,
+    fonts: Vec<FontDef>,
+    images: Vec<ImageDef>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,6 +173,8 @@ pub fn parse_manifest(id: ResourceId, resource_root: &Path) -> Result<Manifest, 
         client_scripts: builder.client_scripts,
         server_scripts: builder.server_scripts,
         files: builder.files,
+        fonts: builder.fonts,
+        images: builder.images,
     })
 }
 
@@ -175,6 +195,42 @@ fn install_dsl(lua: &Lua) -> mlua::Result<()> {
     install_list_setter(lua, &globals, "client_scripts", |b| &mut b.client_scripts)?;
     install_list_setter(lua, &globals, "server_scripts", |b| &mut b.server_scripts)?;
     install_list_setter(lua, &globals, "files", |b| &mut b.files)?;
+
+    // fonts { {id='roboto', path='fonts/Roboto.ttf'} }
+    globals.set("fonts", lua.create_function(move |lua, table: Table| {
+        let mut b = lua
+            .app_data_mut::<ManifestBuilder>()
+            .expect("ManifestBuilder app_data must be present");
+        for item in table.sequence_values::<Table>() {
+            let item = item?;
+            let id: String = item.get("id").map_err(|_| {
+                mlua::Error::RuntimeError("font entry missing 'id' field".into())
+            })?;
+            let path: String = item.get("path").map_err(|_| {
+                mlua::Error::RuntimeError("font entry missing 'path' field".into())
+            })?;
+            b.fonts.push(FontDef { id, path });
+        }
+        Ok(())
+    })?)?;
+
+    // images { {id='icon', path='images/heart.webp'} }
+    globals.set("images", lua.create_function(move |lua, table: Table| {
+        let mut b = lua
+            .app_data_mut::<ManifestBuilder>()
+            .expect("ManifestBuilder app_data must be present");
+        for item in table.sequence_values::<Table>() {
+            let item = item?;
+            let id: String = item.get("id").map_err(|_| {
+                mlua::Error::RuntimeError("image entry missing 'id' field".into())
+            })?;
+            let path: String = item.get("path").map_err(|_| {
+                mlua::Error::RuntimeError("image entry missing 'path' field".into())
+            })?;
+            b.images.push(ImageDef { id, path });
+        }
+        Ok(())
+    })?)?;
 
     Ok(())
 }

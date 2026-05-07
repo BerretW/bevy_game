@@ -20,12 +20,13 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{LocalEventBus, LocalObjectMarker, ModelRegistry, RaycastBridge};
+use core_resources::{ConnectionInfo, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, ModelRegistry};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
+use crate::AppState;
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
 const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
@@ -112,7 +113,9 @@ impl Plugin for ClientGameplayPlugin {
 
         app.init_resource::<CameraModeState>();
         app.init_resource::<CameraLookState>();
-        app.add_systems(Startup, setup_scene_and_camera);
+        // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
+        app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
+        app.add_systems(OnExit(AppState::InGame), reset_connection_bridge);
         app.add_systems(
             Update,
             (
@@ -124,13 +127,20 @@ impl Plugin for ClientGameplayPlugin {
                 sync_net_transform_to_render,
                 update_camera_follow,
                 update_raycast_bridge,
+                update_input_bridge,
+                update_connection_bridge,
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 attach_mesh_to_local_objects,
+                handle_engine_cmds,
             )
-                .chain(),
+                .chain()
+                .run_if(in_state(AppState::InGame)),
         );
-        app.add_systems(FixedUpdate, collect_and_send_input);
+        app.add_systems(
+            FixedUpdate,
+            collect_and_send_input.run_if(in_state(AppState::InGame)),
+        );
         // app.add_systems(Update, debug_player_movement.run_if(on_timer(std::time::Duration::from_secs(2))));
     }
 }
@@ -226,8 +236,9 @@ fn setup_scene_and_camera(
 /// Tato pozice se pouziva v Lua `Raycast.GetGroundPosition()`.
 fn update_raycast_bridge(
     camera_q: Query<&GlobalTransform, With<MainGameplayCamera>>,
-    raycast: Res<RaycastBridge>,
+    bridges: Res<GameBridges>,
 ) {
+    let raycast = &bridges.raycast;
     let Ok(cam_transform) = camera_q.single() else { return };
     let origin = cam_transform.translation();
     let dir = cam_transform.forward();
@@ -261,8 +272,15 @@ fn toggle_camera_mode(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<CameraMo
 fn update_camera_look_from_mouse(
     mut motions: MessageReader<MouseMotion>,
     cfg: Res<ClientConfigResource>,
+    bridges: Res<GameBridges>,
     mut look: ResMut<CameraLookState>,
 ) {
+    // Don't rotate camera while Lua has the cursor unlocked (e.g. ESC menu open)
+    if !bridges.engine.cursor_locked() {
+        for _ in motions.read() {}
+        return;
+    }
+
     let mut delta = Vec2::ZERO;
     for m in motions.read() {
         delta += m.delta;
@@ -282,11 +300,13 @@ fn update_camera_look_from_mouse(
 
 fn apply_cursor_mode(
     mode: Res<CameraModeState>,
+    bridges: Res<GameBridges>,
     mut cursor_q: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     let Ok(mut cursor) = cursor_q.single_mut() else { return };
-    cursor.visible = false;
-    cursor.grab_mode = CursorGrabMode::Locked;
+    let locked = bridges.engine.cursor_locked();
+    cursor.visible = !locked;
+    cursor.grab_mode = if locked { CursorGrabMode::Locked } else { CursorGrabMode::None };
     let _ = mode.mode;
 }
 
@@ -563,11 +583,132 @@ fn publish_input_state_to_lua(
             "sprint": keys.pressed(bindings.sprint),
             "crouch": keys.pressed(bindings.crouch),
             "interact": keys.pressed(bindings.interact),
+        },
+        "keys_just": {
+            "options_menu": keys.just_pressed(KeyCode::Escape),
         }
     }))
     .unwrap_or_default();
 
     local_bus.push("input:state".to_string(), payload);
+}
+
+// ---------------------------------------------------------------------------
+// KeyCode / MouseButton → canonical Lua name
+// ---------------------------------------------------------------------------
+
+fn keycode_name(k: &KeyCode) -> String {
+    match k {
+        KeyCode::KeyA => "a",  KeyCode::KeyB => "b",  KeyCode::KeyC => "c",
+        KeyCode::KeyD => "d",  KeyCode::KeyE => "e",  KeyCode::KeyF => "f",
+        KeyCode::KeyG => "g",  KeyCode::KeyH => "h",  KeyCode::KeyI => "i",
+        KeyCode::KeyJ => "j",  KeyCode::KeyK => "k",  KeyCode::KeyL => "l",
+        KeyCode::KeyM => "m",  KeyCode::KeyN => "n",  KeyCode::KeyO => "o",
+        KeyCode::KeyP => "p",  KeyCode::KeyQ => "q",  KeyCode::KeyR => "r",
+        KeyCode::KeyS => "s",  KeyCode::KeyT => "t",  KeyCode::KeyU => "u",
+        KeyCode::KeyV => "v",  KeyCode::KeyW => "w",  KeyCode::KeyX => "x",
+        KeyCode::KeyY => "y",  KeyCode::KeyZ => "z",
+        KeyCode::Digit0 => "0", KeyCode::Digit1 => "1", KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3", KeyCode::Digit4 => "4", KeyCode::Digit5 => "5",
+        KeyCode::Digit6 => "6", KeyCode::Digit7 => "7", KeyCode::Digit8 => "8",
+        KeyCode::Digit9 => "9",
+        KeyCode::Numpad0 => "num0", KeyCode::Numpad1 => "num1", KeyCode::Numpad2 => "num2",
+        KeyCode::Numpad3 => "num3", KeyCode::Numpad4 => "num4", KeyCode::Numpad5 => "num5",
+        KeyCode::Numpad6 => "num6", KeyCode::Numpad7 => "num7", KeyCode::Numpad8 => "num8",
+        KeyCode::Numpad9 => "num9",
+        KeyCode::Space        => "space",
+        KeyCode::Escape       => "escape",
+        KeyCode::Enter        => "enter",
+        KeyCode::NumpadEnter  => "enter",
+        KeyCode::Tab          => "tab",
+        KeyCode::Backspace    => "backspace",
+        KeyCode::Delete       => "delete",
+        KeyCode::Insert       => "insert",
+        KeyCode::Home         => "home",
+        KeyCode::End          => "end",
+        KeyCode::PageUp       => "pageup",
+        KeyCode::PageDown     => "pagedown",
+        KeyCode::ArrowUp      => "up",
+        KeyCode::ArrowDown    => "down",
+        KeyCode::ArrowLeft    => "left",
+        KeyCode::ArrowRight   => "right",
+        KeyCode::ShiftLeft    => "lshift",
+        KeyCode::ShiftRight   => "rshift",
+        KeyCode::ControlLeft  => "lctrl",
+        KeyCode::ControlRight => "rctrl",
+        KeyCode::AltLeft      => "lalt",
+        KeyCode::AltRight     => "ralt",
+        KeyCode::SuperLeft | KeyCode::SuperRight => "super",
+        KeyCode::CapsLock     => "capslock",
+        KeyCode::F1  => "f1",  KeyCode::F2  => "f2",  KeyCode::F3  => "f3",
+        KeyCode::F4  => "f4",  KeyCode::F5  => "f5",  KeyCode::F6  => "f6",
+        KeyCode::F7  => "f7",  KeyCode::F8  => "f8",  KeyCode::F9  => "f9",
+        KeyCode::F10 => "f10", KeyCode::F11 => "f11", KeyCode::F12 => "f12",
+        _ => return format!("{:?}", k).to_lowercase(),
+    }.to_string()
+}
+
+fn mousebutton_name(btn: &MouseButton) -> String {
+    match btn {
+        MouseButton::Left   => "left".to_string(),
+        MouseButton::Right  => "right".to_string(),
+        MouseButton::Middle => "middle".to_string(),
+        MouseButton::Other(n) => format!("mouse{n}"),
+        _ => format!("{:?}", btn).to_lowercase(),
+    }
+}
+
+/// Updates InputBridge each frame so Lua can query key/mouse state synchronously.
+fn update_input_bridge(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    bridges: Res<GameBridges>,
+) {
+    bridges.input.update(InputSnapshot {
+        pressed:             keys.get_pressed().map(keycode_name).collect::<HashSet<_>>(),
+        just_pressed:        keys.get_just_pressed().map(keycode_name).collect::<HashSet<_>>(),
+        just_released:       keys.get_just_released().map(keycode_name).collect::<HashSet<_>>(),
+        mouse_pressed:       mouse.get_pressed().map(mousebutton_name).collect::<HashSet<_>>(),
+        mouse_just_pressed:  mouse.get_just_pressed().map(mousebutton_name).collect::<HashSet<_>>(),
+        mouse_just_released: mouse.get_just_released().map(mousebutton_name).collect::<HashSet<_>>(),
+    });
+}
+
+/// Updates ConnectionBridge every frame while in InGame.
+fn update_connection_bridge(
+    cfg: Res<core_net::ClientNetConfig>,
+    local_client: Option<Res<LocalClientId>>,
+    bridges: Res<GameBridges>,
+) {
+    bridges.connection.set(ConnectionInfo {
+        connected: true,
+        server_addr: cfg.server.to_string(),
+        ping_ms: 0, // TODO: lightyear RTT diagnostics (Phase 5)
+        client_id: local_client.as_deref().map_or(0, |lc| lc.0),
+    });
+}
+
+/// Resets ConnectionBridge when leaving InGame (disconnect / lobby).
+fn reset_connection_bridge(bridges: Res<GameBridges>) {
+    bridges.connection.set_disconnected();
+}
+
+/// Reset EngineStateBridge when entering InGame so ESC menu starts closed.
+fn reset_engine_state(bridges: Res<GameBridges>) {
+    bridges.engine.reset();
+}
+
+/// Poll EngineStateBridge for quit / disconnect requests from Lua.
+fn handle_engine_cmds(
+    bridges: Res<GameBridges>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    if bridges.engine.take_disconnect() {
+        next_state.set(AppState::Lobby);
+    }
+    if bridges.engine.take_quit() {
+        std::process::exit(0);
+    }
 }
 
 /// Prida Sprite na lokalni objekty spawnute pres `World.SpawnLocalObject`.

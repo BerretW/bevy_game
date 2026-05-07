@@ -10,6 +10,7 @@
 
 mod cmd_queue;
 mod db_bridge;
+pub mod gui;
 mod manifest;
 mod model_registry;
 mod plugin;
@@ -29,11 +30,20 @@ pub use db_bridge::{
     DatabaseBridgeResource, DbBridge, DbCallbackEntry, DbCallbackQueue,
     DbExecutorTrait, DbQueryResult,
 };
-pub use manifest::{Manifest, ManifestError, ResourceKind};
+pub use gui::{DrawCommand, FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
+pub use manifest::{FontDef, ImageDef, Manifest, ManifestError, ResourceKind};
 pub use model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands};
 pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry};
 pub use resolver::{resolve_load_order, ResolveError};
-pub use sandbox::{LocalEvent, LocalEventBus, LuaEventDirection, LuaEventOut, LuaSandbox, RaycastBridge, SandboxError};
+pub use sandbox::{
+    ConnectionBridge, ConnectionInfo,
+    EngineStateBridge,
+    GameBridges,
+    InputBridge, InputSnapshot,
+    LocalEvent, LocalEventBus,
+    LuaEventDirection, LuaEventOut,
+    LuaSandbox, RaycastBridge, SandboxError,
+};
 pub use types::{IdError, ResourceId, Side};
 pub use vfs::{ScanError, ScanReport, Vfs};
 pub use watcher::{ResourcesDirty, VfsWatcher, WatcherError};

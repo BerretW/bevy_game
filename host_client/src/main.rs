@@ -10,6 +10,8 @@
 mod config;
 mod console;
 mod gameplay;
+mod gui_render;
+mod lobby;
 
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
@@ -32,6 +34,14 @@ use crate::config::{
     ClientConfig, ClientConfigResource, GraphicsBackend, GpuPriority, PresentModeConfig,
     WindowModeConfig,
 };
+
+/// Stav aplikace — lobby je výchozí, InGame přechází po stisknutí Connect.
+#[derive(States, Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub(crate) enum AppState {
+    #[default]
+    Lobby,
+    InGame,
+}
 
 const LUA_SAFE_CLIENT_ID_MAX: u64 = i64::MAX as u64;
 
@@ -161,7 +171,10 @@ fn main() {
                     ..default()
                 }),
         )
+        .init_state::<AppState>()
         .add_plugins((
+            // Lobby — zobrazí se před připojením.
+            lobby::LobbyPlugin,
             // Phase 3 — klientský renderer replikovaných hráčů + WASD vstup.
             gameplay::ClientGameplayPlugin,
             console::ConsolePlugin,
@@ -170,6 +183,8 @@ fn main() {
             ClientNetPlugin,
             ClientHandshakePlugin,
             ClientLuaRpcPlugin,
+            // Phase 4 — GUI overlay (immediate-mode Lua drawing API).
+            gui_render::GuiRenderPlugin,
             ClientCorePlugin,
             FramepacePlugin,
         ))

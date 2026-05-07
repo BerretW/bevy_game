@@ -272,9 +272,15 @@ impl Default for ClientNetConfig {
     }
 }
 
-/// Plugin přidá `ClientPlugins`, `ProtocolPlugin` a Startup systém, který
-/// otevře connection. Phase 2 čte handshake message v navazujícím systému
-/// v `host_client`.
+/// Zpráva pro spuštění spojení klienta se serverem.
+/// Lobby ji vyšle po kliknutí na "Connect"; `ClientNetPlugin` ji zachytí
+/// a teprve tehdy spawne klientskou entitu a zahájí handshake.
+#[derive(Message, Clone)]
+pub struct ConnectClient;
+
+/// Plugin přidá `ClientPlugins`, `ProtocolPlugin` a systém, který na příchozí
+/// `ConnectClient` zprávu spawne entitu klienta a zahájí connection.
+/// Samotné spojení se nespouští automaticky — lobby vyšle `ConnectClient`.
 pub struct ClientNetPlugin;
 
 impl Plugin for ClientNetPlugin {
@@ -288,39 +294,42 @@ impl Plugin for ClientNetPlugin {
         app.init_resource::<ClientNetConfig>();
         app.add_plugins(ClientPlugins { tick_duration });
         app.add_plugins(ProtocolPlugin);
-        app.add_systems(Startup, spawn_client);
+        app.add_message::<ConnectClient>();
+        app.add_systems(Update, spawn_client_on_connect);
         app.add_observer(log_server_connected);
     }
 }
 
-fn spawn_client(
+fn spawn_client_on_connect(
+    mut reader: MessageReader<ConnectClient>,
     mut commands: Commands,
     config: Res<ClientNetConfig>,
 ) -> std::result::Result<(), BevyError> {
-    let auth = Authentication::Manual {
-        server_addr: config.server,
-        client_id: config.client_id,
-        private_key: config.private_key,
-        protocol_id: config.protocol_id,
-    };
+    for _ in reader.read() {
+        let auth = Authentication::Manual {
+            server_addr: config.server,
+            client_id: config.client_id,
+            private_key: config.private_key,
+            protocol_id: config.protocol_id,
+        };
 
-    let entity = commands
-        .spawn((
-            Client::default(),
-            LocalAddr(config.local),
-            PeerAddr(config.server),
-            Link::new(None),
-            NetcodeClient::new(auth, ClientNetcodeConfig::default())?,
-            UdpIo::default(),
-            // Bez ReplicationReceiver by klient nedokázal přijímat replikovaná data.
-            ReplicationReceiver::default(),
-        ))
-        .id();
-    commands.trigger(Connect { entity });
-    info!(
-        "[core_net::client] connecting to {} (local {})",
-        config.server, config.local
-    );
+        let entity = commands
+            .spawn((
+                Client::default(),
+                LocalAddr(config.local),
+                PeerAddr(config.server),
+                Link::new(None),
+                NetcodeClient::new(auth, ClientNetcodeConfig::default())?,
+                UdpIo::default(),
+                ReplicationReceiver::default(),
+            ))
+            .id();
+        commands.trigger(Connect { entity });
+        info!(
+            "[core_net::client] connecting to {} (local {})",
+            config.server, config.local
+        );
+    }
     Ok(())
 }
 

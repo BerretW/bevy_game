@@ -12,7 +12,8 @@ use crate::cmd_queue::{
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
 use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegistry};
 use crate::resolver::resolve_load_order;
-use crate::sandbox::{LocalEventBus, LuaSandbox, RaycastBridge};
+use crate::gui::{FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
+use crate::sandbox::{GameBridges, LocalEventBus, LuaSandbox};
 use crate::types::{ResourceId, Side};
 use crate::vfs::Vfs;
 use crate::watcher::{drain_watcher, ResourcesDirty, VfsWatcher};
@@ -48,6 +49,7 @@ pub struct SandboxRegistry {
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ResourcesSide(pub Side);
 
+
 impl Plugin for ResourcesPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Vfs::new(&self.root));
@@ -70,8 +72,8 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<LocalEventBus>();
         app.add_systems(PostUpdate, dispatch_local_events);
 
-        // Phase 3.7 - Raycast bridge (klient ho aktualizuje; server je no-op)
-        app.init_resource::<RaycastBridge>();
+        // Phase 3.7 / Phase 4 — all Arc bridges in one resource
+        app.init_resource::<GameBridges>();
 
         // Entity state cache — synchronní čtení stavu Lua entit
         app.init_resource::<EntityStateCache>();
@@ -88,6 +90,14 @@ impl Plugin for ResourcesPlugin {
 
         // Stats lokálního hráče (klient čte přes Player.GetLocalStats())
         app.init_resource::<LocalPlayerStats>();
+
+        // GUI draw buffer — Lua thready pushují příkazy; GuiRenderPlugin drainuje
+        app.init_resource::<GuiDrawBuffer>();
+        app.init_resource::<FontLoadQueue>();
+        app.init_resource::<ImageLoadQueue>();
+
+        // Tick Lua threadů v PreUpdate (před process_lua_commands)
+        app.add_systems(PreUpdate, tick_lua_threads);
 
         app.add_systems(Startup, initial_load);
 
@@ -115,29 +125,27 @@ fn initial_load(
     mut vfs: ResMut<Vfs>,
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
+    mut model_registry: ResMut<ModelRegistry>,
+    bridges: Res<GameBridges>,
     cmd_queue: Res<CommandQueue>,
     local_bus: Res<LocalEventBus>,
     model_cmds: Res<ModelCommandQueue>,
-    mut model_registry: ResMut<ModelRegistry>,
-    raycast: Res<RaycastBridge>,
     stats_cache: Res<PlayerStatsCache>,
     entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
     local_stats: Res<LocalPlayerStats>,
+    draw_buffer: Res<GuiDrawBuffer>,
+    font_queue: Res<FontLoadQueue>,
+    image_queue: Res<ImageLoadQueue>,
 ) {
     rebuild(
-        &mut vfs,
-        side.0,
-        &mut registry,
-        cmd_queue.clone(),
-        local_bus.clone(),
-        model_cmds.clone(),
+        &mut vfs, side.0, &mut registry,
+        cmd_queue.clone(), local_bus.clone(), model_cmds.clone(),
         &mut model_registry,
-        raycast.clone(),
-        stats_cache.clone(),
-        entity_cache.clone(),
-        db_bridge_res.0.clone(),
-        local_stats.clone(),
+        bridges.clone(),
+        stats_cache.clone(), entity_cache.clone(),
+        db_bridge_res.0.clone(), local_stats.clone(), draw_buffer.clone(),
+        Some((font_queue.clone(), image_queue.clone())),
     );
 }
 
@@ -146,15 +154,16 @@ fn hot_reload_on_dirty(
     mut vfs: ResMut<Vfs>,
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
+    mut model_registry: ResMut<ModelRegistry>,
+    bridges: Res<GameBridges>,
     cmd_queue: Res<CommandQueue>,
     local_bus: Res<LocalEventBus>,
     model_cmds: Res<ModelCommandQueue>,
-    mut model_registry: ResMut<ModelRegistry>,
-    raycast: Res<RaycastBridge>,
     stats_cache: Res<PlayerStatsCache>,
     entity_cache: Res<EntityStateCache>,
     db_bridge_res: Res<DatabaseBridgeResource>,
     local_stats: Res<LocalPlayerStats>,
+    draw_buffer: Res<GuiDrawBuffer>,
 ) {
     if events.is_empty() {
         return;
@@ -165,18 +174,13 @@ fn hot_reload_on_dirty(
         if count == 1 { "" } else { "s" }
     );
     rebuild(
-        &mut vfs,
-        side.0,
-        &mut registry,
-        cmd_queue.clone(),
-        local_bus.clone(),
-        model_cmds.clone(),
+        &mut vfs, side.0, &mut registry,
+        cmd_queue.clone(), local_bus.clone(), model_cmds.clone(),
         &mut model_registry,
-        raycast.clone(),
-        stats_cache.clone(),
-        entity_cache.clone(),
-        db_bridge_res.0.clone(),
-        local_stats.clone(),
+        bridges.clone(),
+        stats_cache.clone(), entity_cache.clone(),
+        db_bridge_res.0.clone(), local_stats.clone(), draw_buffer.clone(),
+        None,
     );
 }
 
@@ -188,11 +192,13 @@ fn rebuild(
     local_bus: LocalEventBus,
     model_cmds: ModelCommandQueue,
     model_registry: &mut ModelRegistry,
-    raycast: RaycastBridge,
+    bridges: GameBridges,
     stats_cache: PlayerStatsCache,
     entity_cache: EntityStateCache,
     db_bridge: Option<DbBridge>,
     local_stats: LocalPlayerStats,
+    draw_buffer: GuiDrawBuffer,
+    load_queues: Option<(FontLoadQueue, ImageLoadQueue)>,
 ) {
     let report = vfs.rescan();
     for err in &report.errors {
@@ -223,6 +229,27 @@ fn rebuild(
             Some(m) => m,
             None => continue,
         };
+
+        // Enqueue font/image loads for the client renderer (initial load only).
+        if side == Side::Client {
+            if let Some((ref font_queue, ref image_queue)) = load_queues {
+                for fd in &manifest.fonts {
+                    let abs = manifest.root.join(&fd.path);
+                    font_queue.push(FontLoadRequest {
+                        font_id: fd.id.clone(),
+                        abs_path: abs.to_string_lossy().into_owned(),
+                    });
+                }
+                for imd in &manifest.images {
+                    let abs = manifest.root.join(&imd.path);
+                    image_queue.push(ImageLoadRequest {
+                        image_id: imd.id.clone(),
+                        abs_path: abs.to_string_lossy().into_owned(),
+                    });
+                }
+            }
+        }
+
         let ls = if side == Side::Client { Some(local_stats.clone()) } else { None };
         match LuaSandbox::create(
             manifest,
@@ -230,11 +257,15 @@ fn rebuild(
             cmd_queue.clone(),
             local_bus.clone(),
             model_cmds.clone(),
-            raycast.clone(),
+            bridges.raycast.clone(),
+            bridges.engine.clone(),
+            bridges.input.clone(),
+            bridges.connection.clone(),
             stats_cache.clone(),
             entity_cache.clone(),
             db_bridge.clone(),
             ls,
+            draw_buffer.clone(),
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);
@@ -282,6 +313,17 @@ fn dispatch_local_events(
                 evt.payload.len()
             );
         }
+    }
+}
+
+/// PreUpdate — resumuje Lua thready jejichž wait timer vypršel.
+fn tick_lua_threads(
+    time: Res<Time>,
+    mut registry: NonSendMut<SandboxRegistry>,
+) {
+    let delta_ms = (time.delta_secs() * 1000.0) as u64;
+    for sandbox in registry.sandboxes.values_mut() {
+        sandbox.tick_threads(delta_ms);
     }
 }
 

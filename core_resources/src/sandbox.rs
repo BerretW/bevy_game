@@ -9,14 +9,16 @@
 //! Phase 4: Database.* namespace, Player.* namespace.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
-use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib};
+use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib, ThreadStatus};
 use serde_json::Value as Json;
+
+use crate::gui::{DrawCommand, GuiDrawBuffer};
 
 use bevy::math::{EulerRot, Quat};
 
@@ -50,6 +52,132 @@ impl RaycastBridge {
     pub fn get_pos(&self) -> [f32; 3] {
         *self.0.lock().unwrap_or_else(|p| p.into_inner())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Engine state bridge — Lua → Rust control flow (cursor lock, quit, disconnect)
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Clone)]
+pub struct EngineState {
+    pub cursor_locked: bool,
+    pub quit_requested: bool,
+    pub disconnect_requested: bool,
+}
+
+#[derive(Resource, Clone)]
+pub struct EngineStateBridge(pub Arc<Mutex<EngineState>>);
+
+impl Default for EngineStateBridge {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(EngineState {
+            cursor_locked: true,
+            quit_requested: false,
+            disconnect_requested: false,
+        })))
+    }
+}
+
+impl EngineStateBridge {
+    pub fn cursor_locked(&self) -> bool {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).cursor_locked
+    }
+    pub fn set_cursor_locked(&self, locked: bool) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).cursor_locked = locked;
+    }
+    pub fn take_quit(&self) -> bool {
+        let mut s = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        std::mem::replace(&mut s.quit_requested, false)
+    }
+    pub fn take_disconnect(&self) -> bool {
+        let mut s = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        std::mem::replace(&mut s.disconnect_requested, false)
+    }
+    pub fn reset(&self) {
+        let mut s = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        s.cursor_locked = true;
+        s.quit_requested = false;
+        s.disconnect_requested = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Input bridge — synchronous key/mouse state snapshot for Lua
+// ---------------------------------------------------------------------------
+
+/// One-frame snapshot of all key and mouse button states.
+/// Updated every frame by the client gameplay system.
+#[derive(Default, Clone)]
+pub struct InputSnapshot {
+    pub pressed: HashSet<String>,
+    pub just_pressed: HashSet<String>,
+    pub just_released: HashSet<String>,
+    pub mouse_pressed: HashSet<String>,
+    pub mouse_just_pressed: HashSet<String>,
+    pub mouse_just_released: HashSet<String>,
+}
+
+#[derive(Resource, Clone)]
+pub struct InputBridge(pub Arc<Mutex<InputSnapshot>>);
+
+impl Default for InputBridge {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(InputSnapshot::default())))
+    }
+}
+
+impl InputBridge {
+    pub fn update(&self, snap: InputSnapshot) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = snap;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Connection bridge — network / server info for Lua
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Clone)]
+pub struct ConnectionInfo {
+    pub connected: bool,
+    pub server_addr: String,
+    pub ping_ms: u32,
+    pub client_id: u64,
+}
+
+#[derive(Resource, Clone)]
+pub struct ConnectionBridge(pub Arc<Mutex<ConnectionInfo>>);
+
+impl Default for ConnectionBridge {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(ConnectionInfo::default())))
+    }
+}
+
+impl ConnectionBridge {
+    pub fn set(&self, info: ConnectionInfo) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = info;
+    }
+    pub fn set_disconnected(&self) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).connected = false;
+    }
+    pub fn set_ping(&self, ms: u32) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).ping_ms = ms;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GameBridges — single Resource bundling all Arc bridges
+// ---------------------------------------------------------------------------
+
+/// All four Arc-based bridges in one Bevy Resource.
+/// Using a single `Res<GameBridges>` instead of four separate `Res<T>` params
+/// keeps system function param counts well under Bevy's 16-param limit.
+#[derive(Resource, Clone, Default)]
+pub struct GameBridges {
+    pub raycast:    RaycastBridge,
+    pub engine:     EngineStateBridge,
+    pub input:      InputBridge,
+    pub connection: ConnectionBridge,
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +307,17 @@ fn encode_payload(val: mlua::Value) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Threading
+// ---------------------------------------------------------------------------
+
+struct ThreadEntry {
+    key: RegistryKey,
+    wake_at_ms: u64,
+}
+
+type ThreadPool = Rc<RefCell<Vec<ThreadEntry>>>;
+
+// ---------------------------------------------------------------------------
 // LuaSandbox
 // ---------------------------------------------------------------------------
 
@@ -191,6 +330,8 @@ pub struct LuaSandbox {
     db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: Rc<RefCell<u64>>,
     local_stats: Option<LocalPlayerStats>,
+    thread_pool: ThreadPool,
+    elapsed_ms: u64,
 }
 
 impl LuaSandbox {
@@ -201,10 +342,14 @@ impl LuaSandbox {
         local_bus: LocalEventBus,
         model_cmds: ModelCommandQueue,
         raycast: RaycastBridge,
+        engine_state: EngineStateBridge,
+        input_bridge: InputBridge,
+        connection: ConnectionBridge,
         stats_cache: PlayerStatsCache,
         entity_cache: EntityStateCache,
         db_bridge: Option<DbBridge>,
         local_stats: Option<LocalPlayerStats>,
+        draw_buffer: GuiDrawBuffer,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -218,6 +363,7 @@ impl LuaSandbox {
         let db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let db_counter: Rc<RefCell<u64>> = Rc::new(RefCell::new(0));
+        let thread_pool: ThreadPool = Rc::new(RefCell::new(Vec::new()));
 
         install_runtime_api(
             &lua,
@@ -229,12 +375,17 @@ impl LuaSandbox {
             &local_bus,
             &model_cmds,
             &raycast,
+            &engine_state,
+            &input_bridge,
+            &connection,
             &stats_cache,
             &entity_cache,
             &db_bridge,
             &db_callbacks,
             &db_counter,
             &local_stats,
+            &thread_pool,
+            &draw_buffer,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -247,7 +398,18 @@ impl LuaSandbox {
             run_script(&lua, &manifest.id, rel, &abs)?;
         }
 
-        Ok(Self { id: manifest.id.clone(), side, lua, outgoing, handlers, db_callbacks, db_counter, local_stats })
+        Ok(Self {
+            id: manifest.id.clone(),
+            side,
+            lua,
+            outgoing,
+            handlers,
+            db_callbacks,
+            db_counter,
+            local_stats,
+            thread_pool,
+            elapsed_ms: 0,
+        })
     }
 
     pub fn drain_outgoing(&self) -> Vec<LuaEventOut> {
@@ -307,6 +469,59 @@ impl LuaSandbox {
         let lua_val = db_result_to_lua(&self.lua, result);
         if let Err(e) = f.call::<()>(lua_val) {
             bevy::log::warn!("[db:{}] callback {} error: {}", self.id, callback_id, e);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thread tick
+// ---------------------------------------------------------------------------
+
+impl LuaSandbox {
+    /// Resumuje všechny thready jejichž wake_at_ms <= aktuálního elapsed_ms.
+    /// Volat jednou za frame z PreUpdate systému.
+    pub fn tick_threads(&mut self, delta_ms: u64) {
+        self.elapsed_ms = self.elapsed_ms.saturating_add(delta_ms);
+        let now = self.elapsed_ms;
+
+        let mut pool = self.thread_pool.borrow_mut();
+        let mut i = 0;
+        while i < pool.len() {
+            if pool[i].wake_at_ms > now {
+                i += 1;
+                continue;
+            }
+            let thread = match self.lua.registry_value::<mlua::Thread>(&pool[i].key) {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("[lua:{} thread key] {}", self.id, e);
+                    pool.remove(i);
+                    continue;
+                }
+            };
+            match thread.resume::<MultiValue>(()) {
+                Ok(vals) => {
+                    if thread.status() == ThreadStatus::Resumable {
+                        let wait_ms: u64 = vals
+                            .into_iter()
+                            .next()
+                            .and_then(|v| match v {
+                                mlua::Value::Integer(n) => Some(n.max(0) as u64),
+                                mlua::Value::Number(n) => Some(n.max(0.0) as u64),
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        pool[i].wake_at_ms = now + wait_ms;
+                        i += 1;
+                    } else {
+                        pool.remove(i);
+                    }
+                }
+                Err(e) => {
+                    error!("[lua:{} thread] {}", self.id, e);
+                    pool.remove(i);
+                }
+            }
         }
     }
 }
@@ -424,14 +639,19 @@ fn install_runtime_api(
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
     raycast: &RaycastBridge,
+    engine_state: &EngineStateBridge,
+    input_bridge: &InputBridge,
+    connection: &ConnectionBridge,
     stats_cache: &PlayerStatsCache,
     entity_cache: &EntityStateCache,
     db_bridge: &Option<DbBridge>,
     db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: &Rc<RefCell<u64>>,
     local_stats: &Option<LocalPlayerStats>,
+    thread_pool: &ThreadPool,
+    draw_buffer: &GuiDrawBuffer,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -446,12 +666,17 @@ fn install_runtime_api_inner(
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
     raycast: &RaycastBridge,
+    engine_state: &EngineStateBridge,
+    input_bridge: &InputBridge,
+    connection: &ConnectionBridge,
     stats_cache: &PlayerStatsCache,
     entity_cache: &EntityStateCache,
     db_bridge: &Option<DbBridge>,
     db_callbacks: &Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: &Rc<RefCell<u64>>,
     local_stats: &Option<LocalPlayerStats>,
+    thread_pool: &ThreadPool,
+    draw_buffer: &GuiDrawBuffer,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -808,6 +1033,27 @@ fn install_runtime_api_inner(
         Ok(())
     })?)?;
 
+    // Engine.SetCursorLocked(bool) — ESC menu / UI overlay cursor control
+    let esb = engine_state.clone();
+    engine.set("SetCursorLocked", lua.create_function(move |_, locked: bool| {
+        esb.set_cursor_locked(locked);
+        Ok(())
+    })?)?;
+
+    // Engine.Quit() — request app exit
+    let esb = engine_state.clone();
+    engine.set("Quit", lua.create_function(move |_, ()| {
+        esb.0.lock().unwrap_or_else(|p| p.into_inner()).quit_requested = true;
+        Ok(())
+    })?)?;
+
+    // Engine.Disconnect() — request return to lobby
+    let esb = engine_state.clone();
+    engine.set("Disconnect", lua.create_function(move |_, ()| {
+        esb.0.lock().unwrap_or_else(|p| p.into_inner()).disconnect_requested = true;
+        Ok(())
+    })?)?;
+
     globals.set("Engine", engine)?;
 
     // -- Raycast namespace (Phase 3.7) ---------------------------------------
@@ -1047,6 +1293,163 @@ fn install_runtime_api_inner(
         }
 
         globals.set("Player", player_tbl)?;
+    }
+
+    // -- Threading: CreateThread + Wait ----------------------------------------
+    // CreateThread(fn) — spustí coroutinu v příštím ticku.
+    // Wait(ms)         — alias pro coroutine.yield(ms); pozastaví thread na ms ms.
+    //                    Wait(0) = "pokračuj v příštím frame".
+    {
+        let co: mlua::Table = globals.get("coroutine")?;
+        let yield_fn: mlua::Function = co.get("yield")?;
+        globals.set("Wait", yield_fn)?;
+
+        let pool = thread_pool.clone();
+        globals.set("CreateThread", lua.create_function(move |lua, f: mlua::Function| {
+            let thread = lua.create_thread(f)?;
+            let key = lua.create_registry_value(thread)?;
+            pool.borrow_mut().push(ThreadEntry { key, wake_at_ms: 0 });
+            Ok(())
+        })?)?;
+    }
+
+    // -- Gui namespace — client only -------------------------------------------
+    // Souřadnice: normalizované 0.0–1.0, origin vlevo nahoře.
+    // Barvy: r, g, b, a jako 0–255 integers.
+    {
+        let gui_ns = lua.create_table()?;
+
+        if side == Side::Client {
+            let buf = draw_buffer.clone();
+            gui_ns.set("DrawRect", lua.create_function(
+                move |_, (x, y, w, h, r, g, b, a): (f32, f32, f32, f32, u8, u8, u8, u8)| {
+                    buf.push(DrawCommand::Rect { x, y, w, h, color: [r, g, b, a] });
+                    Ok(())
+                },
+            )?)?;
+
+            let buf = draw_buffer.clone();
+            gui_ns.set("DrawText", lua.create_function(
+                move |_, (text, x, y, scale, r, g, b, a, font_id): (String, f32, f32, f32, u8, u8, u8, u8, Option<String>)| {
+                    buf.push(DrawCommand::Text { text, x, y, scale, color: [r, g, b, a], font_id });
+                    Ok(())
+                },
+            )?)?;
+
+            let buf = draw_buffer.clone();
+            gui_ns.set("DrawLine", lua.create_function(
+                move |_, (x1, y1, x2, y2, r, g, b, a): (f32, f32, f32, f32, u8, u8, u8, u8)| {
+                    buf.push(DrawCommand::Line { x1, y1, x2, y2, color: [r, g, b, a] });
+                    Ok(())
+                },
+            )?)?;
+
+            let buf = draw_buffer.clone();
+            gui_ns.set("DrawCircle", lua.create_function(
+                move |_, (x, y, radius, r, g, b, a): (f32, f32, f32, u8, u8, u8, u8)| {
+                    buf.push(DrawCommand::Circle { x, y, radius, color: [r, g, b, a] });
+                    Ok(())
+                },
+            )?)?;
+
+            let buf = draw_buffer.clone();
+            gui_ns.set("DrawSprite", lua.create_function(
+                move |_, (image_id, x, y, w, h, r, g, b, a): (String, f32, f32, f32, f32, Option<u8>, Option<u8>, Option<u8>, Option<u8>)| {
+                    buf.push(DrawCommand::Sprite {
+                        image_id,
+                        x, y, w, h,
+                        color: [r.unwrap_or(255), g.unwrap_or(255), b.unwrap_or(255), a.unwrap_or(255)],
+                    });
+                    Ok(())
+                },
+            )?)?;
+        } else {
+            for fname in &["DrawRect", "DrawText", "DrawLine", "DrawCircle", "DrawSprite"] {
+                gui_ns.set(*fname, lua.create_function(|_, _: MultiValue| Ok(()))?)?;
+            }
+        }
+
+        globals.set("Gui", gui_ns)?;
+    }
+
+    // -- Input namespace — synchronous key/mouse query (Phase 4) ---------------
+    // Input.IsKeyDown("w"), Input.IsKeyJustPressed("space"), etc.
+    // Key names: single letter ("a".."z"), digit ("0".."9"), "space", "escape",
+    //   "enter", "tab", "backspace", "delete", "up"/"down"/"left"/"right",
+    //   "lshift"/"rshift", "lctrl"/"rctrl", "lalt"/"ralt",
+    //   "f1".."f12", "num0".."num9".
+    // Mouse: "left", "right", "middle".
+    // On server all functions return false.
+    {
+        let input_ns = lua.create_table()?;
+
+        if side == Side::Client {
+            let ib = input_bridge.clone();
+            input_ns.set("IsKeyDown", lua.create_function(move |_, key: String| {
+                Ok(ib.0.lock().unwrap_or_else(|p| p.into_inner()).pressed.contains(&key.to_lowercase()))
+            })?)?;
+
+            let ib = input_bridge.clone();
+            input_ns.set("IsKeyJustPressed", lua.create_function(move |_, key: String| {
+                Ok(ib.0.lock().unwrap_or_else(|p| p.into_inner()).just_pressed.contains(&key.to_lowercase()))
+            })?)?;
+
+            let ib = input_bridge.clone();
+            input_ns.set("IsKeyJustReleased", lua.create_function(move |_, key: String| {
+                Ok(ib.0.lock().unwrap_or_else(|p| p.into_inner()).just_released.contains(&key.to_lowercase()))
+            })?)?;
+
+            let ib = input_bridge.clone();
+            input_ns.set("IsMouseButtonDown", lua.create_function(move |_, btn: String| {
+                Ok(ib.0.lock().unwrap_or_else(|p| p.into_inner()).mouse_pressed.contains(&btn.to_lowercase()))
+            })?)?;
+
+            let ib = input_bridge.clone();
+            input_ns.set("IsMouseButtonJustPressed", lua.create_function(move |_, btn: String| {
+                Ok(ib.0.lock().unwrap_or_else(|p| p.into_inner()).mouse_just_pressed.contains(&btn.to_lowercase()))
+            })?)?;
+
+            let ib = input_bridge.clone();
+            input_ns.set("IsMouseButtonJustReleased", lua.create_function(move |_, btn: String| {
+                Ok(ib.0.lock().unwrap_or_else(|p| p.into_inner()).mouse_just_released.contains(&btn.to_lowercase()))
+            })?)?;
+        } else {
+            for fname in &["IsKeyDown", "IsKeyJustPressed", "IsKeyJustReleased",
+                           "IsMouseButtonDown", "IsMouseButtonJustPressed", "IsMouseButtonJustReleased"] {
+                input_ns.set(*fname, lua.create_function(|_, _: String| -> mlua::Result<bool> { Ok(false) })?)?;
+            }
+        }
+
+        globals.set("Input", input_ns)?;
+    }
+
+    // -- Network namespace — connection / server info (Phase 4) ----------------
+    // Network.IsConnected(), Network.GetServerAddress(), Network.GetPing(),
+    // Network.GetClientId() (returns string to avoid u64 precision loss in Lua)
+    {
+        let net_ns = lua.create_table()?;
+
+        let cb = connection.clone();
+        net_ns.set("IsConnected", lua.create_function(move |_, ()| {
+            Ok(cb.0.lock().unwrap_or_else(|p| p.into_inner()).connected)
+        })?)?;
+
+        let cb = connection.clone();
+        net_ns.set("GetServerAddress", lua.create_function(move |_, ()| -> mlua::Result<String> {
+            Ok(cb.0.lock().unwrap_or_else(|p| p.into_inner()).server_addr.clone())
+        })?)?;
+
+        let cb = connection.clone();
+        net_ns.set("GetPing", lua.create_function(move |_, ()| -> mlua::Result<u32> {
+            Ok(cb.0.lock().unwrap_or_else(|p| p.into_inner()).ping_ms)
+        })?)?;
+
+        let cb = connection.clone();
+        net_ns.set("GetClientId", lua.create_function(move |_, ()| -> mlua::Result<String> {
+            Ok(cb.0.lock().unwrap_or_else(|p| p.into_inner()).client_id.to_string())
+        })?)?;
+
+        globals.set("Network", net_ns)?;
     }
 
     Ok(())

@@ -239,7 +239,17 @@ files {
 ### Phase 4 — WebUI, DB & QOL
 
 - [X] **Dual resource loading** — `resolve_path_relative_to_exe` s třístupňovým fallbackem: exe_dir → CWD → `../resources` (pro `cargo run` z build directory)
-- [ ] **Vlastní GUI framework** — WebView NUI (wry/WebView2) byl odstraněn (průhlednost DWM nefungovala spolehlivě); implementovat vlastní in-game GUI nad Bevy UI nebo egui
+- [X] **Vlastní GUI framework** — immediate-mode Lua drawing API (`Gui.*`) + Lua threading (`CreateThread` / `Wait`)
+  - [X] `GuiDrawBuffer(Arc<Mutex<Vec<DrawCommand>>>)` — sdílený buffer Lua ↔ Bevy
+  - [X] `Gui.DrawRect(x, y, w, h, r, g, b, a)` — vyplněný obdélník (normalizované 0–1 souřadnice)
+  - [X] `Gui.DrawText(text, x, y, scale, r, g, b, a)` — text s top-left anchoringem
+  - [X] `Gui.DrawLine(x1, y1, x2, y2, r, g, b, a)` — čára (renderuje se jako tenký rotovaný Sprite)
+  - [X] `Gui.DrawCircle(x, y, radius, r, g, b, a)` — kruh (24 line segmentů)
+  - [X] `CreateThread(fn)` — spustí Lua coroutinu (mlua `Thread` uložena přes `RegistryKey`)
+  - [X] `Wait(ms)` — alias pro `coroutine.yield(ms)`; 0 = příští frame
+  - [X] `tick_lua_threads` systém (PreUpdate) — resumuje thready jejichž wait timer vypršel
+  - [X] `GuiRenderPlugin` — `Camera2d` (order 10, no clear, `RenderLayers::layer(31)`) + pool 512 Sprite + 64 Text2d entit
+  - [X] `resources/example/hud/` — demo HUD (health bar, crosshair, FPS counter)
 - [ ] Integrovat `sqlx` a namapovat Lua Database exporty (základ přítomen jako stub)
 - [ ] Umožnit Lua resources registrovat vlastní WGSL shadery a aplikovat je na materiály
 

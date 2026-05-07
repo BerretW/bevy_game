@@ -83,6 +83,8 @@ pub fn compute_resource_digest(manifest: &Manifest) -> Result<ResourceDigest, Di
     rels.extend(manifest.client_scripts.iter().cloned());
     rels.extend(manifest.server_scripts.iter().cloned());
     rels.extend(manifest.files.iter().cloned());
+    rels.extend(manifest.fonts.iter().map(|f| f.path.clone()));
+    rels.extend(manifest.images.iter().map(|i| i.path.clone()));
 
     // Normalizovat (forward slashes), setřídit, odstranit duplicity.
     for r in rels.iter_mut() {

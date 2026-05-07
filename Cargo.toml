@@ -47,6 +47,7 @@ bevy_mod_scripting = { version = "0.13", default-features = false }
 # --- Database (sqlx: PostgreSQL prod / SQLite dev) ---
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio-rustls",
+    "any",
     "postgres",
     "sqlite",
     "macros",
