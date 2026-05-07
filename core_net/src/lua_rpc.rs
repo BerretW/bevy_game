@@ -7,7 +7,7 @@
 //! * server_drain_outgoing: respektuje evt.target pro unicast routing.
 
 use bevy::prelude::*;
-use core_resources::{LocalPlayerStats, LuaEventDirection, SandboxRegistry};
+use core_resources::{GameBridges, LocalPlayerStats, LuaEventDirection, SandboxRegistry};
 use lightyear::prelude::*;
 
 use crate::net_plugin::LuaRpcChannel;
@@ -67,6 +67,7 @@ fn server_drain_outgoing(
 fn server_dispatch_incoming(
     registry: NonSend<SandboxRegistry>,
     mut receivers: Query<(&mut MessageReceiver<LuaEventMessage>, &RemoteId)>,
+    bridges: Res<GameBridges>,
 ) {
     let mut messages: Vec<(LuaEventMessage, u64)> = Vec::new();
 
@@ -76,6 +77,12 @@ fn server_dispatch_incoming(
             PeerId::Netcode(id) => id,
             _ => 0,
         };
+        // Block Lua events from players who haven't completed authentication yet.
+        if bridges.auth.is_pending(sender_id) {
+            // Drain (discard) messages from unauthenticated clients.
+            rx.receive().for_each(|_| {});
+            continue;
+        }
         for msg in rx.receive() {
             messages.push((msg, sender_id));
         }

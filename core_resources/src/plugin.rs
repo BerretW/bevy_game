@@ -1,6 +1,6 @@
 //! `ResourcesPlugin` — Bevy plugin, ktery drzi VFS, watcher a sandbox registry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use bevy::prelude::*;
@@ -49,6 +49,20 @@ pub struct SandboxRegistry {
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ResourcesSide(pub Side);
 
+/// Množina resource ID + očekávané blake3 hashe souborů povolených serverem.
+///
+/// Na serverové straně zůstává `ids = None` (= načíst vše z `resources/`).
+/// Na klientské straně ji nastavuje `ClientHandshakePlugin` z `ServerHello` manifestu.
+/// Dokud není nastavena (`None`), klient nenačítá žádné sandboxy —
+/// po handshaku se vždy spustí hot-reload s korektní sadou.
+///
+/// `file_hashes`: `resource_id → rel_path → blake3` — ověřuje se před načtením každého sandboxu.
+#[derive(Resource, Default, Clone)]
+pub struct ServerResourceAllowlist {
+    pub ids: Option<HashSet<ResourceId>>,
+    pub file_hashes: HashMap<ResourceId, HashMap<String, [u8; 32]>>,
+}
+
 
 impl Plugin for ResourcesPlugin {
     fn build(&self, app: &mut App) {
@@ -96,6 +110,12 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<FontLoadQueue>();
         app.init_resource::<ImageLoadQueue>();
 
+        // Server resource allowlist — klient sem dostane seznam povolených IDs po handshaku
+        app.init_resource::<ServerResourceAllowlist>();
+
+        // Console / chat příkazy — dispatch do sandboxů (PostUpdate)
+        app.add_systems(PostUpdate, dispatch_console_commands);
+
         // Tick Lua threadů v PreUpdate (před process_lua_commands)
         app.add_systems(PreUpdate, tick_lua_threads);
 
@@ -137,6 +157,7 @@ fn initial_load(
     draw_buffer: Res<GuiDrawBuffer>,
     font_queue: Res<FontLoadQueue>,
     image_queue: Res<ImageLoadQueue>,
+    allowlist: Res<ServerResourceAllowlist>,
 ) {
     rebuild(
         &mut vfs, side.0, &mut registry,
@@ -146,6 +167,7 @@ fn initial_load(
         stats_cache.clone(), entity_cache.clone(),
         db_bridge_res.0.clone(), local_stats.clone(), draw_buffer.clone(),
         Some((font_queue.clone(), image_queue.clone())),
+        &allowlist,
     );
 }
 
@@ -164,6 +186,7 @@ fn hot_reload_on_dirty(
     db_bridge_res: Res<DatabaseBridgeResource>,
     local_stats: Res<LocalPlayerStats>,
     draw_buffer: Res<GuiDrawBuffer>,
+    allowlist: Res<ServerResourceAllowlist>,
 ) {
     if events.is_empty() {
         return;
@@ -181,6 +204,7 @@ fn hot_reload_on_dirty(
         stats_cache.clone(), entity_cache.clone(),
         db_bridge_res.0.clone(), local_stats.clone(), draw_buffer.clone(),
         None,
+        &allowlist,
     );
 }
 
@@ -199,6 +223,7 @@ fn rebuild(
     local_stats: LocalPlayerStats,
     draw_buffer: GuiDrawBuffer,
     load_queues: Option<(FontLoadQueue, ImageLoadQueue)>,
+    allowlist: &ServerResourceAllowlist,
 ) {
     let report = vfs.rescan();
     for err in &report.errors {
@@ -213,13 +238,32 @@ fn rebuild(
     let stream_models = vfs.scan_stream_models();
     model_registry.rebuild_from_scan(stream_models);
 
-    let order = match resolve_load_order(vfs.manifests()) {
+    // Na klientovi nenačítáme sandboxy dokud server nepošle manifest se seznamem
+    // povolených resources (allowlist.ids == None = handshake ještě neproběhl).
+    if side == Side::Client && allowlist.ids.is_none() {
+        info!("[core_resources] client: allowlist not set yet (pending handshake), skipping sandbox load");
+        registry.sandboxes.clear();
+        registry.order.clear();
+        return;
+    }
+
+    let mut order = match resolve_load_order(vfs.manifests()) {
         Ok(o) => o,
         Err(e) => {
             error!("[core_resources] dependency resolution failed: {e}");
             return;
         }
     };
+
+    // Filtr: na klientovi načíst jen resources, které server poslal v ServerHello
+    if let Some(ref allowed) = allowlist.ids {
+        let before = order.len();
+        order.retain(|id| allowed.contains(id));
+        let dropped = before - order.len();
+        if dropped > 0 {
+            info!("[core_resources] allowlist filtered {dropped} stale/local resource(s)");
+        }
+    }
 
     registry.sandboxes.clear();
     registry.order.clear();
@@ -229,6 +273,18 @@ fn rebuild(
             Some(m) => m,
             None => continue,
         };
+
+        // Ověř hash každého souboru patřícího do tohoto resource.
+        // Klient tak nemůže použít lokálně modifikované nebo poškozené soubory.
+        if let Some(expected) = allowlist.file_hashes.get(id) {
+            if !verify_resource_files(manifest, expected) {
+                error!(
+                    "[core_resources] hash mismatch for '{}' — skipping (files may be corrupt or locally modified)",
+                    id
+                );
+                continue;
+            }
+        }
 
         // Enqueue font/image loads for the client renderer (initial load only).
         if side == Side::Client {
@@ -266,6 +322,8 @@ fn rebuild(
             db_bridge.clone(),
             ls,
             draw_buffer.clone(),
+            bridges.ace.clone(),
+            bridges.auth.clone(),
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);
@@ -346,4 +404,60 @@ fn dispatch_db_callbacks(
             );
         }
     }
+}
+
+/// Drainuje `LuaCmdDispatch` a dispatchuje příkazy do všech sandboxů.
+/// Příkaz je zpracován prvním sandboxem, který má registrovaný handler.
+/// Pokud žádný sandbox příkaz nezná, loguje se info zpráva (viditelná v konzoli).
+fn dispatch_console_commands(
+    bridges: Res<GameBridges>,
+    registry: NonSend<SandboxRegistry>,
+) {
+    let pending = bridges.cmd_dispatch.drain();
+    if pending.is_empty() {
+        return;
+    }
+    for cmd in &pending {
+        let mut total = 0usize;
+        for sandbox in registry.sandboxes.values() {
+            match sandbox.dispatch_command(cmd) {
+                Ok(n) => total += n,
+                Err(e) => warn!(
+                    "[console] error in '{}' for command '{}': {}",
+                    sandbox.id, cmd.name, e
+                ),
+            }
+        }
+        if total == 0 {
+            info!("[console] unknown command: '{}'", cmd.raw);
+        }
+    }
+}
+
+/// Ověří, že všechny soubory resource na disku odpovídají serverem očekávaným blake3 hashům.
+/// Vrátí `false` při jakémkoliv nesouladu nebo chybějícím souboru.
+fn verify_resource_files(
+    manifest: &crate::manifest::Manifest,
+    expected: &HashMap<String, [u8; 32]>,
+) -> bool {
+    for (rel_path, &expected_hash) in expected {
+        let abs = manifest.root.join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        match std::fs::read(&abs) {
+            Ok(bytes) => {
+                let actual = *blake3::hash(&bytes).as_bytes();
+                if actual != expected_hash {
+                    warn!(
+                        "[core_resources] hash mismatch: {} (expected {:?}, got {:?})",
+                        abs.display(), &expected_hash[..4], &actual[..4]
+                    );
+                    return false;
+                }
+            }
+            Err(e) => {
+                warn!("[core_resources] cannot read '{}': {}", abs.display(), e);
+                return false;
+            }
+        }
+    }
+    true
 }

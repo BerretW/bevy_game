@@ -296,6 +296,10 @@ pub struct AuthConfig {
     pub mode: AuthMode,
     /// Cesta k whitelist souboru (jen když `mode = "whitelist"`).
     pub whitelist_path: Option<PathBuf>,
+    /// Vyžadovat přihlášení uživatelským jménem a heslem.
+    /// Vyžaduje `[database].url` a resource `core/auth`.
+    /// `false` = kdokoli se připojí bez hesla (LAN dev).
+    pub require_auth: bool,
 }
 
 impl Default for AuthConfig {
@@ -303,6 +307,7 @@ impl Default for AuthConfig {
         Self {
             mode: AuthMode::Open,
             whitelist_path: None,
+            require_auth: false,
         }
     }
 }

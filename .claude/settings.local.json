@@ -56,7 +56,8 @@
       "Bash(del \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\resources\\\\example\\\\hud\\\\server\\\\hp_sync.lua\")",
       "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\.cargo\\\\registry\\\\src\" -Recurse -Filter \"Cargo.toml\" | Where-Object { $_.FullName -match \"wry-0\\\\.46\" } | Select-Object -First 1 -ExpandProperty DirectoryName)",
       "Read(//c/Users/adolf/.cargo/registry/**)",
-      "Bash(xargs grep -l \"pub struct RenderLayers\")"
+      "Bash(xargs grep -l \"pub struct RenderLayers\")",
+      "Bash(New-Item -ItemType Directory -Force -Path \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\resources\\\\core\\\\auth\\\\server\",\"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\resources\\\\core\\\\auth\\\\client\")"
     ]
   }
 }

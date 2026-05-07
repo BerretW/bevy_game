@@ -12,6 +12,7 @@
 //! `MessageReceiver<M>` / `MessageSender<M>` komponenty na connection
 //! entitě, takže žádný Bevy buffered-event derive nepotřebují.
 
+pub mod auth;
 pub mod digest;
 pub mod digest_cache;
 pub mod handshake;
@@ -25,9 +26,10 @@ pub use digest::{
     ResourceDigestSet,
 };
 pub use digest_cache::{DigestPlugin, ResourceDigestCache};
+pub use auth::{ClientAuthPlugin, ServerAuthPlugin};
 pub use handshake::{
-    ClientHandshakeConfig, ClientHandshakePlugin, ClientHandshakeState, HandshakeStatus,
-    ServerHandshakeConfig, ServerHandshakePlugin,
+    ClientHandshakeComplete, ClientHandshakeConfig, ClientHandshakePlugin, ClientHandshakeState,
+    HandshakeStatus, ServerAuthConfig, ServerHandshakeConfig, ServerHandshakePlugin,
 };
 pub use lua_rpc::{ClientLuaRpcPlugin, ServerLuaRpcPlugin};
 pub use core_shared::Health;

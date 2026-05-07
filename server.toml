@@ -148,6 +148,11 @@ mode = "open"
 
 # whitelist_path = "config/whitelist.json"
 
+# Vyžadovat přihlášení uživatelským jménem a heslem před stažením resources.
+# true  = klient dostane login panel; přihlášení probíhá přes resource core/auth + databázi.
+# false = kdokoli se připojí bez hesla (vhodné pro LAN / dev).
+require_auth = false
+
 
 # -----------------------------------------------------------------------------
 # [logging] — tracing-subscriber konfigurace
@@ -180,7 +185,7 @@ filter = "wgpu=warn,naga=warn"
 [database]
 
 # Connection string. SQLite pro dev, Postgres pro prod.
-# url = "sqlite://server.db?mode=rwc"
+url = "sqlite://server.db?mode=rwc"
 # url = "postgres://bevy:bevy@localhost/bevy_game"
 
 # Velikost connection poolu (default 8).

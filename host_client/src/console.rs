@@ -12,6 +12,7 @@ use bevy::ecs::message::MessageReader;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
+use core_resources::{GameBridges, PendingCmd};
 
 // ── Global ring buffer shared by the tracing layer and the Bevy resource ──────
 
@@ -210,7 +211,7 @@ fn toggle(
 fn type_input(
     mut evs: MessageReader<KeyboardInput>,
     mut state: ResMut<ConsoleState>,
-    log: Res<ConsoleLog>,
+    bridges: Res<GameBridges>,
 ) {
     if !state.open {
         evs.clear();
@@ -232,16 +233,23 @@ fn type_input(
                 state.input.pop();
             }
             Key::Enter => {
-                let cmd = std::mem::take(&mut state.input);
-                let cmd = cmd.trim().to_string();
-                if !cmd.is_empty() {
-                    ring_push(format!("> {cmd}"));
-                    // TODO Phase 3.8: dispatch via Lua event bus.
-                    let mut g = log.0.lock().unwrap();
-                    if g.len() >= 512 {
-                        g.pop_front();
-                    }
-                    g.push_back(format!("[console] unknown command: {cmd}"));
+                let raw = std::mem::take(&mut state.input);
+                let raw = raw.trim().to_string();
+                if raw.is_empty() {
+                    continue;
+                }
+                ring_push(format!("> {raw}"));
+                // Odstraň úvodní '/' (chat-style příkazy), pak rozsekai na tokeny
+                let stripped = raw.trim_start_matches('/');
+                let mut tokens = stripped.split_whitespace();
+                if let Some(name) = tokens.next() {
+                    let args: Vec<String> = tokens.map(|s| s.to_string()).collect();
+                    bridges.cmd_dispatch.push(PendingCmd {
+                        name: name.to_lowercase(),
+                        args,
+                        source: 0, // 0 = lokální konzole
+                        raw: raw.clone(),
+                    });
                 }
             }
             _ => {}

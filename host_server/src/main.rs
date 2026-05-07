@@ -18,8 +18,10 @@ use bevy::app::ScheduleRunnerPlugin;
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 
+use core_db::{DatabasePlugin, DatabaseConfig as CoreDbConfig, TokioHandle};
 use core_net::{
-    DigestPlugin, ServerHandshakeConfig, ServerHandshakePlugin, ServerLuaRpcPlugin,
+    DigestPlugin, ServerAuthConfig, ServerAuthPlugin,
+    ServerHandshakeConfig, ServerHandshakePlugin, ServerLuaRpcPlugin,
     ServerNetConfig, ServerNetPlugin, ServerSimPlugin,
 };
 use core_resources::{ResourcesPlugin, Side};
@@ -78,6 +80,7 @@ fn main() {
         .thread_name("host-server-tokio")
         .build()
         .expect("failed to build Tokio runtime for host_server");
+    let tokio_handle = tokio_runtime.handle().clone();
 
     let tick_duration = cfg.net.tick_duration();
 
@@ -98,8 +101,22 @@ fn main() {
         http_base_url: cfg.net.http_public_url.clone(),
     };
 
+    let db_config = CoreDbConfig {
+        url: cfg.database.url.clone(),
+        pool_size: cfg.database.pool_size,
+        migrations_path: cfg.database.migrations_path.clone()
+            .map(|p| resolve_path_relative_to_exe(&p)),
+    };
+
+    let auth_config = ServerAuthConfig {
+        require_auth: cfg.auth.require_auth,
+    };
+
     App::new()
         .insert_resource(TokioRuntime(tokio_runtime))
+        .insert_resource(TokioHandle(tokio_handle))
+        .insert_resource(db_config)
+        .insert_resource(auth_config)
         .insert_resource(http_config)
         .insert_resource(server_net_config)
         .insert_resource(handshake_config)
@@ -137,6 +154,13 @@ fn main() {
             // NetTransform. Replikace přes lightyear `Replicate` zajistí,
             // že klienti vidí pohyb.
             ServerSimPlugin,
+            // Phase 4 — username/password authentication.
+            // Sends AuthChallenge after handshake (if require_auth=true),
+            // routes credentials to Lua, sends AuthResult back.
+            ServerAuthPlugin,
+            // Phase 4 — sqlx DB backend. Connects pool from [database].url,
+            // runs migrations, fills DatabaseBridgeResource used by Lua sandboxes.
+            DatabasePlugin,
             ServerCorePlugin,
         ))
         .run();

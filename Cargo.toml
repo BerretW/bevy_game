@@ -100,6 +100,7 @@ anyhow = "1"
 core_shared = { path = "core_shared" }
 core_resources = { path = "core_resources" }
 core_net = { path = "core_net" }
+core_db = { path = "core_db" }
 
 # Bevy doporučuje optimalizovat dependencies i v dev profilu pro
 # rozumný framerate, zatímco vlastní crates kompilujeme rychle.

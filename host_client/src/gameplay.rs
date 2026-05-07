@@ -9,6 +9,7 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 use bevy::transform::components::TransformTreeChanged;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use core_net::{ClientHandshakeState, HandshakeStatus};
 use bevy::asset::AssetPath;
 use std::collections::HashSet;
 use bevy_gltf::{
@@ -301,9 +302,18 @@ fn update_camera_look_from_mouse(
 fn apply_cursor_mode(
     mode: Res<CameraModeState>,
     bridges: Res<GameBridges>,
+    handshake: Res<ClientHandshakeState>,
     mut cursor_q: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     let Ok(mut cursor) = cursor_q.single_mut() else { return };
+
+    // Auth UI needs a free cursor — always unlock while waiting for login.
+    if handshake.status == HandshakeStatus::AwaitingAuth {
+        cursor.visible = true;
+        cursor.grab_mode = CursorGrabMode::None;
+        return;
+    }
+
     let locked = bridges.engine.cursor_locked();
     cursor.visible = !locked;
     cursor.grab_mode = if locked { CursorGrabMode::Locked } else { CursorGrabMode::None };

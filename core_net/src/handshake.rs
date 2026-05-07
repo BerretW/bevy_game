@@ -29,6 +29,8 @@ use bevy::tasks::IoTaskPool;
 use crossbeam_channel::{unbounded, Receiver};
 use lightyear::prelude::*;
 
+use core_resources::{ResourceId, ResourcesDirty, ServerResourceAllowlist};
+
 use crate::digest::ResourceDigest;
 use crate::digest_cache::ResourceDigestCache;
 use crate::net_plugin::HandshakeChannel;
@@ -55,27 +57,44 @@ impl Default for ServerHandshakeConfig {
     }
 }
 
+/// Marker component added to peer entity when `ClientReady` is received.
+/// Other systems (e.g. `ServerAuthPlugin`) observe `Add<ClientHandshakeComplete>`
+/// instead of consuming `MessageReceiver<ClientReady>` a second time.
+#[derive(Component)]
+pub struct ClientHandshakeComplete;
+
+/// Server-side auth configuration — whether username/password is required.
+#[derive(Resource, Clone, Debug)]
+pub struct ServerAuthConfig {
+    pub require_auth: bool,
+}
+
+impl Default for ServerAuthConfig {
+    fn default() -> Self {
+        Self { require_auth: false }
+    }
+}
+
 pub struct ServerHandshakePlugin;
 
 impl Plugin for ServerHandshakePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ServerHandshakeConfig>();
+        app.init_resource::<ServerAuthConfig>();
         app.add_observer(send_hello_on_connect);
-        app.add_systems(Update, log_client_ready);
+        app.add_systems(Update, mark_client_ready);
     }
 }
 
 fn send_hello_on_connect(
     trigger: On<Add, Connected>,
     config: Res<ServerHandshakeConfig>,
+    auth_config: Res<ServerAuthConfig>,
     cache: Res<ResourceDigestCache>,
     mut senders: Query<&mut MessageSender<ServerHello>>,
 ) {
     let entity = trigger.entity;
     let Ok(mut sender) = senders.get_mut(entity) else {
-        // Pokud lightyear ještě komponenty nepřidal, pošleme ServerHello
-        // až v dalším Update — observer se bude opakovaně spouštět při
-        // dalších Connected eventech, ale jednou bude entity mít sender.
         warn!(
             "[handshake/server] entity {:?} has no MessageSender<ServerHello> yet",
             entity
@@ -95,22 +114,34 @@ fn send_hello_on_connect(
         protocol_version: PROTOCOL_VERSION,
         http_base_url: config.http_base_url.clone(),
         manifests: cache.set().manifests.clone(),
+        auth_required: auth_config.require_auth,
     };
     let count = hello.manifests.len();
     sender.send::<HandshakeChannel>(hello);
     info!(
-        "[handshake/server] sent ServerHello to {:?} ({} manifest(s), http_base={})",
-        entity, count, config.http_base_url
+        "[handshake/server] sent ServerHello to {:?} ({} manifest(s), http_base={}, auth_required={})",
+        entity, count, config.http_base_url, auth_config.require_auth
     );
 }
 
-fn log_client_ready(mut receivers: Query<&mut MessageReceiver<ClientReady>>) {
-    for mut rx in receivers.iter_mut() {
+/// When ClientReady is received: log it and mark the peer entity with
+/// `ClientHandshakeComplete` so other systems (auth) can observe it
+/// without consuming the message a second time.
+fn mark_client_ready(
+    mut commands: Commands,
+    mut receivers: Query<(Entity, &mut MessageReceiver<ClientReady>, &RemoteId)>,
+) {
+    for (entity, mut rx, remote_id) in receivers.iter_mut() {
         for ready in rx.receive() {
+            let client_id = match remote_id.0 {
+                PeerId::Netcode(id) => id,
+                _ => 0,
+            };
             info!(
-                "[handshake/server] client signaled ready (protocol v{})",
-                ready.protocol_version
+                "[handshake/server] client {} ready (protocol v{})",
+                client_id, ready.protocol_version
             );
+            commands.entity(entity).insert(ClientHandshakeComplete);
         }
     }
 }
@@ -145,6 +176,9 @@ pub enum HandshakeStatus {
     /// Nebyl ještě přijatý `ServerHello`.
     #[default]
     AwaitingHello,
+    /// Server requires auth — waiting for the user to log in via native UI.
+    /// Resource download starts only after auth succeeds.
+    AwaitingAuth,
     /// Stahujeme soubory přes HTTP.
     Downloading,
     /// Files staženy a `ClientReady` odeslán.
@@ -159,6 +193,8 @@ pub enum HandshakeStatus {
 pub struct ClientHandshakeState {
     pub status: HandshakeStatus,
     pub manifests: Vec<ResourceDigest>,
+    /// Stored while AwaitingAuth; used to kick off download after auth.
+    pub pending_base: Option<String>,
     download_rx: Option<Receiver<Result<(), String>>>,
 }
 
@@ -168,7 +204,10 @@ impl Plugin for ClientHandshakePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClientHandshakeConfig>();
         app.init_resource::<ClientHandshakeState>();
-        app.add_systems(Update, (receive_hello, poll_download).chain());
+        app.add_systems(
+            Update,
+            (receive_hello, check_auth_then_download, poll_download).chain(),
+        );
     }
 }
 
@@ -176,9 +215,9 @@ fn receive_hello(
     mut receivers: Query<&mut MessageReceiver<ServerHello>>,
     config: Res<ClientHandshakeConfig>,
     mut state: ResMut<ClientHandshakeState>,
+    mut allowlist: ResMut<ServerResourceAllowlist>,
+    bridges: Res<core_resources::GameBridges>,
 ) {
-    // Pokud už nejsme ve stavu AwaitingHello, jen draine, ale jinak ignoruj
-    // (ServerHello by měl přijít právě jednou, ale buď defenzivní).
     if state.status != HandshakeStatus::AwaitingHello {
         for mut rx in receivers.iter_mut() {
             rx.receive().for_each(|_| {});
@@ -197,46 +236,90 @@ fn receive_hello(
                 return;
             }
 
+            bridges.auth.set_required(hello.auth_required);
+
+            allowlist.ids = Some(
+                hello.manifests.iter()
+                    .map(|m| ResourceId::new(&m.id))
+                    .collect()
+            );
+            allowlist.file_hashes = hello.manifests.iter()
+                .map(|m| {
+                    let id = ResourceId::new(&m.id);
+                    let hashes = m.blob.iter()
+                        .map(|f| (f.rel_path.clone(), f.blake3))
+                        .collect::<std::collections::HashMap<_, _>>();
+                    (id, hashes)
+                })
+                .collect();
+
             let base = config
                 .http_base_url_override
                 .clone()
                 .unwrap_or_else(|| hello.http_base_url.clone());
-            let cache_root = config.cache_root.clone();
             let manifests = hello.manifests.clone();
+
             info!(
-                "[handshake/client] received ServerHello — {} manifest(s), \
-                 http_base={}, cache_root={}",
-                manifests.len(),
-                base,
-                cache_root.display(),
+                "[handshake/client] received ServerHello — {} manifest(s), http_base={}, auth_required={}",
+                manifests.len(), base, hello.auth_required,
             );
 
-            let (tx, rx_recv) = unbounded::<Result<(), String>>();
-
-            // Spawn na IoTaskPool. Future obaluje synchronní reqwest::blocking.
-            // `manifests` musí jít do closure i do `state.manifests`, takže
-            // klonujeme ještě jednou — pole je drobné (par desítek struktů).
-            let manifests_for_task = manifests.clone();
-            IoTaskPool::get()
-                .spawn(async move {
-                    let result =
-                        download_all_blocking(&base, &manifests_for_task, &cache_root)
-                            .map_err(|e| e.to_string());
-                    let _ = tx.send(result);
-                })
-                .detach();
-
             state.manifests = manifests;
-            state.status = HandshakeStatus::Downloading;
-            state.download_rx = Some(rx_recv);
+
+            if hello.auth_required {
+                // Pause here — native login UI shows; check_auth_then_download
+                // will kick off the download once the user authenticates.
+                state.pending_base = Some(base);
+                state.status = HandshakeStatus::AwaitingAuth;
+                info!("[handshake/client] auth required — waiting for login");
+            } else {
+                start_download(&mut state, base, config.cache_root.clone());
+            }
             return;
         }
     }
 }
 
+/// Polls auth bridge; once authenticated, starts the resource download.
+fn check_auth_then_download(
+    mut state: ResMut<ClientHandshakeState>,
+    config: Res<ClientHandshakeConfig>,
+    bridges: Res<core_resources::GameBridges>,
+) {
+    if state.status != HandshakeStatus::AwaitingAuth {
+        return;
+    }
+    if !bridges.auth.is_client_authenticated() {
+        return;
+    }
+    let base = state.pending_base.take().unwrap_or_default();
+    info!("[handshake/client] auth ok — starting resource download");
+    start_download(&mut state, base, config.cache_root.clone());
+}
+
+fn start_download(
+    state: &mut ClientHandshakeState,
+    base: String,
+    cache_root: std::path::PathBuf,
+) {
+    let manifests = state.manifests.clone();
+    let (tx, rx_recv) = unbounded::<Result<(), String>>();
+    let manifests_for_task = manifests.clone();
+    IoTaskPool::get()
+        .spawn(async move {
+            let result = download_all_blocking(&base, &manifests_for_task, &cache_root)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
+        })
+        .detach();
+    state.status = HandshakeStatus::Downloading;
+    state.download_rx = Some(rx_recv);
+}
+
 fn poll_download(
     mut state: ResMut<ClientHandshakeState>,
     mut senders: Query<&mut MessageSender<ClientReady>>,
+    mut dirty_writer: MessageWriter<ResourcesDirty>,
 ) {
     if state.status != HandshakeStatus::Downloading {
         return;
@@ -286,6 +369,9 @@ fn poll_download(
                 return;
             }
             state.status = HandshakeStatus::Ready;
+            // Vynutit reload i když žádné soubory nebylo třeba stáhnout
+            // (cache hit) — watcher by jinak nevyslal ResourcesDirty.
+            dirty_writer.write(ResourcesDirty);
         }
         Err(e) => {
             error!("[handshake/client] download failed: {}", e);

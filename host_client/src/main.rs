@@ -7,6 +7,7 @@
 //! Konfigurace přichází z `client.toml` v platform-specific config dir
 //! (`%APPDATA%\bevy_game\client.toml` na Windows). Detaily v [`config`].
 
+mod auth_ui;
 mod config;
 mod console;
 mod gameplay;
@@ -24,8 +25,8 @@ use bevy::window::{
 use bevy_framepace::{FramepacePlugin, FramepaceSettings, Limiter};
 
 use core_net::{
-    ClientHandshakeConfig, ClientHandshakePlugin, ClientLuaRpcPlugin, ClientNetConfig,
-    ClientNetPlugin, FIXED_TIMESTEP_HZ,
+    ClientAuthPlugin, ClientHandshakeConfig, ClientHandshakePlugin, ClientLuaRpcPlugin,
+    ClientNetConfig, ClientNetPlugin, FIXED_TIMESTEP_HZ,
 };
 use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
@@ -182,7 +183,12 @@ fn main() {
             ResourcesPlugin::new(cache_root.clone(), Side::Client),
             ClientNetPlugin,
             ClientHandshakePlugin,
+            // Phase 4 — username/password auth: receives AuthChallenge/AuthResult,
+            // emits local events for the core/auth Lua resource, sends credentials.
+            ClientAuthPlugin,
             ClientLuaRpcPlugin,
+            // Phase 4 — native login/register panel (shown before resource download).
+            auth_ui::AuthUiPlugin,
             // Phase 4 — GUI overlay (immediate-mode Lua drawing API).
             gui_render::GuiRenderPlugin,
             ClientCorePlugin,

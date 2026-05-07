@@ -22,6 +22,7 @@ use crate::gui::{DrawCommand, GuiDrawBuffer};
 
 use bevy::math::{EulerRot, Quat};
 
+use crate::ace::AceRegistry;
 use crate::cmd_queue::{CommandQueue, EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache};
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
@@ -169,15 +170,105 @@ impl ConnectionBridge {
 // GameBridges — single Resource bundling all Arc bridges
 // ---------------------------------------------------------------------------
 
-/// All four Arc-based bridges in one Bevy Resource.
-/// Using a single `Res<GameBridges>` instead of four separate `Res<T>` params
+/// All Arc-based bridges in one Bevy Resource.
+/// Using a single `Res<GameBridges>` instead of separate `Res<T>` params
 /// keeps system function param counts well under Bevy's 16-param limit.
 #[derive(Resource, Clone, Default)]
 pub struct GameBridges {
-    pub raycast:    RaycastBridge,
-    pub engine:     EngineStateBridge,
-    pub input:      InputBridge,
-    pub connection: ConnectionBridge,
+    pub raycast:      RaycastBridge,
+    pub engine:       EngineStateBridge,
+    pub input:        InputBridge,
+    pub connection:   ConnectionBridge,
+    pub cmd_dispatch: LuaCmdDispatch,
+    pub ace:          AceRegistry,
+    pub auth:         AuthBridge,
+}
+
+// ---------------------------------------------------------------------------
+// Auth bridge — login/register flow
+// ---------------------------------------------------------------------------
+
+/// Client-side: credentials waiting to be sent via lightyear.
+#[derive(Debug, Clone)]
+pub struct PendingAuthCredentials {
+    /// 0 = login, 1 = register
+    pub action: u8,
+    pub username: String,
+    /// Plaintext — sent over encrypted lightyear channel; server hashes it.
+    pub password: String,
+}
+
+/// Server-side: result queued by Lua (`Auth.MarkPlayerAuthenticated` / `Auth.RejectPlayer`)
+/// to be dispatched by the auth Bevy system back to the peer entity's `MessageSender`.
+#[derive(Debug, Clone)]
+pub struct PendingAuthResult {
+    pub player_id: u64,
+    pub success: bool,
+    /// Permanent account ID (e.g. "user:abc123") — empty on failure.
+    pub account_id: String,
+    pub error: String,
+}
+
+#[derive(Resource, Clone, Default)]
+pub struct AuthBridge {
+    /// Server: player_ids awaiting auth — their `LuaEventMessage`s are blocked.
+    pub pending: Arc<Mutex<HashSet<u64>>>,
+    /// Server: results pushed by Lua, drained by Bevy auth system each frame.
+    pub results: Arc<Mutex<Vec<PendingAuthResult>>>,
+    /// Client: credentials waiting to be sent via lightyear.
+    pub outgoing: Arc<Mutex<Vec<PendingAuthCredentials>>>,
+    /// Whether the server requires authentication (set from ServerHello).
+    pub required: Arc<Mutex<bool>>,
+    /// Client: set to true after successful AuthResult; handshake polls this
+    /// to know when to proceed with resource download.
+    pub client_authenticated: Arc<Mutex<bool>>,
+    /// Client: last auth error string from the server (take-once semantics).
+    pub client_error: Arc<Mutex<Option<String>>>,
+}
+
+impl AuthBridge {
+    pub fn is_pending(&self, player_id: u64) -> bool {
+        self.pending.lock().unwrap_or_else(|p| p.into_inner()).contains(&player_id)
+    }
+    pub fn add_pending(&self, player_id: u64) {
+        self.pending.lock().unwrap_or_else(|p| p.into_inner()).insert(player_id);
+    }
+    pub fn remove_pending(&self, player_id: u64) {
+        self.pending.lock().unwrap_or_else(|p| p.into_inner()).remove(&player_id);
+    }
+    pub fn push_result(&self, result: PendingAuthResult) {
+        self.results.lock().unwrap_or_else(|p| p.into_inner()).push(result);
+    }
+    pub fn drain_results(&self) -> Vec<PendingAuthResult> {
+        std::mem::take(&mut *self.results.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+    pub fn push_outgoing(&self, cred: PendingAuthCredentials) {
+        self.outgoing.lock().unwrap_or_else(|p| p.into_inner()).push(cred);
+    }
+    pub fn drain_outgoing(&self) -> Vec<PendingAuthCredentials> {
+        std::mem::take(&mut *self.outgoing.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+    pub fn is_required(&self) -> bool {
+        *self.required.lock().unwrap_or_else(|p| p.into_inner())
+    }
+    pub fn set_required(&self, req: bool) {
+        *self.required.lock().unwrap_or_else(|p| p.into_inner()) = req;
+    }
+    /// Called by client auth system after a successful `AuthResult`.
+    pub fn set_client_authenticated(&self) {
+        *self.client_authenticated.lock().unwrap_or_else(|p| p.into_inner()) = true;
+    }
+    pub fn is_client_authenticated(&self) -> bool {
+        *self.client_authenticated.lock().unwrap_or_else(|p| p.into_inner())
+    }
+    /// Store an error message from the server for the native login UI to display.
+    pub fn set_client_error(&self, err: String) {
+        *self.client_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(err);
+    }
+    /// Take the pending error (one-shot — returns None if already read).
+    pub fn take_client_error(&self) -> Option<String> {
+        self.client_error.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +293,37 @@ impl LocalEventBus {
     }
 
     pub fn drain(&self) -> Vec<LocalEvent> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command dispatch — console a chat příkazy z Lua
+// ---------------------------------------------------------------------------
+
+/// Jeden příkaz čekající na dispatch do Lua sandboxů.
+#[derive(Debug, Clone)]
+pub struct PendingCmd {
+    /// Název příkazu (lowercase, bez úvodního lomítka).
+    pub name: String,
+    /// Pozicionalní argumenty (split podle mezer).
+    pub args: Vec<String>,
+    /// Zdroj: 0 = lokální konzole / server konzole; player_id = z chatu.
+    pub source: u64,
+    /// Původní celý vstupní řetězec (před parseováním).
+    pub raw: String,
+}
+
+/// Sdílený buffer konzolových / chat příkazů.
+/// `console.rs` / chat handler pushuje; Bevy systém drainuje a dispatchuje do sandboxů.
+#[derive(Resource, Clone, Default)]
+pub struct LuaCmdDispatch(pub Arc<Mutex<Vec<PendingCmd>>>);
+
+impl LuaCmdDispatch {
+    pub fn push(&self, cmd: PendingCmd) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).push(cmd);
+    }
+    pub fn drain(&self) -> Vec<PendingCmd> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()))
     }
 }
@@ -327,6 +449,9 @@ pub struct LuaSandbox {
     lua: Lua,
     outgoing: Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    /// (handler_key, restricted) — restricted=true checks ACE "command.<name>" for non-console callers
+    command_handlers: Rc<RefCell<HashMap<String, Vec<(RegistryKey, bool)>>>>,
+    ace: AceRegistry,
     db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>>,
     db_counter: Rc<RefCell<u64>>,
     local_stats: Option<LocalPlayerStats>,
@@ -350,6 +475,8 @@ impl LuaSandbox {
         db_bridge: Option<DbBridge>,
         local_stats: Option<LocalPlayerStats>,
         draw_buffer: GuiDrawBuffer,
+        ace_registry: AceRegistry,
+        auth_bridge: AuthBridge,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -359,6 +486,8 @@ impl LuaSandbox {
 
         let outgoing = Rc::new(RefCell::new(Vec::new()));
         let handlers: Rc<RefCell<HashMap<String, Vec<RegistryKey>>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let command_handlers: Rc<RefCell<HashMap<String, Vec<(RegistryKey, bool)>>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>> =
             Rc::new(RefCell::new(HashMap::new()));
@@ -371,6 +500,7 @@ impl LuaSandbox {
             side,
             &outgoing,
             &handlers,
+            &command_handlers,
             &cmd_queue,
             &local_bus,
             &model_cmds,
@@ -386,6 +516,8 @@ impl LuaSandbox {
             &local_stats,
             &thread_pool,
             &draw_buffer,
+            &ace_registry,
+            &auth_bridge,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -404,6 +536,8 @@ impl LuaSandbox {
             lua,
             outgoing,
             handlers,
+            command_handlers,
+            ace: ace_registry,
             db_callbacks,
             db_counter,
             local_stats,
@@ -449,6 +583,38 @@ impl LuaSandbox {
 
     pub fn handler_count(&self, name: &str) -> usize {
         self.handlers.borrow().get(name).map(|v| v.len()).unwrap_or(0)
+    }
+
+    /// Dispatch konzolového / chat příkazu do tohoto sandboxu.
+    /// Handler: `function(source, args, rawCommand)`.
+    /// Vrátí počet volaných handlerů (0 = příkaz neznámý pro tento sandbox).
+    pub fn dispatch_command(&self, cmd: &PendingCmd) -> Result<usize, mlua::Error> {
+        let handlers = self.command_handlers.borrow();
+        let Some(entries) = handlers.get(&cmd.name) else {
+            return Ok(0);
+        };
+        let args_t = self.lua.create_table()?;
+        for (i, arg) in cmd.args.iter().enumerate() {
+            args_t.set(i + 1, self.lua.create_string(arg.as_bytes())?)?;
+        }
+        let mut count = 0;
+        for (key, restricted) in entries.iter() {
+            // source=0 is console/server — always allowed.
+            // For player sources with restricted=true, check ACE "command.<name>".
+            if *restricted && cmd.source != 0 {
+                if !self.ace.is_player_allowed(cmd.source, &format!("command.{}", cmd.name)) {
+                    bevy::log::warn!(
+                        "[console] ACE denied '{}' for player {}",
+                        cmd.name, cmd.source
+                    );
+                    continue;
+                }
+            }
+            let f: mlua::Function = self.lua.registry_value(key)?;
+            f.call::<()>((cmd.source, args_t.clone(), cmd.raw.clone()))?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     pub fn lua(&self) -> &Lua {
@@ -635,6 +801,7 @@ fn install_runtime_api(
     side: Side,
     outgoing: &Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    command_handlers: &Rc<RefCell<HashMap<String, Vec<(RegistryKey, bool)>>>>,
     cmd_queue: &CommandQueue,
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
@@ -650,8 +817,10 @@ fn install_runtime_api(
     local_stats: &Option<LocalPlayerStats>,
     thread_pool: &ThreadPool,
     draw_buffer: &GuiDrawBuffer,
+    ace_registry: &AceRegistry,
+    auth_bridge: &AuthBridge,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, cmd_queue, local_bus, model_cmds, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -662,6 +831,7 @@ fn install_runtime_api_inner(
     side: Side,
     outgoing: &Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
+    command_handlers: &Rc<RefCell<HashMap<String, Vec<(RegistryKey, bool)>>>>,
     cmd_queue: &CommandQueue,
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
@@ -677,6 +847,8 @@ fn install_runtime_api_inner(
     local_stats: &Option<LocalPlayerStats>,
     thread_pool: &ThreadPool,
     draw_buffer: &GuiDrawBuffer,
+    ace_registry: &AceRegistry,
+    auth_bridge: &AuthBridge,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -711,6 +883,23 @@ fn install_runtime_api_inner(
     globals.set("RegisterEvent", lua.create_function(move |lua, (name, f): (String, mlua::Function)| {
         let key = lua.create_registry_value(f)?;
         handlers_for_reg.borrow_mut().entry(name).or_default().push(key);
+        Ok(())
+    })?)?;
+
+    // RegisterCommand(name, handler, restricted?) — registruje konzolový / chat příkaz.
+    // Handler: function(source, args, rawCommand)
+    //   source:     0 = konzole/server, player_id = z chatu
+    //   args:       table of strings (pozicinální argumenty)
+    //   rawCommand: původní vstupní string
+    // restricted:   true = vyžaduje ACE "command.<name>" pro hráče (default false)
+    let cmd_handlers_for_reg = command_handlers.clone();
+    globals.set("RegisterCommand", lua.create_function(move |lua, (name, f, restricted): (String, mlua::Function, Option<bool>)| {
+        let key = lua.create_registry_value(f)?;
+        let restricted = restricted.unwrap_or(false);
+        cmd_handlers_for_reg.borrow_mut()
+            .entry(name.to_lowercase())
+            .or_default()
+            .push((key, restricted));
         Ok(())
     })?)?;
 
@@ -1421,6 +1610,210 @@ fn install_runtime_api_inner(
         }
 
         globals.set("Input", input_ns)?;
+    }
+
+    // -- ACE namespace — FiveM-style permission system -------------------------
+    // All mutating functions are server-only; reads (IsAceAllowed, IsPlayerAceAllowed)
+    // are available on both sides but will always return false on the client since
+    // the registry is never populated there.
+    {
+        let ace_ns = lua.create_table()?;
+
+        // ACE.AddAce(principal, ace_name, "allow"|"deny")
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("AddAce", lua.create_function(move |_, (principal, ace_name, mode): (String, String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("ACE.AddAce is server-only".into()));
+            }
+            let allow = mode.to_lowercase() != "deny";
+            ace_ref.add_ace(&principal, &ace_name, allow);
+            Ok(())
+        })?)?;
+
+        // ACE.RemoveAce(principal, ace_name)
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("RemoveAce", lua.create_function(move |_, (principal, ace_name): (String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("ACE.RemoveAce is server-only".into()));
+            }
+            ace_ref.remove_ace(&principal, &ace_name);
+            Ok(())
+        })?)?;
+
+        // ACE.AddPrincipal(child, parent) — inherit all permissions of parent
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("AddPrincipal", lua.create_function(move |_, (child, parent): (String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("ACE.AddPrincipal is server-only".into()));
+            }
+            ace_ref.add_principal(&child, &parent);
+            Ok(())
+        })?)?;
+
+        // ACE.RemovePrincipal(child, parent)
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("RemovePrincipal", lua.create_function(move |_, (child, parent): (String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("ACE.RemovePrincipal is server-only".into()));
+            }
+            ace_ref.remove_principal(&child, &parent);
+            Ok(())
+        })?)?;
+
+        // ACE.AddPlayerIdentifier(player_id, identifier)
+        // identifier format: "ip:1.2.3.4", "discord:123456789", etc.
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("AddPlayerIdentifier", lua.create_function(move |_, (player_id_v, identifier): (mlua::Value, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("ACE.AddPlayerIdentifier is server-only".into()));
+            }
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            ace_ref.add_identifier(player_id, identifier);
+            Ok(())
+        })?)?;
+
+        // ACE.RemovePlayer(player_id) — cleans up identifiers and per-player entries on disconnect
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("RemovePlayer", lua.create_function(move |_, player_id_v: mlua::Value| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("ACE.RemovePlayer is server-only".into()));
+            }
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            ace_ref.remove_player(player_id);
+            Ok(())
+        })?)?;
+
+        // ACE.GetPlayerIdentifiers(player_id) -> {string, ...}
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("GetPlayerIdentifiers", lua.create_function(move |lua, player_id_v: mlua::Value| {
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            let ids = ace_ref.get_identifiers(player_id);
+            let t = lua.create_table()?;
+            for (i, id) in ids.into_iter().enumerate() {
+                t.set(i + 1, id)?;
+            }
+            Ok(t)
+        })?)?;
+
+        // ACE.GetPlayerIdentifier(player_id, type) -> string|nil
+        // type examples: "ip", "discord", "steam"
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("GetPlayerIdentifier", lua.create_function(move |lua, (player_id_v, id_type): (mlua::Value, String)| -> mlua::Result<mlua::Value> {
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            match ace_ref.get_identifier(player_id, &id_type) {
+                Some(s) => Ok(mlua::Value::String(lua.create_string(s.as_bytes())?)),
+                None => Ok(mlua::Value::Nil),
+            }
+        })?)?;
+
+        // ACE.IsAceAllowed(principal, ace_name) -> bool
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("IsAceAllowed", lua.create_function(move |_, (principal, ace_name): (String, String)| {
+            Ok(ace_ref.is_allowed(&principal, &ace_name))
+        })?)?;
+
+        // ACE.IsPlayerAceAllowed(player_id, ace_name) -> bool
+        let ace_ref = ace_registry.clone();
+        ace_ns.set("IsPlayerAceAllowed", lua.create_function(move |_, (player_id_v, ace_name): (mlua::Value, String)| {
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            Ok(ace_ref.is_player_allowed(player_id, &ace_name))
+        })?)?;
+
+        globals.set("ACE", ace_ns)?;
+    }
+
+    // -- Auth namespace — login/register flow ----------------------------------
+    // Client: Auth.SendCredentials, Auth.IsRequired
+    // Server: Auth.MarkPlayerAuthenticated, Auth.RejectPlayer
+    // Both:   Auth.GetAccountId, Auth.IsAuthenticated
+    {
+        let auth_ns = lua.create_table()?;
+
+        // Auth.SendCredentials("login"|"register", username, password) — client only.
+        // Queues credentials to be sent via lightyear next frame.
+        let auth_out = auth_bridge.outgoing.clone();
+        auth_ns.set("SendCredentials", lua.create_function(move |_, (action_str, username, password): (String, String, String)| {
+            if side != Side::Client {
+                return Err(mlua::Error::RuntimeError("Auth.SendCredentials is client-only".into()));
+            }
+            let action = if action_str.to_lowercase() == "register" { 1u8 } else { 0u8 };
+            auth_out.lock().unwrap_or_else(|p| p.into_inner())
+                .push(PendingAuthCredentials { action, username, password });
+            Ok(())
+        })?)?;
+
+        // Auth.IsRequired() -> bool — true when server requires authentication.
+        let auth_req = auth_bridge.required.clone();
+        auth_ns.set("IsRequired", lua.create_function(move |_, ()| {
+            Ok(*auth_req.lock().unwrap_or_else(|p| p.into_inner()))
+        })?)?;
+
+        // Auth.MarkPlayerAuthenticated(player_id, account_id) — server only.
+        // Called by the core/auth Lua resource after successful DB validation.
+        // Removes from PendingAuth, registers ACE identifier, queues AuthResult to client.
+        let auth_res = auth_bridge.results.clone();
+        let auth_pend = auth_bridge.pending.clone();
+        let ace_ref = ace_registry.clone();
+        let bus_ref = local_bus.clone();
+        auth_ns.set("MarkPlayerAuthenticated", lua.create_function(move |_, (player_id_v, account_id): (mlua::Value, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("Auth.MarkPlayerAuthenticated is server-only".into()));
+            }
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            auth_pend.lock().unwrap_or_else(|p| p.into_inner()).remove(&player_id);
+            // Register permanent ACE identifier: "user:<account_id>"
+            ace_ref.add_identifier(player_id, format!("user:{account_id}"));
+            // Queue AuthResult for dispatch back to client
+            auth_res.lock().unwrap_or_else(|p| p.into_inner()).push(PendingAuthResult {
+                player_id,
+                success: true,
+                account_id: account_id.clone(),
+                error: String::new(),
+            });
+            // Emit cross-sandbox event so other resources know
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "player": player_id.to_string(),
+                "account_id": account_id,
+            })).unwrap_or_default();
+            bus_ref.push("auth:playerAuthenticated".to_string(), payload);
+            Ok(())
+        })?)?;
+
+        // Auth.RejectPlayer(player_id, reason) — server only.
+        // Player stays in PendingAuth (can retry). Server queues failure AuthResult.
+        let auth_res = auth_bridge.results.clone();
+        auth_ns.set("RejectPlayer", lua.create_function(move |_, (player_id_v, reason): (mlua::Value, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("Auth.RejectPlayer is server-only".into()));
+            }
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            auth_res.lock().unwrap_or_else(|p| p.into_inner()).push(PendingAuthResult {
+                player_id,
+                success: false,
+                account_id: String::new(),
+                error: reason,
+            });
+            Ok(())
+        })?)?;
+
+        // Auth.GetAccountId(player_id) -> string|nil — reads ACE "user" identifier.
+        let ace_ref = ace_registry.clone();
+        auth_ns.set("GetAccountId", lua.create_function(move |lua, player_id_v: mlua::Value| -> mlua::Result<mlua::Value> {
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            match ace_ref.get_identifier(player_id, "user") {
+                Some(s) => Ok(mlua::Value::String(lua.create_string(s.as_bytes())?)),
+                None => Ok(mlua::Value::Nil),
+            }
+        })?)?;
+
+        // Auth.IsAuthenticated(player_id) -> bool — server only.
+        let auth_pend = auth_bridge.pending.clone();
+        auth_ns.set("IsAuthenticated", lua.create_function(move |_, player_id_v: mlua::Value| {
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            Ok(!auth_pend.lock().unwrap_or_else(|p| p.into_inner()).contains(&player_id))
+        })?)?;
+
+        globals.set("Auth", auth_ns)?;
     }
 
     // -- Network namespace — connection / server info (Phase 4) ----------------

@@ -34,6 +34,41 @@ pub struct ServerHello {
     /// Klient si je všechny musí dotáhnout, jinak nedostane povolení
     /// vstoupit do hry.
     pub manifests: Vec<ResourceDigest>,
+    /// True = server vyžaduje přihlášení uživatelským jménem a heslem
+    /// před vstupem do hry. Klient zobrazí přihlašovací prompt.
+    pub auth_required: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Auth messages (Phase 4 — password-based account system)
+// ---------------------------------------------------------------------------
+
+/// **Server → Client** — posláno po úspěšném handshaku (ClientReady),
+/// pokud `ServerHello.auth_required == true`.
+/// Signalizuje klientu, že musí zaslat přihlašovací údaje.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthChallenge;
+
+/// **Client → Server** — přihlašovací nebo registrační údaje.
+/// Posílá se přes šifrovaný lightyear kanál — heslo je v plaintextu,
+/// server ho hashuje (blake3) před uložením nebo porovnáváním.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthCredentials {
+    /// 0 = přihlášení, 1 = registrace.
+    pub action: u8,
+    pub username: String,
+    /// Plaintext heslo — bezpečné díky šifrovanému lightyear spojení.
+    pub password: String,
+}
+
+/// **Server → Client** — výsledek pokusu o přihlášení/registraci.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthResult {
+    pub success: bool,
+    /// Permanentní account ID (např. "user:abc123") — prázdný při neúspěchu.
+    pub account_id: String,
+    /// Chybová zpráva — prázdná při úspěchu.
+    pub error: String,
 }
 
 /// **Client → Server**, posláno až po stáhnutí všech resources a postavení

@@ -26,6 +26,7 @@ bevy = { workspace = true, default-features = false, features = [
 core_shared = { workspace = true }
 core_resources = { workspace = true }
 core_net = { workspace = true }
+core_db = { workspace = true }
 tokio = { workspace = true }
 
 # Server config (server.toml).

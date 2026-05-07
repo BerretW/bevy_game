@@ -34,7 +34,10 @@ use lightyear::prelude::*;
 
 use core_shared::{NetTransform, NetVelocity, PlayerMarker};
 
-use crate::protocol::{ClientReady, LuaEventMessage, PlayerInput, PlayerStatsUpdate, ServerHello};
+use crate::protocol::{
+    AuthChallenge, AuthCredentials, AuthResult,
+    ClientReady, LuaEventMessage, PlayerInput, PlayerStatsUpdate, ServerHello,
+};
 
 /// Tickrate pro lightyear (musí ladit s herní simulací).
 pub const FIXED_TIMESTEP_HZ: f64 = 60.0;
@@ -77,6 +80,10 @@ pub struct InputChannel;
 /// Phase 4 — sequenced unreliable kanál pro `PlayerStatsUpdate` (~10 Hz, server→klient).
 /// Vždy zajímá jen poslední stav; ztráta paketu je přijatelná.
 pub struct StatsChannel;
+
+/// Phase 4 — ordered reliable kanál pro autentizaci (AuthChallenge / AuthCredentials / AuthResult).
+/// Ztráta nebo přeřazení by znemožnila přihlášení.
+pub struct AuthChannel;
 
 // ---------------------------------------------------------------------------
 // ProtocolPlugin — sdílený
@@ -134,6 +141,21 @@ impl Plugin for ProtocolPlugin {
             ..default()
         })
         .add_direction(NetworkDirection::ServerToClient);
+
+        // Auth — ordered reliable, bidirectional.
+        app.add_channel::<AuthChannel>(ChannelSettings {
+            mode: ChannelMode::OrderedReliable(ReliableSettings::default()),
+            ..default()
+        })
+        .add_direction(NetworkDirection::Bidirectional);
+
+        // Auth messages
+        app.register_message::<AuthChallenge>()
+            .add_direction(NetworkDirection::ServerToClient);
+        app.register_message::<AuthCredentials>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<AuthResult>()
+            .add_direction(NetworkDirection::ServerToClient);
 
         // -----------------------------------------------------------------
         // Replicated components (Phase 3)

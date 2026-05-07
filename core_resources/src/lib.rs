@@ -8,6 +8,7 @@
 //!    jeho `shared_scripts` + side-specific (`server_scripts`/`client_scripts`).
 //! 5. Sledovat filesystem (`notify`) a při změně provést hot-reload.
 
+mod ace;
 mod cmd_queue;
 mod db_bridge;
 pub mod gui;
@@ -33,14 +34,17 @@ pub use db_bridge::{
 pub use gui::{DrawCommand, FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
 pub use manifest::{FontDef, ImageDef, Manifest, ManifestError, ResourceKind};
 pub use model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands};
-pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry};
+pub use ace::AceRegistry;
+pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry, ServerResourceAllowlist};
 pub use resolver::{resolve_load_order, ResolveError};
 pub use sandbox::{
+    AuthBridge, PendingAuthCredentials, PendingAuthResult,
     ConnectionBridge, ConnectionInfo,
     EngineStateBridge,
     GameBridges,
     InputBridge, InputSnapshot,
     LocalEvent, LocalEventBus,
+    LuaCmdDispatch, PendingCmd,
     LuaEventDirection, LuaEventOut,
     LuaSandbox, RaycastBridge, SandboxError,
 };
