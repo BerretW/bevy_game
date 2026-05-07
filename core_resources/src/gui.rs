@@ -46,6 +46,13 @@ pub enum DrawCommand {
         radius: f32,
         color: [u8; 4],
     },
+    /// Vyplněný disk (filled circle). x, y = střed; radius = normalizovaný.
+    Disc {
+        x: f32,
+        y: f32,
+        radius: f32,
+        color: [u8; 4],
+    },
     /// Sprite / obrázek. image_id odkazuje na registrovaný obrázek z manifestu.
     /// x, y = střed (normalizované); w, h = rozměry (normalizované).
     /// color = RGBA tint (255,255,255,255 = beze změny).

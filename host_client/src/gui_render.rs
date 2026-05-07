@@ -23,10 +23,12 @@ use core_resources::{DrawCommand, FontLoadQueue, GuiDrawBuffer, ImageLoadQueue};
 
 const GUI_LAYER_ID: usize = 31;
 
-const RECT_POOL_SIZE: usize = 128;
-const TEXT_POOL_SIZE: usize = 32;
+const RECT_POOL_SIZE: usize = 256;
+const TEXT_POOL_SIZE: usize = 48;
 const IMAGE_POOL_SIZE: usize = 16;
+const DISC_POOL_SIZE: usize = 128;
 const CIRCLE_SEGMENTS: usize = 24;
+const DISC_TEX_SIZE: u32 = 64;
 
 #[derive(Component)]
 struct GuiRectSlot;
@@ -36,6 +38,9 @@ struct GuiTextSlot;
 
 #[derive(Component)]
 struct GuiImageSlot;
+
+#[derive(Component)]
+struct GuiDiscSlot;
 
 #[derive(Component)]
 struct GuiCamera;
@@ -50,20 +55,24 @@ pub struct GuiImageRegistry(pub HashMap<String, Handle<Image>>);
 
 #[derive(Resource)]
 pub struct GuiPool {
-    rects: Vec<Entity>,
-    texts: Vec<Entity>,
+    rects:  Vec<Entity>,
+    texts:  Vec<Entity>,
     images: Vec<Entity>,
-    #[allow(dead_code)] // udržuje texturu naživu po dobu existence poolu
-    white_pixel: Handle<Image>,
+    discs:  Vec<Entity>,
+    #[allow(dead_code)]
+    white_pixel:  Handle<Image>,
+    #[allow(dead_code)]
+    disc_texture: Handle<Image>,
 }
 
 /// Kolik slotů bylo viditelných v předchozím frame.
 /// Skrýváme pouze 0..hw.*, ne celý pool — šetříme ECS change-detection mutace.
 #[derive(Resource, Default)]
 struct GuiHighWater {
-    rects: usize,
-    texts: usize,
+    rects:  usize,
+    texts:  usize,
     images: usize,
+    discs:  usize,
 }
 
 pub struct GuiRenderPlugin;
@@ -144,7 +153,60 @@ fn setup_gui(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         })
         .collect();
 
-    commands.insert_resource(GuiPool { rects, texts, images: images_pool, white_pixel });
+    // Disc (filled circle) texture — 64×64, anti-aliased edge.
+    let disc_pixels = generate_disc_texture(DISC_TEX_SIZE);
+    let disc_texture = images.add(Image::new(
+        Extent3d { width: DISC_TEX_SIZE, height: DISC_TEX_SIZE, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        disc_pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    ));
+
+    let discs: Vec<Entity> = (0..DISC_POOL_SIZE)
+        .map(|i| {
+            commands.spawn((
+                Sprite {
+                    image: disc_texture.clone(),
+                    color: Color::WHITE,
+                    custom_size: Some(Vec2::ONE),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 0.0, 10.5 + i as f32 * 0.001),
+                Visibility::Hidden,
+                RenderLayers::layer(GUI_LAYER_ID),
+                GuiDiscSlot,
+            )).id()
+        })
+        .collect();
+
+    commands.insert_resource(GuiPool { rects, texts, images: images_pool, discs, white_pixel, disc_texture });
+}
+
+fn generate_disc_texture(size: u32) -> Vec<u8> {
+    let mut px = vec![0u8; (size * size * 4) as usize];
+    let center = (size as f32 - 1.0) * 0.5;
+    let radius = center;
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let alpha = if dist < radius - 1.0 {
+                255u8
+            } else if dist < radius {
+                ((radius - dist) * 255.0).round() as u8
+            } else {
+                0u8
+            };
+            let idx = ((y * size + x) * 4) as usize;
+            px[idx]     = 255;
+            px[idx + 1] = 255;
+            px[idx + 2] = 255;
+            px[idx + 3] = alpha;
+        }
+    }
+    px
 }
 
 fn process_asset_queues(
@@ -173,15 +235,19 @@ fn render_gui(
     window_q: Query<&Window, With<PrimaryWindow>>,
     mut rect_q: Query<
         (&mut Sprite, &mut Transform, &mut Visibility),
-        (With<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>),
+        (With<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>, Without<GuiDiscSlot>),
     >,
     mut text_q: Query<
         (&mut Text2d, &mut TextFont, &mut TextColor, &mut Transform, &mut Visibility),
-        (With<GuiTextSlot>, Without<GuiRectSlot>, Without<GuiImageSlot>),
+        (With<GuiTextSlot>, Without<GuiRectSlot>, Without<GuiImageSlot>, Without<GuiDiscSlot>),
     >,
     mut image_q: Query<
         (&mut Sprite, &mut Transform, &mut Visibility),
-        (With<GuiImageSlot>, Without<GuiRectSlot>, Without<GuiTextSlot>),
+        (With<GuiImageSlot>, Without<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiDiscSlot>),
+    >,
+    mut disc_q: Query<
+        (&mut Sprite, &mut Transform, &mut Visibility),
+        (With<GuiDiscSlot>, Without<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>),
     >,
 ) {
     let (win_w, win_h) = window_q
@@ -192,18 +258,20 @@ fn render_gui(
     let cmds = draw_buffer.drain();
 
     // Skrýváme pouze sloty co byly viditelné minulý frame.
-    hide_used(&pool, &hw, &mut rect_q, &mut text_q, &mut image_q);
+    hide_used(&pool, &hw, &mut rect_q, &mut text_q, &mut image_q, &mut disc_q);
 
     if cmds.is_empty() {
-        hw.rects = 0;
-        hw.texts = 0;
+        hw.rects  = 0;
+        hw.texts  = 0;
         hw.images = 0;
+        hw.discs  = 0;
         return;
     }
 
     let mut ri = 0usize;
     let mut ti = 0usize;
     let mut ii = 0usize;
+    let mut di = 0usize;
 
     let to_world = |nx: f32, ny: f32| Vec2::new((nx - 0.5) * win_w, (0.5 - ny) * win_h);
 
@@ -293,12 +361,29 @@ fn render_gui(
                 }
                 ii += 1;
             }
+
+            DrawCommand::Disc { x, y, radius, color } => {
+                if di >= pool.discs.len() { continue; }
+                let e = pool.discs[di];
+                if let Ok((mut spr, mut tr, mut vis)) = disc_q.get_mut(e) {
+                    spr.color = Color::srgba_u8(color[0], color[1], color[2], color[3]);
+                    let px = radius * win_w.min(win_h) * 2.0;
+                    spr.custom_size = Some(Vec2::splat(px));
+                    let world = to_world(x, y);
+                    tr.translation.x = world.x;
+                    tr.translation.y = world.y;
+                    tr.rotation = Quat::IDENTITY;
+                    vis.set_if_neq(Visibility::Visible);
+                }
+                di += 1;
+            }
         }
     }
 
-    hw.rects = ri;
-    hw.texts = ti;
+    hw.rects  = ri;
+    hw.texts  = ti;
     hw.images = ii;
+    hw.discs  = di;
 }
 
 /// Skryje pouze sloty 0..hw.* — ne celý pool.
@@ -307,15 +392,19 @@ fn hide_used(
     hw: &GuiHighWater,
     rect_q: &mut Query<
         (&mut Sprite, &mut Transform, &mut Visibility),
-        (With<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>),
+        (With<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>, Without<GuiDiscSlot>),
     >,
     text_q: &mut Query<
         (&mut Text2d, &mut TextFont, &mut TextColor, &mut Transform, &mut Visibility),
-        (With<GuiTextSlot>, Without<GuiRectSlot>, Without<GuiImageSlot>),
+        (With<GuiTextSlot>, Without<GuiRectSlot>, Without<GuiImageSlot>, Without<GuiDiscSlot>),
     >,
     image_q: &mut Query<
         (&mut Sprite, &mut Transform, &mut Visibility),
-        (With<GuiImageSlot>, Without<GuiRectSlot>, Without<GuiTextSlot>),
+        (With<GuiImageSlot>, Without<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiDiscSlot>),
+    >,
+    disc_q: &mut Query<
+        (&mut Sprite, &mut Transform, &mut Visibility),
+        (With<GuiDiscSlot>, Without<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>),
     >,
 ) {
     for &e in &pool.rects[..hw.rects] {
@@ -333,13 +422,18 @@ fn hide_used(
             vis.set_if_neq(Visibility::Hidden);
         }
     }
+    for &e in &pool.discs[..hw.discs] {
+        if let Ok((_, _, mut vis)) = disc_q.get_mut(e) {
+            vis.set_if_neq(Visibility::Hidden);
+        }
+    }
 }
 
 fn write_rect(
     pool: &[Entity],
     rect_q: &mut Query<
         (&mut Sprite, &mut Transform, &mut Visibility),
-        (With<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>),
+        (With<GuiRectSlot>, Without<GuiTextSlot>, Without<GuiImageSlot>, Without<GuiDiscSlot>),
     >,
     idx: &mut usize,
     center: Vec2,

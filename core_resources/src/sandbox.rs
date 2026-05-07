@@ -1545,6 +1545,14 @@ fn install_runtime_api_inner(
             )?)?;
 
             let buf = draw_buffer.clone();
+            gui_ns.set("DrawDisc", lua.create_function(
+                move |_, (x, y, radius, r, g, b, a): (f32, f32, f32, u8, u8, u8, u8)| {
+                    buf.push(DrawCommand::Disc { x, y, radius, color: [r, g, b, a] });
+                    Ok(())
+                },
+            )?)?;
+
+            let buf = draw_buffer.clone();
             gui_ns.set("DrawSprite", lua.create_function(
                 move |_, (image_id, x, y, w, h, r, g, b, a): (String, f32, f32, f32, f32, Option<u8>, Option<u8>, Option<u8>, Option<u8>)| {
                     buf.push(DrawCommand::Sprite {
@@ -1586,7 +1594,7 @@ fn install_runtime_api_inner(
                 Ok(snap.mouse_just_pressed.contains(&btn.to_lowercase()))
             })?)?;
         } else {
-            for fname in &["DrawRect", "DrawText", "DrawLine", "DrawCircle", "DrawSprite"] {
+            for fname in &["DrawRect", "DrawText", "DrawLine", "DrawCircle", "DrawSprite", "DrawDisc"] {
                 gui_ns.set(*fname, lua.create_function(|_, _: MultiValue| Ok(()))?)?;
             }
             gui_ns.set("GetCursorPos", lua.create_function(|lua, ()| {
@@ -1602,18 +1610,54 @@ fn install_runtime_api_inner(
 
         globals.set("Gui", gui_ns)?;
 
-        // Gui.Button — pure-Lua convenience: draws a rect + returns true on click.
-        // Automatically brightens on hover, darkens while held.
-        // Signature: Gui.Button(x, y, w, h, label, r, g, b, a) -> bool
         lua.load(r#"
 local _g = Gui
+
+-- DrawRoundedRect: zaoblené rohy přes 2 překrývající se recty + 4 disky na rozích.
+-- Pro neprůhledné barvy bez artefaktů; pro alpha < 255 preferuj DrawRect.
+function _g.DrawRoundedRect(x, y, w, h, radius, r, g, b, a)
+    local rad = math.min(radius or 0, w * 0.5, h * 0.5)
+    if rad < 0.0005 then
+        _g.DrawRect(x, y, w, h, r, g, b, a)
+        return
+    end
+    local hw = w * 0.5 - rad
+    local hh = h * 0.5 - rad
+    _g.DrawRect(x, y, w,       h - rad * 2, r, g, b, a)
+    _g.DrawRect(x, y, w - rad * 2, h,       r, g, b, a)
+    _g.DrawDisc(x - hw, y - hh, rad, r, g, b, a)
+    _g.DrawDisc(x + hw, y - hh, rad, r, g, b, a)
+    _g.DrawDisc(x - hw, y + hh, rad, r, g, b, a)
+    _g.DrawDisc(x + hw, y + hh, rad, r, g, b, a)
+end
+
+-- DrawBorder: obrys pomocí 4 tenkých rectů (rohové pixely se překrývají).
+function _g.DrawBorder(x, y, w, h, thickness, r, g, b, a)
+    local t = thickness
+    _g.DrawRect(x,               y - h*0.5 + t*0.5, w,   t,         r, g, b, a)
+    _g.DrawRect(x,               y + h*0.5 - t*0.5, w,   t,         r, g, b, a)
+    _g.DrawRect(x - w*0.5 + t*0.5, y, t, h - t * 2, r, g, b, a)
+    _g.DrawRect(x + w*0.5 - t*0.5, y, t, h - t * 2, r, g, b, a)
+end
+
+-- DrawShadow: vrstvený drop-shadow. Volej PŘED vykreslením elementu.
+function _g.DrawShadow(x, y, w, h, size, r, g, b, a)
+    local n   = 4
+    local off = size * 0.4
+    local base = a or 60
+    for i = 1, n do
+        local s  = size * i / n
+        local al = math.floor(base * (n - i + 1) / (n * (n + 1) / 2))
+        _g.DrawRect(x + off, y + off, w + s * 2, h + s * 2, r or 0, g or 0, b or 0, al)
+    end
+end
+
+-- Button: convenience s hover/active efektem + zaoblenými rohy.
 function _g.Button(x, y, w, h, label, r, g, b, a)
     local hovered = _g.IsMouseOver(x, y, w, h)
     local held    = hovered and _g.IsMouseDown()
     local clicked = hovered and _g.IsMouseClicked()
-    local cr = r or 80
-    local cg = g or 80
-    local cb = b or 80
+    local cr, cg, cb = r or 80, g or 80, b or 80
     if held then
         cr = math.max(0,   math.floor(cr * 0.70))
         cg = math.max(0,   math.floor(cg * 0.70))
@@ -1623,12 +1667,192 @@ function _g.Button(x, y, w, h, label, r, g, b, a)
         cg = math.min(255, cg + 40)
         cb = math.min(255, cb + 40)
     end
-    _g.DrawRect(x, y, w, h, cr, cg, cb, a or 230)
+    _g.DrawRoundedRect(x, y, w, h, h * 0.20, cr, cg, cb, a or 230)
     if label and label ~= "" then
         local th = 0.018
-        _g.DrawText(label, x - w * 0.5 + 0.018, y - h * 0.5 + (h - th) * 0.5, 0.9, 215, 215, 215, 255)
+        _g.DrawText(label, x - w*0.5 + 0.018, y - h*0.5 + (h - th)*0.5, 0.9, 215, 215, 215, 255)
     end
     return clicked
+end
+
+-- ── UI framework ─────────────────────────────────────────────────────────────
+-- UI.Window(opts) vrátí objekt s metodami :Button, :Label, :Sep, :Open/:Close,
+-- :Toggle, :IsOpen, :Render. Volej :Render() každý frame v draw threadu.
+-- opts: { title, width, height, x, y }
+
+UI = {}
+
+local _T = {
+    bg          = {18,  20,  26,  238},
+    bg_header   = {26,  29,  38,  255},
+    border      = {52,  58,  74,  160},
+    sep         = {48,  54,  68,  135},
+    btn         = {40,  46,  58,  215},
+    btn_hover   = {60,  68,  85,  240},
+    btn_active  = {26,  30,  38,  255},
+    btn_danger  = {148, 36,  36,  220},
+    btn_accent  = {48,  108, 175, 220},
+    text        = {215, 215, 215, 255},
+    text_dim    = {128, 128, 138, 185},
+    shadow_col  = {0,   0,   0,   50},
+    shadow_size = 0.005,
+    radius      = 0.008,
+    border_w    = 0.0013,
+    btn_h       = 0.050,
+    btn_gap     = 0.010,
+    pad_x       = 0.016,
+    pad_y       = 0.018,
+    header_h    = 0.052,
+    fade_in     = 10.0,
+    fade_out    = 15.0,
+}
+
+function UI.SetTheme(t)
+    for k, v in pairs(t) do _T[k] = v end
+end
+function UI.Theme() return _T end
+
+function UI.Window(opts)
+    local o   = opts or {}
+    local W   = o.width  or 0.28
+    local H   = o.height
+    local CX  = o.x     or 0.50
+    local CY  = o.y     or 0.50
+    local TTL = o.title  or ""
+    local items   = {}
+    local fade    = 0.0
+    local visible = false
+    local win = {}
+
+    function win:Button(lbl, cb, style)
+        table.insert(items, {t="btn", label=lbl, cb=cb, style=style or "normal"})
+        return self
+    end
+    function win:Label(txt, dim)
+        table.insert(items, {t="lbl", text=txt, dim=dim})
+        return self
+    end
+    function win:Sep()
+        table.insert(items, {t="sep"})
+        return self
+    end
+    function win:Open()    visible = true  end
+    function win:Close()   visible = false end
+    function win:Toggle()  visible = not visible end
+    function win:IsOpen()  return visible end
+    function win:GetFade() return fade    end
+
+    function win:Render()
+        local target = visible and 1.0 or 0.0
+        local spd    = visible and _T.fade_in or _T.fade_out
+        fade = fade + (target - fade) * spd * 0.016
+        fade = math.max(0.0, math.min(1.0, fade))
+        if fade < 0.004 then return end
+        local f = fade
+
+        -- auto-height z položek
+        local ch = _T.header_h + _T.pad_y
+        for _, it in ipairs(items) do
+            if     it.t == "btn" then ch = ch + _T.btn_h  + _T.btn_gap
+            elseif it.t == "lbl" then ch = ch + 0.026     + _T.btn_gap * 0.5
+            elseif it.t == "sep" then ch = ch + 0.016
+            end
+        end
+        ch = ch + _T.pad_y
+        local h = H or ch
+
+        -- shadow
+        local sc = _T.shadow_col
+        _g.DrawShadow(CX, CY, W, h, _T.shadow_size,
+            sc[1], sc[2], sc[3], math.floor(sc[4] * f))
+
+        -- border (vnější)
+        local bw = _T.border_w
+        local br = _T.border
+        _g.DrawRoundedRect(CX, CY, W + bw*2, h + bw*2, _T.radius + bw,
+            br[1], br[2], br[3], math.floor(br[4] * f))
+
+        -- panel fill
+        local bg = _T.bg
+        _g.DrawRoundedRect(CX, CY, W, h, _T.radius,
+            bg[1], bg[2], bg[3], math.floor(bg[4] * f))
+
+        -- header bar
+        local top = CY - h * 0.5
+        local hcy = top + _T.header_h * 0.5
+        local hb  = _T.bg_header
+        _g.DrawRoundedRect(CX, hcy, W, _T.header_h, _T.radius,
+            hb[1], hb[2], hb[3], math.floor(hb[4] * f))
+        -- vyplnit spodní rohy headeru (aby nebyly zaobleny)
+        _g.DrawRect(CX, top + _T.header_h - _T.radius * 0.5,
+            W, _T.radius * 1.1,
+            hb[1], hb[2], hb[3], math.floor(hb[4] * f))
+
+        -- separator pod headerem
+        local sy = top + _T.header_h
+        local sp = _T.sep
+        _g.DrawLine(CX - W*0.5 + 0.005, sy, CX + W*0.5 - 0.005, sy,
+            sp[1], sp[2], sp[3], math.floor(sp[4] * f))
+
+        -- titulek
+        if TTL ~= "" then
+            local tc = _T.text
+            _g.DrawText(TTL,
+                CX - W*0.5 + _T.pad_x, hcy - 0.009, 0.95,
+                tc[1], tc[2], tc[3], math.floor(tc[4] * f))
+        end
+
+        -- položky
+        local bw2 = W - _T.pad_x * 2
+        local iy  = top + _T.header_h + _T.pad_y
+
+        for _, it in ipairs(items) do
+            if it.t == "btn" then
+                local bcy = iy + _T.btn_h * 0.5
+                local hov  = _g.IsMouseOver(CX, bcy, bw2, _T.btn_h)
+                local held = hov and _g.IsMouseDown()
+                local clk  = hov and _g.IsMouseClicked()
+                local bc
+                if it.style == "danger" then
+                    local d = _T.btn_danger
+                    bc = held and {math.floor(d[1]*.65),math.floor(d[2]*.65),math.floor(d[3]*.65),d[4]}
+                      or hov  and d
+                      or          {math.floor(d[1]*.50),math.floor(d[2]*.50),math.floor(d[3]*.50),d[4]}
+                elseif it.style == "accent" then
+                    local ac = _T.btn_accent
+                    bc = held and {math.floor(ac[1]*.65),math.floor(ac[2]*.65),math.floor(ac[3]*.65),ac[4]}
+                      or hov  and ac
+                      or          {math.floor(ac[1]*.70),math.floor(ac[2]*.70),math.floor(ac[3]*.70),ac[4]}
+                else
+                    bc = held and _T.btn_active or hov and _T.btn_hover or _T.btn
+                end
+                _g.DrawRoundedRect(CX, bcy, bw2, _T.btn_h, _T.radius * 0.75,
+                    bc[1], bc[2], bc[3], math.floor((bc[4] or 215) * f))
+                local tc2 = _T.text
+                _g.DrawText(it.label,
+                    CX - bw2*0.5 + _T.pad_x, bcy - 0.008, 0.85,
+                    tc2[1], tc2[2], tc2[3], math.floor(tc2[4] * f))
+                if clk and it.cb then it.cb() end
+                iy = iy + _T.btn_h + _T.btn_gap
+
+            elseif it.t == "lbl" then
+                local tc3 = it.dim and _T.text_dim or _T.text
+                _g.DrawText(it.text,
+                    CX - W*0.5 + _T.pad_x, iy, 0.72,
+                    tc3[1], tc3[2], tc3[3], math.floor(tc3[4] * f))
+                iy = iy + 0.026 + _T.btn_gap * 0.5
+
+            elseif it.t == "sep" then
+                local sy2 = iy + 0.008
+                local sp2 = _T.sep
+                _g.DrawLine(CX - W*0.5 + _T.pad_x, sy2, CX + W*0.5 - _T.pad_x, sy2,
+                    sp2[1], sp2[2], sp2[3], math.floor(sp2[4] * f))
+                iy = iy + 0.016
+            end
+        end
+    end
+
+    return win
 end
 "#).exec()?;
     }
