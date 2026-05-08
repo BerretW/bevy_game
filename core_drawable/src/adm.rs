@@ -166,8 +166,9 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
                 _ => ImageType::Extension("png"),
             };
 
-            // DDS nese sRGB info v headeru; is_srgb byte ignorujeme
-            let is_srgb_bool = format_byte != 2 && is_srgb != 0;
+            // Bevy DDS loader ignoruje DXGI format v headeru a řídí se is_srgb parametrem.
+            // Proto je_srgb byte z ADM platí pro všechny formáty včetně DDS.
+            let is_srgb_bool = is_srgb != 0;
 
             let image = Image::from_buffer(
                 &data,

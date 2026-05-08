@@ -185,19 +185,23 @@ def _write_node(buf, name, node_type_byte, mesh_index, parent_index, material_na
 def _get_image_bytes(img):
     """Přečte DDS texturu — vždy formát DDS (format_byte=2).
 
-    is_srgb se nepoužívá (DDS header sRGB info nese sám); předáváme False.
+    is_srgb: čteme z Blenderova colorspace_settings — sRGB = 1, Non-Color/Linear = 0.
+    Bevy DDS loader ignoruje DXGI format v headeru a řídí se výhradně is_srgb bytem.
     1. Packed file → img.packed_file.data přímo
     2. Soubor na disku → přečte raw bytes
     """
+    cs = getattr(getattr(img, 'colorspace_settings', None), 'name', 'sRGB')
+    is_srgb = cs == 'sRGB'
+
     # 1. Packed v .blend
     if img.packed_file:
-        return 2, False, bytes(img.packed_file.data)
+        return 2, is_srgb, bytes(img.packed_file.data)
 
     # 2. Disk
     abspath = bpy.path.abspath(img.filepath_raw)
     if abspath and os.path.isfile(abspath):
         with open(abspath, 'rb') as f:
-            return 2, False, f.read()
+            return 2, is_srgb, f.read()
 
     raise RuntimeError(f"Textura '{img.name}' není na disku ani packed")
 

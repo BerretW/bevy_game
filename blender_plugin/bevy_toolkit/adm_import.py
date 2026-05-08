@@ -1,6 +1,8 @@
 """Import .adm binárního formátu zpět do Blenderu."""
 
+import os
 import struct
+import tempfile
 import bpy
 import mathutils
 
@@ -143,6 +145,82 @@ def _build_blender_mesh(name, positions, normals, uv0s, uv1s, masks0s, masks1s, 
     return mesh
 
 
+def _parse_textures(f):
+    """Parsuje texture sekci ADM — vrátí list (name, is_srgb, ext, data)."""
+    tex_count = _u32(f)
+    textures = []
+    for _ in range(tex_count):
+        img_name    = _str(f)
+        format_byte = _u8(f)
+        is_srgb     = _u8(f)
+        data_len    = _u32(f)
+        data        = f.read(data_len)
+        ext = {1: '.jpg', 2: '.dds'}.get(format_byte, '.png')
+        textures.append((img_name, bool(is_srgb), ext, data))
+    return textures
+
+
+def _load_image_from_bytes(img_name, is_srgb, ext, data):
+    """Vytvoří Blender image z raw bytů, zapackuje ji a nastaví color space."""
+    existing = bpy.data.images.get(img_name)
+    if existing:
+        return existing
+
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        img = bpy.data.images.load(tmp_path)
+        img.name = img_name
+        img.pack()
+        img.filepath_raw = ""
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    try:
+        img.colorspace_settings.name = 'sRGB' if is_srgb else 'Non-Color'
+    except Exception:
+        pass
+
+    return img
+
+
+def _guess_slot(img_name):
+    """Odhadne slot z názvu textury pomocí TEXTURE_KEYWORDS."""
+    from .constants import TEXTURE_KEYWORDS
+    lowered = img_name.lower().replace(" ", "").replace("-", "").replace("_", "")
+    for slot_name, keywords in TEXTURE_KEYWORDS.items():
+        for kw in keywords:
+            if kw in lowered:
+                return slot_name
+    return None
+
+
+def _assign_textures_to_material(mat, loaded_images):
+    """Přiřadí embedded textury do bevy_toolkit slotů materiálu."""
+    props = getattr(mat, 'bevy_toolkit', None)
+    if props is None:
+        return
+    from .utils import image_basename
+    for img_name, img in loaded_images.items():
+        slot = _guess_slot(img_name)
+        if not slot:
+            continue
+        current = getattr(props, f"{slot}_img", None)
+        if current is None:
+            setattr(props, f"{slot}_img", img)
+            name_field = getattr(props, f"{slot}_name", "").strip()
+            if not name_field:
+                try:
+                    setattr(props, f"{slot}_name", image_basename(img))
+                except Exception:
+                    pass
+
+
 def import_adm(filepath):
     """
     Importuje .adm soubor do aktuální Blender scény.
@@ -162,7 +240,17 @@ def import_adm(filepath):
 
         mesh_data = [_parse_mesh(f) for _ in range(mesh_count)]
         node_data = [_parse_node(f) for _ in range(node_count)]
-        # Embedded DDS textury přeskočíme — v Blenderu se přiřadí z disku přes .drawable
+
+        # Načti embedded textury z ADM a zapackuj je do Blenderu
+        loaded_images = {}
+        if has_textures == 1:
+            for img_name, is_srgb, ext, data in _parse_textures(f):
+                try:
+                    img = _load_image_from_bytes(img_name, is_srgb, ext, data)
+                    loaded_images[img_name] = img
+                    print(f"[adm_import] textura '{img_name}' ({ext[1:]}, sRGB={is_srgb})")
+                except Exception as e:
+                    print(f"[adm_import] nelze načíst texturu '{img_name}': {e}")
 
     # Vytvoř Blender mesh assets
     bl_meshes = []
@@ -172,6 +260,7 @@ def import_adm(filepath):
     # Vytvoř objekty
     node_objects = []
     created = []
+    imported_mats = set()
     collection = bpy.context.collection
 
     for (nname, ntype, mesh_idx, parent_idx, mat_name, mat_floats) in node_data:
@@ -196,6 +285,7 @@ def import_adm(filepath):
                 obj.data.materials[0] = mat
             else:
                 obj.data.materials.append(mat)
+            imported_mats.add(mat_name)
 
         node_objects.append(obj)
         created.append(obj)
@@ -204,5 +294,12 @@ def import_adm(filepath):
     for i, (_, _, _, parent_idx, _, _) in enumerate(node_data):
         if 0 <= parent_idx < len(node_objects):
             node_objects[i].parent = node_objects[parent_idx]
+
+    # Přiřaď textury do materiálů importovaných z tohoto ADM
+    if loaded_images:
+        for mat_name in imported_mats:
+            mat = bpy.data.materials.get(mat_name)
+            if mat:
+                _assign_textures_to_material(mat, loaded_images)
 
     return created
