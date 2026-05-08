@@ -302,7 +302,9 @@ fn process_mesh_node(
 // Sdílený helper: MaterialParams → DrawableParams
 // ---------------------------------------------------------------------------
 
-fn build_params(p: &MaterialParams) -> DrawableParams {
+/// `mb_alpha_threshold`: > 0 aktivuje MB alpha clip v shaderu; 0.0 = disabled.
+/// Přenáší se v `tiling.w` (dříve nevyužito).
+fn build_params(p: &MaterialParams, mb_alpha_threshold: f32) -> DrawableParams {
     DrawableParams {
         tint: p.tint.map(Vec4::from).unwrap_or(Vec4::ONE),
         weather: Vec4::new(
@@ -315,8 +317,17 @@ fn build_params(p: &MaterialParams) -> DrawableParams {
             p.tiling   .unwrap_or(1.0),
             p.l0_tiling.unwrap_or(1.0),
             p.l1_tiling.unwrap_or(1.0),
-            0.0,
+            mb_alpha_threshold,
         ),
+    }
+}
+
+fn resolve_alpha_mode(opacity_mode: &str, threshold: f32, has_mb: bool) -> AlphaMode {
+    match opacity_mode {
+        "BLEND" => AlphaMode::Blend,
+        "CLIP" | "HASHED" => AlphaMode::Mask(threshold),
+        _ if has_mb => AlphaMode::Mask(threshold), // OPAQUE + MB → depth-prepass-friendly alpha test
+        _ => AlphaMode::Opaque,
     }
 }
 
@@ -337,11 +348,18 @@ fn build_standard_pbr(
     let normal  = def.textures.get("normal") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let palette = def.textures.get("palette").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let snow    = def.textures.get("snow")   .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let mb      = def.textures.get("mb")     .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+
+    let has_mb = mb.is_some();
+    let mb_threshold = if has_mb { p.alpha_threshold.unwrap_or(0.5) } else { 0.0 };
+    let opacity_mode = p.opacity_mode.as_deref().unwrap_or("OPAQUE");
+    let alpha_mode   = resolve_alpha_mode(opacity_mode, mb_threshold, has_mb);
 
     let tiling = p.tiling.unwrap_or(1.0);
     let mut base = StandardMaterial {
         perceptual_roughness: 0.5,
         metallic: 0.0,
+        alpha_mode,
         uv_transform: Affine2::from_scale(Vec2::splat(tiling)),
         ..default()
     };
@@ -357,7 +375,7 @@ fn build_standard_pbr(
 
     StandardPbrMaterial {
         base,
-        extension: StandardPbrExtension { palette, snow, params: build_params(p) },
+        extension: StandardPbrExtension { palette, snow, mb, params: build_params(p, mb_threshold) },
     }
 }
 
@@ -374,11 +392,18 @@ fn build_layered_env(
     let normal        = def.textures.get("normal")        .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let layer1_albedo = def.textures.get("layer1_albedo") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let layer1_normal = def.textures.get("layer1_normal") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let mb            = def.textures.get("mb")            .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+
+    let has_mb = mb.is_some();
+    let mb_threshold = if has_mb { p.alpha_threshold.unwrap_or(0.5) } else { 0.0 };
+    let opacity_mode = p.opacity_mode.as_deref().unwrap_or("OPAQUE");
+    let alpha_mode   = resolve_alpha_mode(opacity_mode, mb_threshold, has_mb);
 
     let l0_tiling = p.l0_tiling.or(p.tiling).unwrap_or(1.0);
     let mut base = StandardMaterial {
         perceptual_roughness: 0.5,
         metallic: 0.0,
+        alpha_mode,
         uv_transform: Affine2::from_scale(Vec2::splat(l0_tiling)),
         ..default()
     };
@@ -394,7 +419,7 @@ fn build_layered_env(
 
     LayeredEnvMaterial {
         base,
-        extension: LayeredEnvExtension { layer1_albedo, layer1_normal, params: build_params(p) },
+        extension: LayeredEnvExtension { layer1_albedo, layer1_normal, mb, params: build_params(p, mb_threshold) },
     }
 }
 
@@ -430,7 +455,7 @@ fn build_vehicle_glass(
 
     VehicleGlassMaterial {
         base,
-        extension: VehicleGlassExtension { params: build_params(p) },
+        extension: VehicleGlassExtension { params: build_params(p, 0.0) },
     }
 }
 

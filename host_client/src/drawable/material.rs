@@ -8,7 +8,7 @@ use bevy::shader::ShaderRef;
 /// Layout musí přesně odpovídat `DrawableParams` struct ve všech WGSL shaderech.
 ///   `tint`    — RGBA multiplikátor barvy (default: bílá = žádná změna)
 ///   `weather` — x=snow_level, y=dirt_level, z=wetness, w=porosity (0..1)
-///   `tiling`  — x=tiling, y=l0_tiling, z=l1_tiling, w=nevyužito
+///   `tiling`  — x=tiling, y=l0_tiling, z=l1_tiling, w=mb_alpha_threshold (0=disabled)
 #[derive(ShaderType, Debug, Clone)]
 pub struct DrawableParams {
     pub tint:    Vec4,
@@ -52,6 +52,12 @@ pub struct StandardPbrExtension {
 
     #[uniform(104)]
     pub params: DrawableParams,
+
+    /// MB textura — alpha kanál řídí průhlednostní masku.
+    /// `params.tiling.w` (mb_alpha_threshold) > 0 aktivuje alpha clip v shaderu.
+    #[texture(105)]
+    #[sampler(106)]
+    pub mb: Option<Handle<Image>>,
 }
 
 pub type StandardPbrMaterial = ExtendedMaterial<StandardMaterial, StandardPbrExtension>;
@@ -88,6 +94,11 @@ pub struct LayeredEnvExtension {
 
     #[uniform(104)]
     pub params: DrawableParams,
+
+    /// MB textura — alpha kanál řídí průhlednostní masku.
+    #[texture(105)]
+    #[sampler(106)]
+    pub mb: Option<Handle<Image>>,
 }
 
 pub type LayeredEnvMaterial = ExtendedMaterial<StandardMaterial, LayeredEnvExtension>;

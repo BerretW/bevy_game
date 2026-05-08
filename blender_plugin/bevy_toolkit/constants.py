@@ -24,6 +24,11 @@ TEXTURE_SLOT_FIELDS = (
 # Slots that are purely optional — no validation warning when absent.
 OPTIONAL_TEXTURE_SLOTS = frozenset({"palette", "snow", "ma", "mb"})
 
+# Slots not embedded by Blender's GLTF exporter in standard material channels
+# (e.g. MB's alpha is ignored when blend_method=OPAQUE). These are saved to disk
+# next to the .drawable on export so _find_image can recover them on re-import.
+NON_GLTF_SLOTS = frozenset({"ma", "mb", "palette", "snow", "shatter_map"})
+
 TEXTURE_KEYWORDS = {
     "albedo":       ("albedo", "basecolor", "base_color", "diffuse", "color"),
     "mrao":         ("mrao", "orm", "rma", "occlusion", "roughness", "metallic"),

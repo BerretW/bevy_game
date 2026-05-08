@@ -13,7 +13,7 @@ from .material import (
     create_bevy_node_tree, sync_material_from_nodes,
     set_material_texture_source, clear_embedded_images, _sync_texture_node,
 )
-from .export import gather_target_meshes, validate_export_consistency, build_drawable_toml
+from .export import gather_target_meshes, validate_export_consistency, build_drawable_toml, save_companion_textures
 
 
 class BEVY_OT_InitProject(bpy.types.Operator):
@@ -475,6 +475,8 @@ class BEVY_OT_Export(bpy.types.Operator):
         lines = build_drawable_toml(asset_name, target_meshes, used_materials)
         with open(toml_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
+
+        save_companion_textures(self.report, os.path.dirname(toml_path), used_materials)
 
         self.report({"INFO"}, f"Exported: {os.path.basename(glb_path)} and {os.path.basename(toml_path)}")
         return {"FINISHED"}

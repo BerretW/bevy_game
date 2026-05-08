@@ -18,7 +18,7 @@
 struct DrawableParams {
     tint:    vec4<f32>,  // RGBA multiplikátor
     weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
-    tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=nevyužito
+    tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=mb_alpha_threshold (0=disabled)
 }
 
 @group(2) @binding(100) var layer1_albedo_texture: texture_2d<f32>;
@@ -26,6 +26,8 @@ struct DrawableParams {
 @group(2) @binding(102) var layer1_normal_texture: texture_2d<f32>;
 @group(2) @binding(103) var layer1_normal_sampler: sampler;
 @group(2) @binding(104) var<uniform> params: DrawableParams;
+@group(2) @binding(105) var mb_texture:            texture_2d<f32>;
+@group(2) @binding(106) var mb_sampler:            sampler;
 
 @fragment
 fn fragment(
@@ -90,6 +92,14 @@ fn fragment(
     pbr_input.occlusion         *= vec3(ao);
     pbr_input.material.emissive *= emissive;
 #endif
+
+    // MB alpha clip: tiling.w = threshold (0.0 = disabled, >0 = discard pixels below)
+    let mb_threshold = params.tiling.w;
+    if mb_threshold > 0.0 {
+        if textureSample(mb_texture, mb_sampler, in.uv).a < mb_threshold {
+            discard;
+        }
+    }
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);

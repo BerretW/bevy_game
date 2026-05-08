@@ -52,7 +52,7 @@ def _draw_bevy_material_props(layout, mat):
     opacity_box.label(text="Opacity")
     oc = opacity_box.column(align=True)
     oc.prop(props, "opacity_mode")
-    if props.opacity_mode != "OPAQUE":
+    if props.opacity_mode != "OPAQUE" or props.mb_img is not None:
         oc.prop(props, "alpha_threshold", slider=True)
 
 

@@ -1,5 +1,6 @@
+import os
 import bpy
-from .constants import ADS_VERSION, OPTIONAL_TEXTURE_SLOTS
+from .constants import ADS_VERSION, OPTIONAL_TEXTURE_SLOTS, NON_GLTF_SLOTS
 from .utils import toml_escape, format_float, bool_to_toml, parse_tags, first_non_empty, image_basename
 from .mesh import is_collision_object
 from .material import get_template_texture_specs, material_texture_value, build_material_inline
@@ -104,3 +105,37 @@ def build_drawable_toml(asset_name: str, target_meshes, used_materials) -> list:
             )
 
     return lines
+
+
+def save_companion_textures(report_fn, export_dir: str, used_materials) -> int:
+    """Save non-GLTF-embeddable embedded textures to disk next to the .drawable.
+
+    Blender's GLTF exporter omits custom slots (ma, mb, palette, snow, shatter_map)
+    when the material blend_method is OPAQUE, so they would be lost on re-import.
+    Writing them alongside the drawable lets _find_image recover them from disk.
+    """
+    saved = 0
+    for mat in used_materials:
+        props = mat.bevy_toolkit
+        for slot_name, _, _ in get_template_texture_specs(props.template):
+            if slot_name not in NON_GLTF_SLOTS:
+                continue
+            img, explicit_name, source = material_texture_value(props, slot_name)
+            if img is None or source != "embedded":
+                continue
+            base_name = first_non_empty(explicit_name.strip(), image_basename(img))
+            if not base_name:
+                continue
+            raw = img.filepath_raw or ""
+            ext = os.path.splitext(raw)[1] or os.path.splitext(img.name)[1] or ".png"
+            save_path = os.path.join(export_dir, base_name + ext)
+            orig_path = img.filepath_raw
+            img.filepath_raw = save_path
+            try:
+                img.save()
+                saved += 1
+            except Exception as exc:
+                report_fn({"WARNING"}, f"Could not save '{slot_name}' texture '{base_name}': {exc}")
+            finally:
+                img.filepath_raw = orig_path
+    return saved

@@ -50,6 +50,10 @@ pub struct MaterialParams {
     pub wetness: Option<f32>,
     pub snow_level: Option<f32>,
     pub dirt_level: Option<f32>,
+    /// `"OPAQUE"` | `"CLIP"` | `"BLEND"` | `"HASHED"` — řídí Bevy AlphaMode.
+    pub opacity_mode: Option<String>,
+    /// Práh pro MB alpha clip (0.0–1.0). Použit jen pokud je přítomna MB textura.
+    pub alpha_threshold: Option<f32>,
 }
 
 /// Definice GLTF uzlu z sekce `[entities]`.
