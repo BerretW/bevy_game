@@ -376,7 +376,12 @@ pub(crate) fn build_standard_pbr(
 
     StandardPbrMaterial {
         base,
-        extension: StandardPbrExtension { palette, snow, mb, params: build_params(p, mb_threshold) },
+        extension: StandardPbrExtension {
+            palette: palette.unwrap_or_default(),
+            snow:    snow.unwrap_or_default(),
+            mb:      mb.unwrap_or_default(),
+            params:  build_params(p, mb_threshold),
+        },
     }
 }
 
@@ -420,7 +425,12 @@ pub(crate) fn build_layered_env(
 
     LayeredEnvMaterial {
         base,
-        extension: LayeredEnvExtension { layer1_albedo, layer1_normal, mb, params: build_params(p, mb_threshold) },
+        extension: LayeredEnvExtension {
+            layer1_albedo: layer1_albedo.unwrap_or_default(),
+            layer1_normal: layer1_normal.unwrap_or_default(),
+            mb:            mb.unwrap_or_default(),
+            params:        build_params(p, mb_threshold),
+        },
     }
 }
 

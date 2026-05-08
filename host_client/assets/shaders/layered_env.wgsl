@@ -21,13 +21,13 @@ struct DrawableParams {
     tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=mb_alpha_threshold (0=disabled)
 }
 
-@group(2) @binding(100) var layer1_albedo_texture: texture_2d<f32>;
-@group(2) @binding(101) var layer1_albedo_sampler: sampler;
-@group(2) @binding(102) var layer1_normal_texture: texture_2d<f32>;
-@group(2) @binding(103) var layer1_normal_sampler: sampler;
-@group(2) @binding(104) var<uniform> params: DrawableParams;
-@group(2) @binding(105) var mb_texture:            texture_2d<f32>;
-@group(2) @binding(106) var mb_sampler:            sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var layer1_albedo_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var layer1_albedo_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var layer1_normal_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var layer1_normal_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var<uniform> params: DrawableParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var mb_texture:            texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var mb_sampler:            sampler;
 
 @fragment
 fn fragment(
@@ -89,7 +89,7 @@ fn fragment(
 #ifdef VERTEX_UVS_B
     let ao       = clamp(in.uv_b.x, 0.0, 1.0);
     let emissive = clamp(in.uv_b.y, 0.0, 1.0);
-    pbr_input.occlusion         *= vec3(ao);
+    pbr_input.diffuse_occlusion  *= ao;
     pbr_input.material.emissive *= emissive;
 #endif
 

@@ -609,9 +609,59 @@ class BEVY_OT_ImportDrawable(bpy.types.Operator):
         with open(self.filepath, "rb") as fh:
             data = tomllib.load(fh)
 
-        glb_path = os.path.splitext(self.filepath)[0] + ".glb"
+        base       = os.path.splitext(self.filepath)[0]
+        adm_path   = base + ".adm"
+        glb_path   = base + ".glb"
+        search_dir = os.path.dirname(self.filepath)
+
+        entities  = data.get("entities",  {})
+        materials = data.get("materials", {})
+
+        def base_name(n):
+            return re.sub(r'\.\d+$', '', n)
+
+        # --- ADM import ---
+        if os.path.isfile(adm_path):
+            from .adm_import import import_adm
+            try:
+                new_objects = import_adm(adm_path)
+            except Exception as e:
+                self.report({'ERROR'}, f"ADM import selhal: {e}")
+                return {'CANCELLED'}
+
+            new_mat_names = {slot.material.name
+                             for obj in new_objects if obj.type == 'MESH'
+                             for slot in obj.material_slots if slot.material}
+
+            mats_applied = 0
+            for mname in new_mat_names:
+                mat = bpy.data.materials.get(mname)
+                if not mat:
+                    continue
+                mat_data = materials.get(mname) or materials.get(base_name(mname))
+                if not mat_data:
+                    continue
+                _apply_material_from_drawable(mat, mat_data, search_dir)
+                mats_applied += 1
+
+            objs_applied = 0
+            for obj in new_objects:
+                if obj.type != 'MESH':
+                    continue
+                fix_imported_vertex_attributes(obj.data)
+                ent_data = entities.get(obj.name) or entities.get(base_name(obj.name))
+                if ent_data:
+                    _apply_entity_from_drawable(obj, ent_data)
+                    objs_applied += 1
+
+            self.report({'INFO'},
+                f"ADM import: {len(new_objects)} objektů, {mats_applied} materiálů, "
+                f"{objs_applied} entit aplikováno ← {os.path.basename(adm_path)}")
+            return {'FINISHED'}
+
+        # --- GLB fallback ---
         if not os.path.isfile(glb_path):
-            self.report({'ERROR'}, f"Matching GLB not found: {glb_path}")
+            self.report({'ERROR'}, f"Ani .adm ani .glb nenalezeno vedle {os.path.basename(self.filepath)}")
             return {'CANCELLED'}
 
         before_objects   = set(bpy.data.objects.keys())
@@ -625,13 +675,6 @@ class BEVY_OT_ImportDrawable(bpy.types.Operator):
         new_obj_names = set(bpy.data.objects.keys())   - before_objects
         new_mat_names = set(bpy.data.materials.keys()) - before_materials
 
-        def base_name(n):
-            return re.sub(r'\.\d+$', '', n)
-
-        entities  = data.get("entities",  {})
-        materials = data.get("materials", {})
-
-        search_dir   = os.path.dirname(self.filepath)
         mats_applied = 0
         for bname in new_mat_names:
             mat = bpy.data.materials.get(bname)
@@ -648,19 +691,14 @@ class BEVY_OT_ImportDrawable(bpy.types.Operator):
             obj = bpy.data.objects.get(bname)
             if not obj or obj.type != "MESH":
                 continue
-            # Always fix vertex attribute names/encoding for mesh objects
             fix_imported_vertex_attributes(obj.data)
             ent_data = entities.get(bname) or entities.get(base_name(bname))
-            if not ent_data:
-                continue
-            _apply_entity_from_drawable(obj, ent_data)
-            objs_applied += 1
+            if ent_data:
+                _apply_entity_from_drawable(obj, ent_data)
+                objs_applied += 1
 
-        self.report(
-            {'INFO'},
-            f"Imported {os.path.basename(glb_path)}: "
-            f"{mats_applied} material(s), {objs_applied} entity/ies applied",
-        )
+        self.report({'INFO'},
+            f"GLB import: {mats_applied} materiálů, {objs_applied} entit ← {os.path.basename(glb_path)}")
         return {'FINISHED'}
 
 
@@ -681,20 +719,45 @@ class ADS_OT_export_adm(bpy.types.Operator):
         from .export import build_drawable_toml
         import os
 
-        objects = context.selected_objects if self.use_selection else None
-        if objects is not None:
-            objects = [o for o in objects if o.type == 'MESH']
+        if self.use_selection:
+            objects = [o for o in context.selected_objects if o.type == 'MESH']
+        else:
+            objects = [o for o in context.scene.objects if o.type == 'MESH']
+
+        if not objects:
+            self.report({'WARNING'}, "Žádné mesh objekty k exportu")
+            return {'CANCELLED'}
 
         scene_name = bpy.path.clean_name(context.scene.name)
-        adm_path = os.path.join(self.directory, f"{scene_name}.adm")
+        adm_path      = os.path.join(self.directory, f"{scene_name}.adm")
+        drawable_path = os.path.join(self.directory, f"{scene_name}.drawable")
 
+        # Export geometrie + embedded DDS textur
         try:
             meshes, nodes = export_adm(adm_path, objects=objects, export_textures=True)
-            self.report({'INFO'}, f"ADM: {meshes} meshů, {nodes} uzlů → {adm_path}")
         except Exception as e:
             self.report({'ERROR'}, f"ADM export selhal: {e}")
             return {'CANCELLED'}
 
+        # Collect unique materials
+        used_materials = []
+        seen = set()
+        for obj in objects:
+            for slot in obj.material_slots:
+                mat = slot.material
+                if mat and mat.name not in seen:
+                    used_materials.append(mat)
+                    seen.add(mat.name)
+
+        # Generuj .drawable TOML
+        try:
+            lines = build_drawable_toml(scene_name, objects, used_materials)
+            with open(drawable_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+        except Exception as e:
+            self.report({'WARNING'}, f".drawable selhal: {e}")
+
+        self.report({'INFO'}, f"ADM: {meshes} meshů, {nodes} uzlů → {os.path.basename(adm_path)} + {os.path.basename(drawable_path)}")
         return {'FINISHED'}
 
 

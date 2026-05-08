@@ -73,7 +73,8 @@
       "Bash(Write-Host \"Deleted old drawable source files\")",
       "Bash(python -c ' *)",
       "Bash(python -c \"import zipfile; z=zipfile.ZipFile\\('bevy_toolkit.zip'\\); names=[n for n in z.namelist\\(\\) if 'adm' in n]; print\\(names\\)\")",
-      "Bash(python -c \"import zipfile,os; z=zipfile.ZipFile\\('bevy_toolkit.zip'\\); info=z.getinfo\\('bevy_toolkit/adm_export.py'\\); src_mtime=os.path.getmtime\\('bevy_toolkit/adm_export.py'\\); import datetime; print\\('zip entry date:', info.date_time\\); print\\('source mtime:', datetime.datetime.fromtimestamp\\(src_mtime\\)\\)\")"
+      "Bash(python -c \"import zipfile,os; z=zipfile.ZipFile\\('bevy_toolkit.zip'\\); info=z.getinfo\\('bevy_toolkit/adm_export.py'\\); src_mtime=os.path.getmtime\\('bevy_toolkit/adm_export.py'\\); import datetime; print\\('zip entry date:', info.date_time\\); print\\('source mtime:', datetime.datetime.fromtimestamp\\(src_mtime\\)\\)\")",
+      "Bash(xargs grep -l \"bind_group_layout_entries\\\\|AsBindGroup\")"
     ]
   }
 }

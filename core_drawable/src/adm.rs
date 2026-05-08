@@ -161,18 +161,18 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
             let data        = read_u8_vec(&mut cur, data_len)?;
 
             let image_type = match format_byte {
-                0 => ImageType::Extension("png"),
                 1 => ImageType::Extension("jpg"),
                 2 => ImageType::Extension("dds"),
                 _ => ImageType::Extension("png"),
             };
 
-            let is_srgb_bool = is_srgb != 0;
+            // DDS nese sRGB info v headeru; is_srgb byte ignorujeme
+            let is_srgb_bool = format_byte != 2 && is_srgb != 0;
 
             let image = Image::from_buffer(
                 &data,
                 image_type,
-                CompressedImageFormats::NONE,
+                CompressedImageFormats::all(),
                 is_srgb_bool,
                 ImageSampler::Default,
                 RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,

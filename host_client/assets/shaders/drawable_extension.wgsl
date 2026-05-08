@@ -23,11 +23,11 @@ struct DrawableParams {
     tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=nevyužito
 }
 
-@group(2) @binding(100) var palette_texture: texture_2d<f32>;
-@group(2) @binding(101) var palette_sampler: sampler;
-@group(2) @binding(102) var snow_texture:    texture_2d<f32>;
-@group(2) @binding(103) var snow_sampler:    sampler;
-@group(2) @binding(104) var<uniform> params: DrawableParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var palette_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var palette_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var snow_texture:    texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var snow_sampler:    sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var<uniform> params: DrawableParams;
 
 @fragment
 fn fragment(

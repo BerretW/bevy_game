@@ -18,7 +18,7 @@ struct DrawableParams {
     tiling:  vec4<f32>,  // nevyužito
 }
 
-@group(2) @binding(100) var<uniform> params: DrawableParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> params: DrawableParams;
 
 @fragment
 fn fragment(
@@ -63,7 +63,7 @@ fn fragment(
     // 4. UV1 — bevy_masks2: AO (sklo nemá emissive)
 #ifdef VERTEX_UVS_B
     let ao = clamp(in.uv_b.x, 0.0, 1.0);
-    pbr_input.occlusion *= vec3(ao);
+    pbr_input.diffuse_occlusion *= ao;
 #endif
 
     var out: FragmentOutput;

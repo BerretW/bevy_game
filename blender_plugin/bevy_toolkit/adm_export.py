@@ -183,27 +183,23 @@ def _write_node(buf, name, node_type_byte, mesh_index, parent_index, material_na
 
 
 def _get_image_bytes(img):
-    """Vrátí (format_byte, is_srgb, raw_bytes) pro Blender image."""
-    import tempfile
-    ext = img.file_format.lower()
-    if ext in ('jpeg', 'jpg'):
-        suffix, fmt = '.jpg', 1
-    else:
-        suffix, fmt = '.png', 0
-    # sRGB: true pro albedo-like; conservative: vždy true pro barevné, false pro non-color
-    is_srgb = img.colorspace_settings.name in ('sRGB', 'Filmic Log', 'Linear sRGB', 'Raw')
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        path = tmp.name
-    try:
-        img.save(filepath=path, scene=bpy.context.scene)
-        with open(path, 'rb') as f:
-            data = f.read()
-    finally:
-        try:
-            os.unlink(path)
-        except Exception:
-            pass
-    return fmt, is_srgb, data
+    """Přečte DDS texturu — vždy formát DDS (format_byte=2).
+
+    is_srgb se nepoužívá (DDS header sRGB info nese sám); předáváme False.
+    1. Packed file → img.packed_file.data přímo
+    2. Soubor na disku → přečte raw bytes
+    """
+    # 1. Packed v .blend
+    if img.packed_file:
+        return 2, False, bytes(img.packed_file.data)
+
+    # 2. Disk
+    abspath = bpy.path.abspath(img.filepath_raw)
+    if abspath and os.path.isfile(abspath):
+        with open(abspath, 'rb') as f:
+            return 2, False, f.read()
+
+    raise RuntimeError(f"Textura '{img.name}' není na disku ani packed")
 
 
 def export_adm(filepath, objects=None, export_textures=True):
@@ -266,33 +262,42 @@ def export_adm(filepath, objects=None, export_textures=True):
         node_list.append((obj.name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
 
     # Sbíráme embedded textury (ze všech materiálů s bevy_toolkit props)
+    # V ADM se balí VŠECHNY přiřazené textury bez ohledu na _embedded flag
+    # (_embedded flag řídí sdílené DDS textury v .drawable workflow, ne ADM)
     embedded_textures = {}  # img_name → (format, is_srgb, bytes)
     if export_textures:
-        try:
-            from .utils import image_basename
-        except ImportError:
-            def image_basename(img):
-                return os.path.splitext(img.name)[0] if img else ''
+        from .utils import image_basename
 
+        # Explicitní seznam _img slotů z BevyMaterialProps
+        IMG_SLOTS = (
+            'albedo_img', 'mrao_img', 'normal_img', 'palette_img', 'snow_img',
+            'l0_albedo_img', 'l0_mrao_img', 'l0_normal_img',
+            'l1_albedo_img', 'l1_mrao_img', 'l1_normal_img',
+            'glass_albedo_img', 'shatter_map_img',
+            'ma_img', 'mb_img',
+        )
+
+        seen_mats = set()
         for obj in objects:
             for slot in obj.material_slots:
                 mat = slot.material
-                if not mat or not hasattr(mat, 'bevy_toolkit'):
+                if not mat or mat.name in seen_mats:
                     continue
-                props = mat.bevy_toolkit
-                for attr in dir(props):
-                    if not attr.endswith('_img'):
-                        continue
+                seen_mats.add(mat.name)
+                props = getattr(mat, 'bevy_toolkit', None)
+                if props is None:
+                    continue
+                for attr in IMG_SLOTS:
                     img = getattr(props, attr, None)
-                    embedded_attr = attr.replace('_img', '_embedded')
-                    is_emb = getattr(props, embedded_attr, False)
-                    if img and is_emb:
-                        img_name = image_basename(img)
-                        if img_name and img_name not in embedded_textures:
-                            try:
-                                embedded_textures[img_name] = _get_image_bytes(img)
-                            except Exception as e:
-                                print(f"[adm_export] nelze exportovat texturu '{img_name}': {e}")
+                    if img is None:
+                        continue
+                    img_name = image_basename(img)
+                    if img_name and img_name not in embedded_textures:
+                        try:
+                            embedded_textures[img_name] = _get_image_bytes(img)
+                            print(f"[adm_export] embed '{img_name}'")
+                        except Exception as e:
+                            print(f"[adm_export] nelze exportovat texturu '{img_name}': {e}")
 
     # Build binary
     buf = b''

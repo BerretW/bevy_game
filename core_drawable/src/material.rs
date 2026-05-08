@@ -40,15 +40,15 @@ impl Default for DrawableParams {
 ///   100/101 — palette_texture/sampler
 ///   102/103 — snow_texture/sampler
 ///   104     — DrawableParams uniform
-#[derive(Asset, AsBindGroup, TypePath, Debug, Clone, Default)]
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 pub struct StandardPbrExtension {
     #[texture(100)]
     #[sampler(101)]
-    pub palette: Option<Handle<Image>>,
+    pub palette: Handle<Image>,
 
     #[texture(102)]
     #[sampler(103)]
-    pub snow: Option<Handle<Image>>,
+    pub snow: Handle<Image>,
 
     #[uniform(104)]
     pub params: DrawableParams,
@@ -57,7 +57,18 @@ pub struct StandardPbrExtension {
     /// `params.tiling.w` (mb_alpha_threshold) > 0 aktivuje alpha clip v shaderu.
     #[texture(105)]
     #[sampler(106)]
-    pub mb: Option<Handle<Image>>,
+    pub mb: Handle<Image>,
+}
+
+impl Default for StandardPbrExtension {
+    fn default() -> Self {
+        Self {
+            palette: Handle::default(),
+            snow:    Handle::default(),
+            params:  DrawableParams::default(),
+            mb:      Handle::default(),
+        }
+    }
 }
 
 pub type StandardPbrMaterial = ExtendedMaterial<StandardMaterial, StandardPbrExtension>;
@@ -82,15 +93,15 @@ impl MaterialExtension for StandardPbrExtension {
 ///   100/101 — layer1_albedo_texture/sampler (druhá vrstva albeda)
 ///   102/103 — layer1_normal_texture/sampler (normálová mapa druhé vrstvy)
 ///   104     — DrawableParams uniform
-#[derive(Asset, AsBindGroup, TypePath, Debug, Clone, Default)]
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
 pub struct LayeredEnvExtension {
     #[texture(100)]
     #[sampler(101)]
-    pub layer1_albedo: Option<Handle<Image>>,
+    pub layer1_albedo: Handle<Image>,
 
     #[texture(102)]
     #[sampler(103)]
-    pub layer1_normal: Option<Handle<Image>>,
+    pub layer1_normal: Handle<Image>,
 
     #[uniform(104)]
     pub params: DrawableParams,
@@ -98,7 +109,18 @@ pub struct LayeredEnvExtension {
     /// MB textura — alpha kanál řídí průhlednostní masku.
     #[texture(105)]
     #[sampler(106)]
-    pub mb: Option<Handle<Image>>,
+    pub mb: Handle<Image>,
+}
+
+impl Default for LayeredEnvExtension {
+    fn default() -> Self {
+        Self {
+            layer1_albedo: Handle::default(),
+            layer1_normal: Handle::default(),
+            params:        DrawableParams::default(),
+            mb:            Handle::default(),
+        }
+    }
 }
 
 pub type LayeredEnvMaterial = ExtendedMaterial<StandardMaterial, LayeredEnvExtension>;
