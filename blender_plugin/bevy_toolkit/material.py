@@ -574,17 +574,19 @@ def _build_graph_standard_pbr(mat, nodes, links):
     # --- BSDF ---------------------------------------------------------------
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     bsdf.location = (820, 260)
-    links.new(ao_mul.outputs[0],       bsdf.inputs[0])
-    links.new(metal_snow,              bsdf.inputs[1])
-    links.new(rough_snow,              bsdf.inputs[2])
-    links.new(normal_map.outputs[0],   bsdf.inputs[5])
+    links.new(ao_mul.outputs[0],       bsdf.inputs["Base Color"])
+    links.new(metal_snow,              bsdf.inputs["Metallic"])
+    links.new(rough_snow,              bsdf.inputs["Roughness"])
+    links.new(normal_map.outputs[0],   bsdf.inputs["Normal"])
 
-    # Alpha / opacity
-    if use_alpha:
-        alpha_socket = mb_tex.outputs[1] if has_mb else alb.outputs[1]
-        links.new(alpha_socket, bsdf.inputs[4])
-    else:
-        links.new(alb.outputs[1], bsdf.inputs[4])
+    # Alpha / opacity.
+    # Záměrně VŽDY používáme albedo.Alpha, ne mb_tex.Alpha.
+    # Pokud bychom připojili MB (jiný obrázek) do Alpha socketu, Blenderův GLTF
+    # exporter by oba obrázky sloučil do jednoho packed PNG s názvem
+    # "<albedo>-<mb>.png" — ten GLTF loaders chybně vyexportuje a hodí
+    # do GLB jako nepotřebný artefakt. MB průhlednost zpracovává Bevy shader
+    # přímo přes StandardPbrExtension.mb; nepotřebujeme ji v BSDF previewnodu.
+    links.new(alb.outputs[1], bsdf.inputs["Alpha"])
 
     try:
         links.new(emissive_mul.outputs[0], bsdf.inputs["Emission Color"])
@@ -775,13 +777,14 @@ def _build_graph_layered_env(mat, nodes, links):
 
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     bsdf.location = (560, 200)
-    links.new(ao_mul.outputs[0],     bsdf.inputs[0])
-    links.new(metal_snow,            bsdf.inputs[1])
-    links.new(rough_snow,            bsdf.inputs[2])
-    links.new(normal_map.outputs[0], bsdf.inputs[5])
+    links.new(ao_mul.outputs[0],     bsdf.inputs["Base Color"])
+    links.new(metal_snow,            bsdf.inputs["Metallic"])
+    links.new(rough_snow,            bsdf.inputs["Roughness"])
+    links.new(normal_map.outputs[0], bsdf.inputs["Normal"])
 
+    # Viz komentář v _build_graph_standard_pbr — MB záměrně nenapojujeme na Alpha.
     if use_alpha:
-        links.new(mb_tex.outputs[1] if has_mb else l0_alb.outputs[1], bsdf.inputs[4])
+        links.new(l0_alb.outputs[1], bsdf.inputs["Alpha"])
 
     out = nodes.new("ShaderNodeOutputMaterial")
     out.location = (860, 200)
@@ -888,14 +891,20 @@ def _build_graph_vehicle_glass(mat, nodes, links):
 
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     bsdf.location = (760, 200)
-    bsdf.inputs[17].default_value = 1.0  # Transmission
-    bsdf.inputs[14].default_value = 0.8  # Specular IOR Level
-    links.new(ao_mul.outputs[0], bsdf.inputs[0])
-    links.new(rough_wet,         bsdf.inputs[2])
+    # Blender 4.x renamed "Transmission" → "Transmission Weight", "Specular" → "Specular IOR Level"
+    for _name in ("Transmission Weight", "Transmission"):
+        if _name in bsdf.inputs:
+            bsdf.inputs[_name].default_value = 1.0
+            break
+    for _name in ("Specular IOR Level", "Specular"):
+        if _name in bsdf.inputs:
+            bsdf.inputs[_name].default_value = 0.8
+            break
+    links.new(ao_mul.outputs[0], bsdf.inputs["Base Color"])
+    links.new(rough_wet,         bsdf.inputs["Roughness"])
 
-    # _mb alpha overrides the computed glass alpha when present
-    alpha_source = mb_tex.outputs[1] if has_mb else alpha_wet.outputs[0]
-    links.new(alpha_source, bsdf.inputs[4])
+    # Používáme vždy vypočítaný glass alpha (ne MB) — viz komentář v standard_pbr.
+    links.new(alpha_wet.outputs[0], bsdf.inputs["Alpha"])
 
     out = nodes.new("ShaderNodeOutputMaterial")
     out.location = (1060, 200)

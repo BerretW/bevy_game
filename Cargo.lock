@@ -2278,6 +2278,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "core_drawable"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_gltf",
+ "core_resources",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "core_maths"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3625,6 +3637,7 @@ dependencies = [
  "bevy",
  "bevy_framepace",
  "bevy_gltf",
+ "core_drawable",
  "core_net",
  "core_resources",
  "core_shared",
@@ -5147,6 +5160,17 @@ dependencies = [
  "lua-src",
  "luajit-src",
  "pkg-config",
+]
+
+[[package]]
+name = "model_viewer"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_gltf",
+ "core_drawable",
+ "core_resources",
+ "serde_json",
 ]
 
 [[package]]

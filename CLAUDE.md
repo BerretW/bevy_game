@@ -824,6 +824,19 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
   src/http_server.rs               Axum HTTP file server (`/resources/<id>/<path>`)
   src/config.rs                    ServerConfig (server.toml: identity/gameplay/net/auth/...)
 /server.toml                     repo-tracked default server config (edit jako šablonu)
+/core_drawable/                   Sdílený ADS plugin — používán host_client i model_viewer
+  src/lib.rs                       DrawablePlugin (registrace assetů, materiálů, systémů)
+  src/manifest.rs                  DrawableManifest (serde), MaterialDef, EntityDef, CollisionShape
+  src/loader.rs                    DrawableManifestLoader (AssetLoader, ext=.drawable)
+  src/registry.rs                  DrawableManifestRegistry, GltfHandleCache, TextureRegistry
+  src/material.rs                  StandardPbrExtension, LayeredEnvExtension, VehicleGlassExtension,
+                                     DrawableParams (shared uniform struct)
+  src/hook.rs                      observe_scene_ready, attach_drawable_intent, hook_drawable_scenes,
+                                     DrawableSpawnIntent, DrawableHooked
+/model_viewer/                    Standalone ADS Model Viewer (dev tool)
+  src/main.rs                      App setup, model loading (CLI args), grid gizmos, UI overlay,
+                                     viewer_asset_root() → sdílí host_client/assets/shaders/ v dev módu
+  src/camera.rs                    OrbitCamera + OrbitState — pravé drag=orbit, střední=pan, kolečko=zoom
 /host_client/                    herní klient
   src/main.rs                      DefaultPlugins + ClientNetPlugin + ClientHandshakePlugin + ...
   src/config.rs                    ClientConfig (player/network/graphics/quality/audio/ui/input/paths/...)
@@ -831,14 +844,9 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
                                      publish_input_state_to_lua (`input:state` local bus event),
                                      3D player visual attach + 1st/3rd person camera follow
   src/native_assets.rs             NativeAssetsPlugin — scan assets/fonts/*.{ttf,otf}, assets/models/*.{glb,gltf,drawable}
-  src/drawable/                    Apparatus Drawable System (ADS)
-    manifest.rs                      DrawableManifest (serde), MaterialDef, EntityDef, CollisionShape
-    loader.rs                        DrawableManifestLoader (AssetLoader, ext=.drawable)
-    registry.rs                      DrawableManifestRegistry, TextureRegistry (shared DDS cache)
-    material.rs                      DrawableExtension + DrawableMaterial (ExtendedMaterial<StandardMaterial, DrawableExtension>)
-    hook.rs                          observe_scene_ready, attach_drawable_intent, hook_drawable_scenes
-    mod.rs                           DrawablePlugin
-  assets/shaders/drawable_extension.wgsl   Fragment shader: vertex color masky, sníh, špína, vlhkost, paleta LUT
+  src/drawable/mod.rs              Tenký re-export wrapper: `pub use core_drawable::*`
+  assets/shaders/                  Sdílené WGSL shadery (standard_pbr, layered_env, vehicle_glass,
+                                     drawable_extension) — sdíleny i s model_viewerem v dev módu
 /cache/resources/                lokální cache klienta (download během handshake; gitignored)
 /resources/                      game content (Lua + assets) — *server-side autoritativní*
   core/init/                       bootstrap resource (root, no deps)
@@ -1010,6 +1018,11 @@ cargo build -p host_server --release
 
 # Validace celého workspace
 cargo check --workspace
+
+# ADS Model Viewer — zobrazí model s .drawable materiály (sdílí shadery z host_client/assets/)
+cargo run -p model_viewer -- path/to/model.glb
+cargo run -p model_viewer -- model1.glb model2.glb   # více modelů najednou
+cargo run -p model_viewer --release -- path/to/model.glb
 ```
 
 ### Síťové porty (default)

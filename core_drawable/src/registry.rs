@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
 
-use super::manifest::DrawableManifest;
+use crate::manifest::DrawableManifest;
 
 /// Mapuje jméno modelu (stem, např. `"barrel"`) → Handle<DrawableManifest>.
 /// Plní se z `NativeAssetsPlugin` (scan `assets/models/*.drawable`)

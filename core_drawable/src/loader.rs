@@ -2,7 +2,7 @@ use bevy::asset::{io::Reader, AssetLoader, LoadContext};
 use bevy::reflect::TypePath;
 use thiserror::Error;
 
-use super::manifest::DrawableManifest;
+use crate::manifest::DrawableManifest;
 
 #[derive(Default, TypePath)]
 pub struct DrawableManifestLoader;

@@ -68,7 +68,9 @@
       "Bash(python -c \"import sys,json; deps=[d for d in json.load\\(sys.stdin\\)['packages'] if 'gltf' in d['name'].lower\\(\\)]; print\\('\\\\n'.join\\([d['name']+' '+d['version']+' '+d['manifest_path'] for d in deps]\\)\\)\")",
       "PowerShell(Get-ChildItem \"$env:APPDATA\\\\Blender Foundation\\\\Blender\\\\4.2\\\\scripts\\\\addons\\\\bevy_toolkit\" | Select-Object Name)",
       "Bash(ls \"/c/Users/adolf/AppData/Roaming/Blender Foundation/Blender/4.2/scripts/addons/bevy_toolkit/\")",
-      "Read(//c/Users/adolf/AppData/Roaming/Blender Foundation/Blender/4.2/scripts/addons/bevy_toolkit//**)"
+      "Read(//c/Users/adolf/AppData/Roaming/Blender Foundation/Blender/4.2/scripts/addons/bevy_toolkit//**)",
+      "Bash(Remove-Item \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\host_client\\\\src\\\\drawable\\\\manifest.rs\", \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\host_client\\\\src\\\\drawable\\\\loader.rs\", \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\host_client\\\\src\\\\drawable\\\\registry.rs\", \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\host_client\\\\src\\\\drawable\\\\material.rs\", \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\host_client\\\\src\\\\drawable\\\\hook.rs\" -ErrorAction SilentlyContinue)",
+      "Bash(Write-Host \"Deleted old drawable source files\")"
     ]
   }
 }

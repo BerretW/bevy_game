@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use serde::Deserialize;
 
-/// Párovací soubor k `.glb` assetu — definuje materiály, shadery a entity (mesh/colize).
+/// Párovací soubor k `.glb` assetu — definuje materiály, shadery a entity (mesh/kolize).
 /// Načítá se přes Bevy AssetServer jako `DrawableManifestLoader` (přípona `.drawable`).
 #[derive(Debug, Clone, Deserialize, Asset, TypePath)]
 pub struct DrawableManifest {

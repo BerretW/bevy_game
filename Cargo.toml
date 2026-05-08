@@ -5,8 +5,10 @@ members = [
     "core_resources",
     "core_net",
     "core_db",
+    "core_drawable",
     "host_server",
     "host_client",
+    "model_viewer",
 ]
 
 [workspace.package]
@@ -102,6 +104,7 @@ core_shared = { path = "core_shared" }
 core_resources = { path = "core_resources" }
 core_net = { path = "core_net" }
 core_db = { path = "core_db" }
+core_drawable = { path = "core_drawable" }
 
 # Bevy doporučuje optimalizovat dependencies i v dev profilu pro
 # rozumný framerate, zatímco vlastní crates kompilujeme rychle.

@@ -9,14 +9,14 @@ use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 
 use core_resources::ModelName;
 
-use super::manifest::{DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
-use super::material::{
+use crate::manifest::{DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
+use crate::material::{
     DrawableParams,
     LayeredEnvExtension, LayeredEnvMaterial,
     StandardPbrExtension, StandardPbrMaterial,
     VehicleGlassExtension, VehicleGlassMaterial,
 };
-use super::registry::{DrawableManifestRegistry, GltfHandleCache, TextureRegistry};
+use crate::registry::{DrawableManifestRegistry, GltfHandleCache, TextureRegistry};
 
 // ---------------------------------------------------------------------------
 // Komponenty
@@ -32,7 +32,8 @@ pub struct DrawableSpawnIntent {
 /// Uložené `InstanceId` ze `SceneInstanceReady` triggeru — umožňuje polling
 /// i v případě, že manifest se načítá déle než scene samotná.
 #[derive(Component, Clone, Copy)]
-pub(crate) struct SceneReadyId(InstanceId);
+#[doc(hidden)]
+pub struct SceneReadyId(InstanceId);
 
 /// Marker: drawable hooking byl dokončen. Systém entitu přeskočí.
 #[derive(Component)]
@@ -460,7 +461,7 @@ fn build_vehicle_glass(
 }
 
 fn resolve_tex(
-    info: &super::manifest::TextureInfo,
+    info: &crate::manifest::TextureInfo,
     embedded: &HashMap<String, Handle<Image>>,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
