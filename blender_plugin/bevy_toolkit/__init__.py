@@ -31,6 +31,7 @@ from .operators import (
     BEVY_OT_SetAllMaterialsUnembedded,
     BEVY_OT_Export,
     BEVY_OT_ImportDrawable,
+    ADS_OT_export_adm,
     BEVY_OT_BrowseTexture,
 )
 from .panels import BEVY_PT_MaterialPanel, BEVY_PT_Panel
@@ -58,6 +59,7 @@ classes = (
     BEVY_OT_SetAllMaterialsUnembedded,
     BEVY_OT_Export,
     BEVY_OT_ImportDrawable,
+    ADS_OT_export_adm,
     BEVY_OT_BrowseTexture,
     BEVY_PT_MaterialPanel,
     BEVY_PT_Panel,

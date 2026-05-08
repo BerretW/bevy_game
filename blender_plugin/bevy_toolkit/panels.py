@@ -173,3 +173,4 @@ class BEVY_PT_Panel(bpy.types.Panel):
         export_box.prop(settings, "export_scope")
         export_box.prop(settings, "apply_modifiers")
         export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
+        export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")

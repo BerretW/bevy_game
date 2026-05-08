@@ -1,9 +1,11 @@
+mod adm;
 mod hook;
 mod loader;
 mod manifest;
 mod material;
 mod registry;
 
+pub use adm::{AdmLoader, AdmScene, AdmSceneRoot, AdmSceneSpawned, AdmNode, AdmNodeType};
 pub use hook::{
     DrawableHooked, DrawableSpawnIntent,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
@@ -56,7 +58,9 @@ impl Plugin for DrawablePlugin {
             .register_type::<bevy::ecs::hierarchy::Children>()
             .register_type::<Name>();
 
-        app.init_asset::<DrawableManifest>()
+        app.init_asset::<AdmScene>()
+            .register_asset_loader(AdmLoader)
+            .init_asset::<DrawableManifest>()
             .register_asset_loader(DrawableManifestLoader)
             .init_asset::<StandardPbrExtension>()
             .init_asset::<LayeredEnvExtension>()
@@ -73,6 +77,7 @@ impl Plugin for DrawablePlugin {
                 (
                     attach_drawable_intent,
                     hook_drawable_scenes.after(attach_drawable_intent),
+                    adm::spawn_adm_scenes.after(hook_drawable_scenes),
                 ),
             );
     }

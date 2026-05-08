@@ -664,6 +664,40 @@ class BEVY_OT_ImportDrawable(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ADS_OT_export_adm(bpy.types.Operator):
+    bl_idname  = "ads.export_adm"
+    bl_label   = "Export ADM"
+    bl_description = "Exportuje geometrii jako .adm + .drawable do vybraného adresáře"
+
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+    use_selection: bpy.props.BoolProperty(name="Pouze výběr", default=False)
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        from .adm_export import export_adm
+        from .export import build_drawable_toml
+        import os
+
+        objects = context.selected_objects if self.use_selection else None
+        if objects is not None:
+            objects = [o for o in objects if o.type == 'MESH']
+
+        scene_name = bpy.path.clean_name(context.scene.name)
+        adm_path = os.path.join(self.directory, f"{scene_name}.adm")
+
+        try:
+            meshes, nodes = export_adm(adm_path, objects=objects, export_textures=True)
+            self.report({'INFO'}, f"ADM: {meshes} meshů, {nodes} uzlů → {adm_path}")
+        except Exception as e:
+            self.report({'ERROR'}, f"ADM export selhal: {e}")
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+
 class BEVY_OT_BrowseTexture(bpy.types.Operator):
     """Select a texture file and assign it to this material slot"""
     bl_idname  = "bevy.browse_texture"

@@ -23,6 +23,7 @@ use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
 use core_drawable::{
+    AdmScene, AdmSceneRoot,
     DrawableManifest, DrawableManifestRegistry, DrawablePlugin, EntityDef,
     GltfHandleCache, TextureSource,
 };
@@ -262,32 +263,53 @@ fn load_one_model(
     // Windows backslash → forward slash
     let bevy_path = path.to_string_lossy().replace('\\', "/");
 
-    // GLTF handle s include_source pro embedded texture extraction
-    let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
-        bevy_path.clone(),
-        |s: &mut GltfLoaderSettings| {
-            s.include_source = true;
-        },
-    );
-    gltf_cache.0.insert(stem.clone(), (gltf_handle, bevy_path.clone()));
-    model_reg.register_native(stem.clone(), bevy_path.clone());
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
 
-    // Auto-detekce .drawable vedle .glb
-    let drawable_path = path.with_extension("drawable");
-    if drawable_path.exists() {
-        let dp = drawable_path.to_string_lossy().replace('\\', "/");
-        let handle = asset_server.load(dp.clone());
-        drawable_reg.0.insert(stem.clone(), handle);
-        info!("[viewer] drawable manifest: '{}'", dp);
+    if ext == "adm" {
+        // Load as AdmScene
+        let adm_handle: Handle<AdmScene> = asset_server.load(bevy_path.clone());
+        model_reg.register_native(stem.clone(), bevy_path.clone());
+
+        // Auto-detect .drawable manifest beside .adm
+        let drawable_path = path.with_extension("drawable");
+        if drawable_path.exists() {
+            let dp = drawable_path.to_string_lossy().replace('\\', "/");
+            let handle = asset_server.load(dp.clone());
+            drawable_reg.0.insert(stem.clone(), handle);
+            info!("[viewer] drawable manifest: '{}'", dp);
+        } else {
+            info!("[viewer] žádný .drawable pro '{}', použijí se výchozí materiály", stem);
+        }
+
+        commands.spawn((AdmSceneRoot(adm_handle), Transform::default(), ModelName(stem)));
     } else {
-        info!("[viewer] žádný .drawable pro '{}', použijí se výchozí materiály", stem);
+        // GLB / GLTF path
+        let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
+            bevy_path.clone(),
+            |s: &mut GltfLoaderSettings| {
+                s.include_source = true;
+            },
+        );
+        gltf_cache.0.insert(stem.clone(), (gltf_handle, bevy_path.clone()));
+        model_reg.register_native(stem.clone(), bevy_path.clone());
+
+        // Auto-detekce .drawable vedle .glb
+        let drawable_path = path.with_extension("drawable");
+        if drawable_path.exists() {
+            let dp = drawable_path.to_string_lossy().replace('\\', "/");
+            let handle = asset_server.load(dp.clone());
+            drawable_reg.0.insert(stem.clone(), handle);
+            info!("[viewer] drawable manifest: '{}'", dp);
+        } else {
+            info!("[viewer] žádný .drawable pro '{}', použijí se výchozí materiály", stem);
+        }
+
+        // Spawn scene
+        let scene_path = format!("{}#Scene0", bevy_path);
+        let scene_handle: Handle<Scene> = asset_server.load(scene_path);
+
+        commands.spawn((SceneRoot(scene_handle), Transform::default(), ModelName(stem)));
     }
-
-    // Spawn scene
-    let scene_path = format!("{}#Scene0", bevy_path);
-    let scene_handle: Handle<Scene> = asset_server.load(scene_path);
-
-    commands.spawn((SceneRoot(scene_handle), Transform::default(), ModelName(stem)));
 }
 
 // ─── Info overlay ─────────────────────────────────────────────────────────────
@@ -303,8 +325,11 @@ fn update_info_overlay(
     if *done { return; }
 
     // Čekáme dokud nejsou načteny GLB i drawable (aspoň jeden model).
+    // Pro .adm soubory gltf_cache bude prázdný — v tom případě přeskočíme GLB check.
     let all_ready = gltf_cache.0.values().all(|(h, _)| gltf_assets.get(h).is_some());
-    if gltf_cache.0.is_empty() || !all_ready { return; }
+    if !gltf_cache.0.is_empty() && !all_ready { return; }
+    // Pokud jsou obě caches prázdné, nechceme nic zobrazovat.
+    if gltf_cache.0.is_empty() && drawable_reg.0.is_empty() { return; }
 
     let mut lines: Vec<String> = Vec::new();
 

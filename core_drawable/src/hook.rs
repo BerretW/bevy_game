@@ -305,7 +305,7 @@ fn process_mesh_node(
 
 /// `mb_alpha_threshold`: > 0 aktivuje MB alpha clip v shaderu; 0.0 = disabled.
 /// Přenáší se v `tiling.w` (dříve nevyužito).
-fn build_params(p: &MaterialParams, mb_alpha_threshold: f32) -> DrawableParams {
+pub(crate) fn build_params(p: &MaterialParams, mb_alpha_threshold: f32) -> DrawableParams {
     DrawableParams {
         tint: p.tint.map(Vec4::from).unwrap_or(Vec4::ONE),
         weather: Vec4::new(
@@ -323,7 +323,7 @@ fn build_params(p: &MaterialParams, mb_alpha_threshold: f32) -> DrawableParams {
     }
 }
 
-fn resolve_alpha_mode(opacity_mode: &str, threshold: f32, has_mb: bool) -> AlphaMode {
+pub(crate) fn resolve_alpha_mode(opacity_mode: &str, threshold: f32, has_mb: bool) -> AlphaMode {
     match opacity_mode {
         "BLEND" => AlphaMode::Blend,
         "CLIP" | "HASHED" => AlphaMode::Mask(threshold),
@@ -336,7 +336,7 @@ fn resolve_alpha_mode(opacity_mode: &str, threshold: f32, has_mb: bool) -> Alpha
 // Buildery per template
 // ---------------------------------------------------------------------------
 
-fn build_standard_pbr(
+pub(crate) fn build_standard_pbr(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
     texture_reg: &mut TextureRegistry,
@@ -380,7 +380,7 @@ fn build_standard_pbr(
     }
 }
 
-fn build_layered_env(
+pub(crate) fn build_layered_env(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
     texture_reg: &mut TextureRegistry,
@@ -424,7 +424,7 @@ fn build_layered_env(
     }
 }
 
-fn build_vehicle_glass(
+pub(crate) fn build_vehicle_glass(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
     texture_reg: &mut TextureRegistry,
@@ -460,7 +460,7 @@ fn build_vehicle_glass(
     }
 }
 
-fn resolve_tex(
+pub(crate) fn resolve_tex(
     info: &crate::manifest::TextureInfo,
     embedded: &HashMap<String, Handle<Image>>,
     texture_reg: &mut TextureRegistry,

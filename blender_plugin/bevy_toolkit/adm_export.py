@@ -1,0 +1,330 @@
+"""Export meshů do binárního .adm formátu pro Apparatus Drawable System."""
+
+import struct
+import os
+import bpy
+import bmesh
+import mathutils
+
+# Koordinátová transformace Blender (Z-up) → Bevy (Y-up)
+_C = mathutils.Matrix([
+    [1,  0,  0, 0],
+    [0,  0,  1, 0],
+    [0, -1,  0, 0],
+    [0,  0,  0, 1],
+])
+_C_INV = _C.inverted()
+
+
+def _to_bevy_vec3(v):
+    """Konvertuje Blender Vector na Bevy souřadnice (x, z, -y)."""
+    return (v.x, v.z, -v.y)
+
+
+def _to_bevy_mat4(mat):
+    """Konvertuje Blender matrix do Bevy coordinate space, vrátí 16 float column-major."""
+    m = _C @ mat @ _C_INV
+    return [f for col in m.col for f in col]
+
+
+def _pack_str(s):
+    """u16 length prefix + utf8 bytes."""
+    b = s.encode('utf-8')
+    return struct.pack('<H', len(b)) + b
+
+
+def _get_color(attr, loop_idx, vert_idx):
+    """Vrátí RGBA float tuple z color_attribute (CORNER nebo POINT domain)."""
+    if attr.domain == 'CORNER':
+        c = attr.data[loop_idx].color
+    else:
+        c = attr.data[vert_idx].color
+    return (c[0], c[1], c[2], c[3] if len(c) > 3 else 1.0)
+
+
+def _collect_mesh_data(obj):
+    """
+    Získá mesh data ze object v object-local space.
+    Vrátí: (positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices)
+    Vše v Bevy souřadnicovém systému.
+    """
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    obj_eval = obj.evaluated_get(depsgraph)
+    mesh = obj_eval.to_mesh()
+
+    # Triangulate
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bmesh.ops.triangulate(bm, faces=bm.faces)
+    bm.to_mesh(mesh)
+    bm.free()
+
+    # calc_normals_split() removed in Blender 4.1; loop normals are always split
+    try:
+        mesh.calc_tangents()
+    except Exception:
+        pass
+
+    uv_layers = mesh.uv_layers
+    col_attrs = getattr(mesh, 'color_attributes', [])
+    masks0_attr = None
+    masks1_attr = None
+    for ca in col_attrs:
+        if masks0_attr is None:
+            masks0_attr = ca
+        elif masks1_attr is None:
+            masks1_attr = ca
+
+    positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices = [], [], [], [], [], [], [], []
+    vert_map = {}
+
+    mesh.calc_loop_triangles()
+    for tri in mesh.loop_triangles:
+        for loop_idx in tri.loops:
+            loop = mesh.loops[loop_idx]
+            vi = loop.vertex_index
+
+            nrm = loop.normal if tri.use_smooth else tri.normal
+            nrm_key = (round(nrm.x, 4), round(nrm.y, 4), round(nrm.z, 4))
+
+            uv0 = uv_layers[0].data[loop_idx].uv if uv_layers else None
+            uv0_key = (round(uv0.x, 5), round(1.0 - uv0.y, 5)) if uv0 else (0.0, 0.0)
+
+            key = (vi, nrm_key, uv0_key)
+            if key not in vert_map:
+                idx = len(positions)
+                vert_map[key] = idx
+
+                p = mesh.vertices[vi].co
+                positions.append(_to_bevy_vec3(p))
+                normals.append(_to_bevy_vec3(nrm))
+
+                if hasattr(loop, 'tangent'):
+                    t = loop.tangent
+                    s = loop.bitangent_sign
+                    tangents.append((*_to_bevy_vec3(t), s))
+                else:
+                    tangents.append((1.0, 0.0, 0.0, 1.0))
+
+                uv0s.append(uv0_key)
+
+                if len(uv_layers) > 1:
+                    u1 = uv_layers[1].data[loop_idx].uv
+                    uv1s.append((u1.x, 1.0 - u1.y))
+                else:
+                    uv1s.append((0.0, 0.0))
+
+                if masks0_attr:
+                    c = _get_color(masks0_attr, loop_idx, vi)
+                    masks0s.append(tuple(min(255, int(ch * 255)) for ch in c))
+                else:
+                    masks0s.append((0, 0, 0, 0))
+
+                if masks1_attr:
+                    c = _get_color(masks1_attr, loop_idx, vi)
+                    masks1s.append(tuple(min(255, int(ch * 255)) for ch in c))
+                else:
+                    masks1s.append((0, 0, 0, 0))
+
+            indices.append(vert_map[key])
+
+    obj_eval.to_mesh_clear()
+    return positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices
+
+
+def _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices):
+    has_pos = len(positions) > 0
+    has_nrm = len(normals) > 0
+    has_tan = len(tangents) > 0
+    has_uv0 = len(uv0s) > 0
+    has_uv1 = len(uv1s) > 0
+    has_m0  = any(any(c != 0 for c in m) for m in masks0s)
+    has_m1  = any(any(c != 0 for c in m) for m in masks1s)
+
+    flags = 0
+    if has_pos: flags |= (1 << 0)
+    if has_nrm: flags |= (1 << 1)
+    if has_tan: flags |= (1 << 2)
+    if has_uv0: flags |= (1 << 3)
+    if has_uv1: flags |= (1 << 4)
+    if has_m0:  flags |= (1 << 5)
+    if has_m1:  flags |= (1 << 6)
+
+    buf += _pack_str(name)
+    buf += struct.pack('<III', len(positions), len(indices), flags)
+
+    if has_pos:
+        for p in positions: buf += struct.pack('<3f', *p)
+    if has_nrm:
+        for n in normals:   buf += struct.pack('<3f', *n)
+    if has_tan:
+        for t in tangents:  buf += struct.pack('<4f', *t)
+    if has_uv0:
+        for u in uv0s:      buf += struct.pack('<2f', *u)
+    if has_uv1:
+        for u in uv1s:      buf += struct.pack('<2f', *u)
+    if has_m0:
+        for m in masks0s:   buf += struct.pack('4B', *m)
+    if has_m1:
+        for m in masks1s:   buf += struct.pack('4B', *m)
+
+    buf += struct.pack(f'<{len(indices)}I', *indices)
+    return buf
+
+
+def _write_node(buf, name, node_type_byte, mesh_index, parent_index, material_name, mat_bevy):
+    buf += _pack_str(name)
+    buf += struct.pack('<b', node_type_byte)
+    buf += struct.pack('<i', mesh_index)
+    buf += struct.pack('<i', parent_index)
+    buf += _pack_str(material_name)
+    buf += struct.pack('<16f', *mat_bevy)
+    return buf
+
+
+def _get_image_bytes(img):
+    """Vrátí (format_byte, is_srgb, raw_bytes) pro Blender image."""
+    import tempfile
+    ext = img.file_format.lower()
+    if ext in ('jpeg', 'jpg'):
+        suffix, fmt = '.jpg', 1
+    else:
+        suffix, fmt = '.png', 0
+    # sRGB: true pro albedo-like; conservative: vždy true pro barevné, false pro non-color
+    is_srgb = img.colorspace_settings.name in ('sRGB', 'Filmic Log', 'Linear sRGB', 'Raw')
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        path = tmp.name
+    try:
+        img.save(filepath=path, scene=bpy.context.scene)
+        with open(path, 'rb') as f:
+            data = f.read()
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+    return fmt, is_srgb, data
+
+
+def export_adm(filepath, objects=None, export_textures=True):
+    """
+    Exportuje objekty do .adm souboru.
+    objects: seznam bpy.types.Object; None = všechny mesh objekty ve scéně.
+    """
+    if objects is None:
+        objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+
+    # Seřaď podle hierarchie (parents před children)
+    def sort_key(o):
+        depth = 0
+        p = o.parent
+        while p:
+            depth += 1
+            p = p.parent
+        return depth
+    objects = sorted(objects, key=sort_key)
+
+    # Unikátní meshe (může více objektů sdílet stejný mesh data)
+    mesh_data_list = []  # list of (name, positions, ...) tuples
+    mesh_index_map = {}  # object.data.name → mesh_index
+
+    node_list = []  # list of (name, type_byte, mesh_idx, parent_idx, mat_name, transform16)
+    obj_to_node = {}  # object → node_index
+
+    for obj in objects:
+        # Detekce node type
+        name_up = obj.name.upper()
+        if 'COL_' in name_up or name_up.startswith('COL'):
+            node_type = 1  # COLLISION
+        else:
+            node_type = 0  # MESH
+
+        # Parent node index
+        parent_idx = -1
+        if obj.parent and obj.parent in obj_to_node:
+            parent_idx = obj_to_node[obj.parent]
+
+        # Material name
+        mat_name = ''
+        if obj.active_material:
+            mat_name = obj.active_material.name
+
+        # Mesh data
+        mesh_idx = -1
+        if node_type == 0:  # pouze MESH uzly mají geometrii
+            key = obj.data.name if obj.data else obj.name
+            if key not in mesh_index_map:
+                mesh_index_map[key] = len(mesh_data_list)
+                data = _collect_mesh_data(obj)
+                mesh_data_list.append((obj.name, *data))
+            mesh_idx = mesh_index_map[key]
+
+        node_idx = len(node_list)
+        obj_to_node[obj] = node_idx
+
+        mat_bevy = _to_bevy_mat4(obj.matrix_local)
+        node_list.append((obj.name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
+
+    # Sbíráme embedded textury (ze všech materiálů s bevy_toolkit props)
+    embedded_textures = {}  # img_name → (format, is_srgb, bytes)
+    if export_textures:
+        try:
+            from .utils import image_basename
+        except ImportError:
+            def image_basename(img):
+                return os.path.splitext(img.name)[0] if img else ''
+
+        for obj in objects:
+            for slot in obj.material_slots:
+                mat = slot.material
+                if not mat or not hasattr(mat, 'bevy_toolkit'):
+                    continue
+                props = mat.bevy_toolkit
+                for attr in dir(props):
+                    if not attr.endswith('_img'):
+                        continue
+                    img = getattr(props, attr, None)
+                    embedded_attr = attr.replace('_img', '_embedded')
+                    is_emb = getattr(props, embedded_attr, False)
+                    if img and is_emb:
+                        img_name = image_basename(img)
+                        if img_name and img_name not in embedded_textures:
+                            try:
+                                embedded_textures[img_name] = _get_image_bytes(img)
+                            except Exception as e:
+                                print(f"[adm_export] nelze exportovat texturu '{img_name}': {e}")
+
+    # Build binary
+    buf = b''
+
+    # Header
+    buf += b'ADM\x00'
+    buf += struct.pack('<I', 1)   # version
+    buf += struct.pack('<I', len(mesh_data_list))
+    buf += struct.pack('<I', len(node_list))
+    buf += struct.pack('<I', 1 if embedded_textures else 0)
+
+    # Mesh sekce
+    for entry in mesh_data_list:
+        name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices = entry
+        buf = _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices)
+
+    # Node sekce
+    for (name, type_b, mesh_idx, parent_idx, mat_name, mat16) in node_list:
+        buf = _write_node(buf, name, type_b, mesh_idx, parent_idx, mat_name, mat16)
+
+    # Texture sekce
+    if embedded_textures:
+        buf += struct.pack('<I', len(embedded_textures))
+        for img_name, (fmt, is_srgb, data) in embedded_textures.items():
+            buf += _pack_str(img_name)
+            buf += struct.pack('BB', fmt, 1 if is_srgb else 0)
+            buf += struct.pack('<I', len(data))
+            buf += data
+
+    with open(filepath, 'wb') as f:
+        f.write(buf)
+
+    print(f"[adm_export] zapsáno {len(mesh_data_list)} meshů, {len(node_list)} uzlů, "
+          f"{len(embedded_textures)} embedded textur → {filepath}")
+    return len(mesh_data_list), len(node_list)
