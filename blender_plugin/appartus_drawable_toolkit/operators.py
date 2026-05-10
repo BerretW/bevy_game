@@ -16,6 +16,14 @@ from .material import (
 from .export import gather_target_meshes, validate_export_consistency, build_drawable_toml, save_companion_textures
 
 
+def _get_active_material(context):
+    """Return active material regardless of whether we're in Properties or 3D View."""
+    mat = getattr(context, 'active_material', None)
+    if mat is None and context.active_object:
+        mat = context.active_object.active_material
+    return mat
+
+
 def _resolve_export_asset_name(context, objects):
     candidates = []
     active_object = context.active_object if context else None
@@ -203,7 +211,7 @@ class BEVY_OT_SetupNodes(bpy.types.Operator):
     bl_label  = "Setup Preview Nodes"
 
     def execute(self, context):
-        mat = context.active_material
+        mat = _get_active_material(context)
         if not mat:
             self.report({"WARNING"}, "No active material")
             return {"CANCELLED"}
@@ -368,12 +376,13 @@ class BEVY_OT_ConvertActiveMaterial(bpy.types.Operator):
     bl_label  = "Convert Active Material"
 
     def execute(self, context):
-        mat = context.active_material
+        mat = _get_active_material(context)
         if not mat:
             self.report({"WARNING"}, "No active material")
             return {"CANCELLED"}
         mapped = sync_material_from_nodes(mat, only_if_empty=False)
-        self.report({"INFO"}, f"Mapped {mapped} texture slot(s) from material nodes")
+        create_bevy_node_tree(mat)
+        self.report({"INFO"}, f"Mapped {mapped} texture slot(s) and rebuilt shader graph")
         return {"FINISHED"}
 
 
@@ -386,7 +395,8 @@ class BEVY_OT_ConvertAllMaterials(bpy.types.Operator):
         mats  = [mat for mat in bpy.data.materials if hasattr(mat, "bevy_toolkit")]
         for mat in mats:
             total += sync_material_from_nodes(mat, only_if_empty=False)
-        self.report({"INFO"}, f"Mapped {total} texture slot(s) across {len(mats)} material(s)")
+            create_bevy_node_tree(mat)
+        self.report({"INFO"}, f"Mapped {total} texture slot(s), rebuilt {len(mats)} shader graph(s)")
         return {"FINISHED"}
 
 
@@ -395,7 +405,7 @@ class BEVY_OT_SetAllTexturesEmbedded(bpy.types.Operator):
     bl_label  = "Set all Textures Embedded"
 
     def execute(self, context):
-        mat = context.active_material
+        mat = _get_active_material(context)
         if not mat:
             self.report({"WARNING"}, "No active material")
             return {"CANCELLED"}
@@ -410,7 +420,7 @@ class BEVY_OT_RemoveAllEmbeddedTextures(bpy.types.Operator):
     bl_label  = "Remove all Embedded Textures"
 
     def execute(self, context):
-        mat = context.active_material
+        mat = _get_active_material(context)
         if not mat:
             self.report({"WARNING"}, "No active material")
             return {"CANCELLED"}
@@ -823,6 +833,128 @@ class ADS_OT_export_adm(bpy.types.Operator):
             self.report({'WARNING'}, f".drawable selhal: {e}")
 
         self.report({'INFO'}, f"ADM: {meshes} meshů, {nodes} uzlů → {os.path.basename(adm_path)} + {os.path.basename(drawable_path)}")
+        return {'FINISHED'}
+
+
+_IMAGE_EXTS_SET = frozenset((".png", ".jpg", ".jpeg", ".tga", ".dds", ".tif", ".tiff", ".exr", ".bmp"))
+
+
+class BEVY_OT_FindMissingTextures(bpy.types.Operator):
+    bl_idname      = "bevy.find_missing_textures"
+    bl_label       = "Find Missing Textures"
+    bl_description = (
+        "Recursively search a directory for missing textures and relink them.\n"
+        "Fixes broken image paths in bpy.data.images and fills empty texture slots\n"
+        "in Bevy material props where a name is set but no image is assigned."
+    )
+
+    directory:   bpy.props.StringProperty(subtype='DIR_PATH')
+    # File browser filter — must be a property to silence RNA warnings even for DIR_PATH
+    filter_glob: bpy.props.StringProperty(default="*", options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        search_dir = self.directory.rstrip("\\/")
+        if not os.path.isdir(search_dir):
+            self.report({'ERROR'}, f"Not a directory: {search_dir}")
+            return {'CANCELLED'}
+
+        # ── Build index: stem_lower → first found absolute path ──────────────
+        index = {}
+        for root, _dirs, files in os.walk(search_dir):
+            for fname in files:
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in _IMAGE_EXTS_SET:
+                    continue
+                stem = os.path.splitext(fname)[0].lower()
+                if stem not in index:
+                    index[stem] = os.path.join(root, fname)
+
+        if not index:
+            self.report({'WARNING'}, f"No image files found under: {search_dir}")
+            return {'CANCELLED'}
+
+        relinked  = 0
+        filled    = 0
+        not_found = []
+
+        # ── 1. Fix images in bpy.data.images with missing file paths ─────────
+        for img in bpy.data.images:
+            if img.source != 'FILE':
+                continue
+            abspath = bpy.path.abspath(img.filepath)
+            if abspath and os.path.isfile(abspath):
+                continue  # file is OK
+
+            # Build ordered list of search keys (prefer existing filename stem)
+            search_keys = []
+            if img.filepath:
+                current_stem = os.path.splitext(os.path.basename(bpy.path.abspath(img.filepath)))[0]
+                if current_stem:
+                    search_keys.append(current_stem.lower())
+            name_stem = os.path.splitext(img.name)[0].lower()
+            if name_stem not in search_keys:
+                search_keys.append(name_stem)
+
+            found_path = next((index[k] for k in search_keys if k in index), None)
+            if found_path:
+                img.filepath = found_path
+                try:
+                    img.reload()
+                except Exception:
+                    pass
+                relinked += 1
+            else:
+                not_found.append(img.name)
+
+        # ── 2. Fill empty _img slots where _name is set but image is missing ──
+        _MAT_SLOTS = (
+            'albedo', 'mrao', 'normal', 'palette', 'snow',
+            'l0_albedo', 'l0_mrao', 'l0_normal',
+            'l1_albedo', 'l1_mrao', 'l1_normal',
+            'glass_albedo', 'shatter_map',
+            'ma', 'mb',
+        )
+        for mat in bpy.data.materials:
+            props = getattr(mat, 'bevy_toolkit', None)
+            if props is None:
+                continue
+            for slot in _MAT_SLOTS:
+                img_attr  = f"{slot}_img"
+                name_attr = f"{slot}_name"
+                if not hasattr(props, img_attr) or not hasattr(props, name_attr):
+                    continue
+                if getattr(props, img_attr) is not None:
+                    continue  # already assigned
+                name = getattr(props, name_attr, "").strip()
+                if not name:
+                    continue
+                stem = os.path.splitext(name)[0].lower()
+                found_path = index.get(stem)
+                if found_path:
+                    img = bpy.data.images.load(found_path, check_existing=True)
+                    setattr(props, img_attr, img)
+                    filled += 1
+                else:
+                    not_found.append(f"{mat.name}/{slot} ('{name}')")
+
+        # ── Report ────────────────────────────────────────────────────────────
+        summary = f"Relinked {relinked} image(s), filled {filled} material slot(s)"
+        if not_found:
+            summary += f", {len(not_found)} not found"
+            self.report({'WARNING'}, summary)
+            # Each missing item as a separate WARNING → visible in Info editor
+            for item in not_found:
+                self.report({'WARNING'}, f"  Not found: {item}")
+            # Full list also to system console for easy copy-paste
+            print(f"[Find Missing Textures] {summary}")
+            for item in not_found:
+                print(f"  NOT FOUND: {item}")
+        else:
+            self.report({'INFO'}, summary)
         return {'FINISHED'}
 
 

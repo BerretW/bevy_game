@@ -10,7 +10,7 @@ pub use hook::{
     DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
     DrawableCollision,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
-    setup_fallback_textures,
+    setup_fallback_textures, auto_hide_col_nodes,
 };
 pub use loader::DrawableManifestLoader;
 pub use manifest::{
@@ -78,6 +78,7 @@ impl Plugin for DrawablePlugin {
             .add_systems(
                 Update,
                 (
+                    auto_hide_col_nodes,
                     attach_drawable_intent,
                     hook_drawable_scenes.after(attach_drawable_intent),
                     adm::spawn_adm_scenes.after(hook_drawable_scenes),

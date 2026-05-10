@@ -162,6 +162,7 @@ class BEVY_PT_Panel(bpy.types.Panel):
         tool_row = tools_box.row(align=True)
         tool_row.operator("bevy.set_all_materials_embedded",   text="Set all Materials Embedded")
         tool_row.operator("bevy.set_all_materials_unembedded", text="Set all Materials Unembedded")
+        tools_box.operator("bevy.find_missing_textures", text="Find Missing Textures", icon="VIEWZOOM")
 
         if not obj:
             self._draw_export_box(layout, settings)
@@ -225,6 +226,7 @@ class BEVY_PT_Panel(bpy.types.Panel):
         export_box = layout.box()
         export_box.label(text="Import / Export", icon="EXPORT")
         export_box.operator("bevy.import_drawable", text="Import Drawable", icon="IMPORT")
+        export_box.operator("bevy.find_missing_textures", text="Find Missing Textures", icon="VIEWZOOM")
         export_box.separator(factor=0.5)
         export_box.prop(settings, "export_scope")
         export_box.prop(settings, "apply_modifiers")

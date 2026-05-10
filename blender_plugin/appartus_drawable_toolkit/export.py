@@ -7,24 +7,33 @@ from .material import get_template_texture_specs, material_texture_value, build_
 
 
 def _collision_shape_inline(obj, shape: str) -> str:
-    dims = obj.dimensions
-    sx = max(0.0001, float(dims.x))
-    sy = max(0.0001, float(dims.y))
-    sz = max(0.0001, float(dims.z))
+    # Use obj.bound_box (local mesh space, before obj.scale) so the exported
+    # half_extents match the entity-local space that Bevy expects.
+    # Coordinate mapping: Blender X → Bevy X, Blender Z (up) → Bevy Y, Blender Y → Bevy Z.
+    bb = obj.bound_box
+    xs = [v[0] for v in bb]
+    ys = [v[1] for v in bb]  # Blender Y (forward) → Bevy Z
+    zs = [v[2] for v in bb]  # Blender Z (up)     → Bevy Y
+
+    hx = max(0.0001, max(xs) - min(xs)) * 0.5  # Bevy X
+    hy = max(0.0001, max(zs) - min(zs)) * 0.5  # Bevy Y (Blender up)
+    hz = max(0.0001, max(ys) - min(ys)) * 0.5  # Bevy Z (Blender forward)
+
     if shape == "BOX":
-        hx = sx * 0.5
-        hy = sy * 0.5
-        hz = sz * 0.5
         return (
             f'half_extents = [{format_float(hx)}, {format_float(hy)}, {format_float(hz)}], '
         )
     if shape == "SPHERE":
-        radius = max(sx, sy, sz) * 0.5
+        radius = max(hx, hy, hz)
         return f"radius = {format_float(radius)}, "
     if shape in ("CAPSULE", "CYLINDER"):
-        radius = max(sx, sy) * 0.5
-        height = sz
+        radius = max(hx, hz)  # radius in Bevy XZ plane
+        height = hy * 2.0     # full height in Bevy Y direction
         return f"radius = {format_float(radius)}, height = {format_float(height)}, "
+    if shape in ("CONVEX", "MESH"):
+        return (
+            f'half_extents = [{format_float(hx)}, {format_float(hy)}, {format_float(hz)}], '
+        )
     return ""
 
 

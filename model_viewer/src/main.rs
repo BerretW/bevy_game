@@ -26,6 +26,7 @@ use bevy::window::WindowResolution;
 
 use core_drawable::{
     AdmScene, AdmSceneRoot,
+    CollisionShape, DrawableCollision,
     DrawableManifest, DrawableManifestRegistry, DrawablePlugin, EntityDef,
     GltfHandleCache, TextureSource,
     StandardPbrMaterial, LayeredEnvMaterial,
@@ -103,7 +104,10 @@ fn main() {
                 handle_keyboard,
                 handle_material_debug,
                 draw_grid,
+                draw_colliders,
+                sync_mesh_visibility_for_collider_mode,
                 update_info_overlay,
+                update_collider_panel,
                 textures::init_texture_browser,
                 textures::handle_texture_keys,
                 textures::rebuild_panel,
@@ -120,13 +124,14 @@ struct ModelPaths(Vec<PathBuf>);
 
 #[derive(Resource)]
 struct ViewerState {
-    grid_visible:    bool,
-    overlay_visible: bool,
+    grid_visible:      bool,
+    overlay_visible:   bool,
+    colliders_visible: bool,
 }
 
 impl Default for ViewerState {
     fn default() -> Self {
-        Self { grid_visible: true, overlay_visible: true }
+        Self { grid_visible: true, overlay_visible: true, colliders_visible: false }
     }
 }
 
@@ -234,7 +239,7 @@ fn setup_scene(mut commands: Commands) {
         Text::new(
             "Pravé drag: orbit  |  Střední drag: pan  |  Kolečko: zoom  \
              |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export\n\
-             W: weather preset  |  V: vertex color debug  |  P: vertex paint",
+             W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery",
         ),
         TextFont { font_size: 13.0, ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
@@ -275,6 +280,22 @@ fn setup_scene(mut commands: Commands) {
         },
         DebugStatus,
     ));
+
+    // Collider info panel (nahoře vpravo, pod debug status) — skrytý dokud se nestiskne C
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 12.5, ..default() },
+        TextColor(Color::srgba(0.3, 1.0, 0.6, 0.90)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(30.0),
+            right: Val::Px(8.0),
+            max_width: Val::Px(440.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        ColliderPanel,
+    ));
 }
 
 // ─── Markery ──────────────────────────────────────────────────────────────────
@@ -284,6 +305,9 @@ struct InfoOverlay;
 
 #[derive(Component)]
 struct DebugStatus;
+
+#[derive(Component)]
+struct ColliderPanel;
 
 // ─── Model loading ────────────────────────────────────────────────────────────
 
@@ -558,6 +582,222 @@ fn handle_keyboard(
         cam.distance = 2.5;
         cam.yaw      = -0.5;
         cam.pitch    = 0.35;
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        state.colliders_visible = !state.colliders_visible;
+    }
+}
+
+// ─── Collider vizualizace ─────────────────────────────────────────────────────
+
+/// Při vstupu do collider módu skryje všechny normální mesh entity.
+/// Při výstupu je znovu zobrazí (s výjimkou COL_ uzlů — ty zůstanou skryté).
+fn sync_mesh_visibility_for_collider_mode(
+    state: Res<ViewerState>,
+    mut last: Local<bool>,
+    mut meshes: Query<(&mut Visibility, Option<&Name>), (With<Mesh3d>, Without<DrawableCollision>)>,
+) {
+    if *last == state.colliders_visible { return; }
+    *last = state.colliders_visible;
+
+    if state.colliders_visible {
+        for (mut vis, _) in &mut meshes {
+            *vis = Visibility::Hidden;
+        }
+    } else {
+        for (mut vis, name) in &mut meshes {
+            let is_col = name.map(|n| n.as_str().starts_with("COL_")).unwrap_or(false);
+            if !is_col {
+                *vis = Visibility::Inherited;
+            }
+        }
+    }
+}
+
+fn draw_colliders(
+    mut gizmos: Gizmos,
+    state: Res<ViewerState>,
+    query: Query<(&DrawableCollision, &GlobalTransform)>,
+) {
+    if !state.colliders_visible { return; }
+    for (dc, gt) in &query {
+        let (scale, rot, center) = gt.to_scale_rotation_translation();
+        let color = collider_color(dc);
+        match &dc.shape {
+            CollisionShape::Box | CollisionShape::Convex | CollisionShape::Mesh => {
+                // half_extents are in entity-local space; multiply by GT scale for world size.
+                let he = dc.half_extents.unwrap_or(Vec3::splat(0.5)) * scale;
+                draw_box_gizmo(&mut gizmos, center, rot, he, color);
+            }
+            CollisionShape::Sphere => {
+                let r = dc.radius.unwrap_or(0.5) * scale.max_element();
+                draw_sphere_gizmo(&mut gizmos, center, rot, r, color);
+            }
+            CollisionShape::Capsule => {
+                let radial_scale = scale.x.max(scale.z);
+                let r = dc.radius.unwrap_or(0.3) * radial_scale;
+                let half_seg = dc.height
+                    .map(|h| (h * 0.5 * scale.y - r).max(0.0))
+                    .unwrap_or(0.5);
+                draw_capsule_gizmo(&mut gizmos, center, rot, r, half_seg, color);
+            }
+            CollisionShape::Cylinder => {
+                let radial_scale = scale.x.max(scale.z);
+                let r = dc.radius.unwrap_or(0.5) * radial_scale;
+                let half_h = dc.height.map(|h| h * 0.5 * scale.y).unwrap_or(0.5);
+                draw_cylinder_gizmo(&mut gizmos, center, rot, r, half_h, color);
+            }
+        }
+    }
+}
+
+fn collider_color(dc: &DrawableCollision) -> Color {
+    if dc.ladder         { Color::srgb(1.00, 0.85, 0.00) }
+    else if dc.climbable { Color::srgb(0.00, 1.00, 0.40) }
+    else if !dc.is_static { Color::srgb(1.00, 0.40, 0.10) }
+    else                 { Color::srgb(0.10, 0.80, 1.00) }
+}
+
+fn update_collider_panel(
+    state: Res<ViewerState>,
+    colliders: Query<(&DrawableCollision, &GlobalTransform)>,
+    mut panel: Query<(&mut Text, &mut Visibility), With<ColliderPanel>>,
+) {
+    let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
+    if !state.colliders_visible {
+        *vis = Visibility::Hidden;
+        return;
+    }
+    *vis = Visibility::Visible;
+
+    let mut lines: Vec<String> = vec![
+        "── Collidery (cyan=static  orange=dynamic  green=climbable  yellow=ladder) ──".to_string(),
+    ];
+
+    let items: Vec<_> = colliders.iter()
+        .map(|(dc, gt)| (dc, gt.translation()))
+        .collect();
+
+    if items.is_empty() {
+        lines.push("(žádné DrawableCollision entity)".to_string());
+        lines.push("Model vyžaduje .drawable nebo .adm manifest.".to_string());
+    } else {
+        for (i, (dc, pos)) in items.iter().enumerate() {
+            let size_str = match &dc.shape {
+                CollisionShape::Box | CollisionShape::Convex | CollisionShape::Mesh => {
+                    let he = dc.half_extents.unwrap_or(Vec3::splat(0.5));
+                    format!("he:[{:.2},{:.2},{:.2}]", he.x, he.y, he.z)
+                }
+                CollisionShape::Sphere => format!("r:{:.2}", dc.radius.unwrap_or(0.5)),
+                CollisionShape::Capsule | CollisionShape::Cylinder => format!(
+                    "r:{:.2}  h:{:.2}", dc.radius.unwrap_or(0.3), dc.height.unwrap_or(1.0)
+                ),
+            };
+            let mut flags = vec![if dc.is_static { "static" } else { "dynamic" }];
+            if dc.climbable { flags.push("climbable"); }
+            if dc.ladder    { flags.push("ladder"); }
+
+            lines.push(format!(
+                "[{}] {:?}  {:?}  {}",
+                i + 1, dc.shape, dc.material, flags.join("+")
+            ));
+            lines.push(format!(
+                "    {}  @ [{:.2},{:.2},{:.2}]",
+                size_str, pos.x, pos.y, pos.z
+            ));
+            if dc.friction != 0.0 || dc.restitution != 0.0 || dc.mass != 0.0 {
+                lines.push(format!(
+                    "    frict:{:.2}  rest:{:.2}  mass:{:.1}",
+                    dc.friction, dc.restitution, dc.mass
+                ));
+            }
+            if !dc.tags.is_empty() {
+                lines.push(format!("    tags: {}", dc.tags.join(", ")));
+            }
+        }
+    }
+    txt.0 = lines.join("\n");
+}
+
+// ─── Gizmo helpers ────────────────────────────────────────────────────────────
+
+fn draw_box_gizmo(gizmos: &mut Gizmos, center: Vec3, rot: Quat, half: Vec3, color: Color) {
+    let c = [
+        center + rot * Vec3::new(-half.x, -half.y, -half.z),
+        center + rot * Vec3::new( half.x, -half.y, -half.z),
+        center + rot * Vec3::new( half.x,  half.y, -half.z),
+        center + rot * Vec3::new(-half.x,  half.y, -half.z),
+        center + rot * Vec3::new(-half.x, -half.y,  half.z),
+        center + rot * Vec3::new( half.x, -half.y,  half.z),
+        center + rot * Vec3::new( half.x,  half.y,  half.z),
+        center + rot * Vec3::new(-half.x,  half.y,  half.z),
+    ];
+    // Přední a zadní plocha
+    gizmos.line(c[0], c[1], color); gizmos.line(c[1], c[2], color);
+    gizmos.line(c[2], c[3], color); gizmos.line(c[3], c[0], color);
+    gizmos.line(c[4], c[5], color); gizmos.line(c[5], c[6], color);
+    gizmos.line(c[6], c[7], color); gizmos.line(c[7], c[4], color);
+    // Boční hrany
+    gizmos.line(c[0], c[4], color); gizmos.line(c[1], c[5], color);
+    gizmos.line(c[2], c[6], color); gizmos.line(c[3], c[7], color);
+}
+
+fn draw_sphere_gizmo(gizmos: &mut Gizmos, center: Vec3, rot: Quat, radius: f32, color: Color) {
+    let (rx, ry, rz) = (rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z);
+    draw_arc_gizmo(gizmos, center, rx, ry, radius, 0.0, std::f32::consts::TAU, 24, color);
+    draw_arc_gizmo(gizmos, center, rx, rz, radius, 0.0, std::f32::consts::TAU, 24, color);
+    draw_arc_gizmo(gizmos, center, ry, rz, radius, 0.0, std::f32::consts::TAU, 24, color);
+}
+
+fn draw_cylinder_gizmo(
+    gizmos: &mut Gizmos, center: Vec3, rot: Quat,
+    radius: f32, half_h: f32, color: Color,
+) {
+    let (up, right, fwd) = (rot * Vec3::Y, rot * Vec3::X, rot * Vec3::Z);
+    let (bot, top) = (center - up * half_h, center + up * half_h);
+    draw_arc_gizmo(gizmos, bot, right, fwd, radius, 0.0, std::f32::consts::TAU, 24, color);
+    draw_arc_gizmo(gizmos, top, right, fwd, radius, 0.0, std::f32::consts::TAU, 24, color);
+    gizmos.line(bot + right * radius, top + right * radius, color);
+    gizmos.line(bot - right * radius, top - right * radius, color);
+    gizmos.line(bot + fwd   * radius, top + fwd   * radius, color);
+    gizmos.line(bot - fwd   * radius, top - fwd   * radius, color);
+}
+
+fn draw_capsule_gizmo(
+    gizmos: &mut Gizmos, center: Vec3, rot: Quat,
+    radius: f32, half_seg: f32, color: Color,
+) {
+    let (up, right, fwd) = (rot * Vec3::Y, rot * Vec3::X, rot * Vec3::Z);
+    let (bot, top) = (center - up * half_seg, center + up * half_seg);
+    // Válec
+    draw_arc_gizmo(gizmos, bot, right, fwd, radius, 0.0, std::f32::consts::TAU, 24, color);
+    draw_arc_gizmo(gizmos, top, right, fwd, radius, 0.0, std::f32::consts::TAU, 24, color);
+    gizmos.line(bot + right * radius, top + right * radius, color);
+    gizmos.line(bot - right * radius, top - right * radius, color);
+    gizmos.line(bot + fwd   * radius, top + fwd   * radius, color);
+    gizmos.line(bot - fwd   * radius, top - fwd   * radius, color);
+    // Horní polokoule (2 oblouky)
+    draw_arc_gizmo(gizmos, top, right,  up, radius, 0.0, std::f32::consts::PI, 12, color);
+    draw_arc_gizmo(gizmos, top, fwd,    up, radius, 0.0, std::f32::consts::PI, 12, color);
+    // Dolní polokoule (2 oblouky)
+    draw_arc_gizmo(gizmos, bot, right, -up, radius, 0.0, std::f32::consts::PI, 12, color);
+    draw_arc_gizmo(gizmos, bot, fwd,   -up, radius, 0.0, std::f32::consts::PI, 12, color);
+}
+
+/// Oblouk v rovině `(t1, t2)` od `start` do `end` radiánů.
+fn draw_arc_gizmo(
+    gizmos: &mut Gizmos,
+    center: Vec3, t1: Vec3, t2: Vec3,
+    radius: f32, start: f32, end: f32, segments: u32,
+    color: Color,
+) {
+    let step = (end - start) / segments as f32;
+    let mut prev = center + (t1 * start.cos() + t2 * start.sin()) * radius;
+    for i in 1..=segments {
+        let a = start + i as f32 * step;
+        let next = center + (t1 * a.cos() + t2 * a.sin()) * radius;
+        gizmos.line(prev, next, color);
+        prev = next;
     }
 }
 

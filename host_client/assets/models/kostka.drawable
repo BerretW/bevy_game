@@ -2,9 +2,9 @@ asset_name = "kostka"
 version = "1.1"
 
 [materials]
-"standard" = { template = "standard_pbr", textures = { albedo = { name = "abe_woodbeam01_ab", source = "embedded" }, normal = { name = "abe_woodbeam01_nm", source = "embedded" }, ma = { name = "abe_woodbeam01_ma", source = "embedded" }, mb = { name = "abe_woodbeam01_mb", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.275665, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
-"Material" = { template = "standard_pbr", textures = {}, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
+"standard.003" = { template = "standard_pbr", textures = { albedo = { name = "rr_template_hea_05a_gravel_moss_abte", source = "embedded" }, mrao = { name = "rr_template_hea_05a_gravelbig_ter_ma", source = "embedded" }, normal = { name = "rr_template_hea_05a_gravel_moss_nm", source = "embedded" }, ma = { name = "rr_template_hea_05a_gravelbig_ter_ma", source = "embedded" }, mb = { name = "blank_mb", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
+"standard.004" = { template = "standard_pbr", textures = { albedo = { name = "abe_woodbeam01_ab", source = "embedded" }, mrao = { name = "abe_woodbeam01_ma", source = "embedded" }, normal = { name = "abe_woodbeam01_nm", source = "embedded" }, ma = { name = "abe_woodbeam01_ma", source = "embedded" }, mb = { name = "abe_woodbeam01_mb", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
 
 [entities]
-"Cube" = { type = "MESH", cast_shadows = true }
-"COL_Cube" = { type = "COLLISION", shape = "CONVEX", mass = 1.0, is_static = true, climbable = true, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [] }
+"kostka" = { type = "MESH", cast_shadows = true }
+"COL_kostka" = { type = "COLLISION", shape = "MESH", half_extents = [1.0, 1.0, 1.0], mass = 1.0, is_static = true, climbable = true, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [] }

@@ -50,6 +50,9 @@ fn repeat_sampler() -> ImageSampler {
 #[derive(Asset, TypePath, Debug)]
 pub struct AdmScene {
     pub meshes:      Vec<Handle<Mesh>>,
+    /// AABB per mesh (center, half_extents) — computed from vertex positions during load.
+    /// `None` if the mesh had no position data.
+    pub mesh_aabbs:  Vec<Option<(Vec3, Vec3)>>,
     pub nodes:       Vec<AdmNode>,
     pub embedded:    HashMap<String, Handle<Image>>,
     pub source_path: String,
@@ -151,11 +154,13 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
 
     // Mesh section
     let mut mesh_handles = Vec::with_capacity(mesh_count);
+    let mut mesh_aabbs: Vec<Option<(Vec3, Vec3)>> = Vec::with_capacity(mesh_count);
     for _ in 0..mesh_count {
-        let (name, mesh) = parse_mesh(&mut cur)?;
+        let (name, mesh, aabb) = parse_mesh(&mut cur)?;
         let label = format!("Mesh/{}", name);
         let handle = load_context.add_labeled_asset(label, mesh);
         mesh_handles.push(handle);
+        mesh_aabbs.push(aabb);
     }
 
     // Node section
@@ -202,13 +207,14 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
 
     Ok(AdmScene {
         meshes: mesh_handles,
+        mesh_aabbs,
         nodes,
         embedded,
         source_path,
     })
 }
 
-fn parse_mesh(cur: &mut Cursor<&[u8]>) -> Result<(String, Mesh), AdmError> {
+fn parse_mesh(cur: &mut Cursor<&[u8]>) -> Result<(String, Mesh, Option<(Vec3, Vec3)>), AdmError> {
     let name         = read_string(cur)?;
     let vertex_count = read_u32(cur)? as usize;
     let index_count  = read_u32(cur)? as usize;
@@ -216,11 +222,25 @@ fn parse_mesh(cur: &mut Cursor<&[u8]>) -> Result<(String, Mesh), AdmError> {
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD);
 
+    let mut mesh_aabb: Option<(Vec3, Vec3)> = None;
+
     if attr_flags & ATTR_POS != 0 {
         let raw = read_f32_vec(cur, vertex_count * 3)?;
         let positions: Vec<[f32; 3]> = raw.chunks_exact(3)
             .map(|c| [c[0], c[1], c[2]])
             .collect();
+
+        // Compute AABB from vertex positions.
+        if !positions.is_empty() {
+            let mut min = Vec3::splat(f32::MAX);
+            let mut max = Vec3::splat(f32::MIN);
+            for p in &positions {
+                min = min.min(Vec3::from(*p));
+                max = max.max(Vec3::from(*p));
+            }
+            mesh_aabb = Some(((min + max) * 0.5, (max - min) * 0.5));
+        }
+
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     }
 
@@ -298,7 +318,7 @@ fn parse_mesh(cur: &mut Cursor<&[u8]>) -> Result<(String, Mesh), AdmError> {
     let index_data = read_u32_vec(cur, index_count)?;
     mesh.insert_indices(Indices::U32(index_data));
 
-    Ok((name, mesh))
+    Ok((name, mesh, mesh_aabb))
 }
 
 fn parse_node(cur: &mut Cursor<&[u8]>) -> Result<AdmNode, AdmError> {
@@ -494,6 +514,80 @@ pub fn spawn_adm_scenes(
                 }
                 AdmNodeType::Collision => {
                     entity_cmd.insert(Visibility::Hidden);
+
+                    // Build DrawableCollision from manifest entity def + mesh AABB.
+                    let col = if let Some(manifest) = manifest {
+                        if let Some(crate::manifest::EntityDef::COLLISION {
+                            shape,
+                            half_extents: manifest_he,
+                            radius,
+                            height,
+                            mass,
+                            is_static,
+                            climbable,
+                            ladder,
+                            material,
+                            friction,
+                            restitution,
+                            tags,
+                        }) = manifest.entities.get(&node.name)
+                        {
+                            // Prefer manifest half_extents, then fall back to mesh AABB.
+                            let he = manifest_he
+                                .map(|v| bevy::math::Vec3::new(v[0], v[1], v[2]))
+                                .or_else(|| {
+                                    node.mesh_index
+                                        .and_then(|mi| scene.mesh_aabbs.get(mi))
+                                        .and_then(|ab| ab.as_ref())
+                                        .map(|(_, he)| *he)
+                                });
+
+                            Some(crate::hook::DrawableCollision {
+                                shape: shape.clone(),
+                                half_extents: he,
+                                radius: *radius,
+                                height: *height,
+                                mass: *mass,
+                                is_static: *is_static,
+                                climbable: *climbable,
+                                ladder: *ladder,
+                                material: material.clone(),
+                                friction: *friction,
+                                restitution: *restitution,
+                                tags: tags.clone(),
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Fallback: no manifest — use mesh AABB with sane defaults.
+                    let col = col.or_else(|| {
+                        let he = node.mesh_index
+                            .and_then(|mi| scene.mesh_aabbs.get(mi))
+                            .and_then(|ab| ab.as_ref())
+                            .map(|(_, he)| *he);
+                        Some(crate::hook::DrawableCollision {
+                            shape: crate::manifest::CollisionShape::Box,
+                            half_extents: he,
+                            radius: None,
+                            height: None,
+                            mass: 0.0,
+                            is_static: true,
+                            climbable: false,
+                            ladder: false,
+                            material: crate::manifest::CollisionMaterial::Concrete,
+                            friction: 0.5,
+                            restitution: 0.2,
+                            tags: vec![],
+                        })
+                    });
+
+                    if let Some(col) = col {
+                        entity_cmd.insert(col);
+                    }
                 }
                 AdmNodeType::Empty => {}
             }

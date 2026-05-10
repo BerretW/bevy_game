@@ -199,7 +199,7 @@ pub fn hook_drawable_scenes(
     >,
     names: Query<&Name>,
     mat_names: Query<&GltfMaterialName>,
-    mesh_handles: Query<&Mesh3d>,
+    node_query: Query<(Option<&Mesh3d>, Option<&Children>), Or<(With<Mesh3d>, With<Children>)>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut std_materials: ResMut<Assets<StandardPbrMaterial>>,
     mut env_materials: ResMut<Assets<LayeredEnvMaterial>>,
@@ -228,59 +228,61 @@ pub fn hook_drawable_scenes(
         };
 
         for entity in scene_spawner.iter_instance_entities(scene_ready.0) {
-            let Ok(name) = names.get(entity) else { continue };
-            let Some(entity_def) = manifest.entities.get(name.as_str()) else { continue };
+            // Look up entity definition by name — optional, unnamed primitives still get materials.
+            let entity_def = names.get(entity).ok()
+                .and_then(|n| manifest.entities.get(n.as_str()));
 
-            match entity_def {
-                EntityDef::MESH { cast_shadows } => {
-                    process_mesh_node(
-                        entity,
-                        name.as_str(),
-                        *cast_shadows,
-                        manifest,
-                        &embedded_images,
-                        &fallback,
-                        &mut commands,
-                        &mat_names,
-                        &mesh_handles,
-                        &mut meshes,
-                        &mut stores,
-                        &mut texture_reg,
-                        &asset_server,
-                    );
-                }
-                EntityDef::COLLISION {
-                    shape,
-                    half_extents,
-                    radius,
-                    height,
-                    mass,
-                    is_static,
-                    climbable,
-                    ladder,
-                    material,
-                    friction,
-                    restitution,
-                    tags,
-                } => {
-                    commands.entity(entity).insert((
-                        Visibility::Hidden,
-                        DrawableCollision {
-                            shape: shape.clone(),
-                            half_extents: half_extents.map(|v| Vec3::new(v[0], v[1], v[2])),
-                            radius: *radius,
-                            height: *height,
-                            mass: *mass,
-                            is_static: *is_static,
-                            climbable: *climbable,
-                            ladder: *ladder,
-                            material: material.clone(),
-                            friction: *friction,
-                            restitution: *restitution,
-                            tags: tags.clone(),
-                        },
-                    ));
-                }
+            // COLLISION: hide + store physics metadata, then skip mesh processing.
+            if let Some(EntityDef::COLLISION {
+                shape, half_extents, radius, height, mass, is_static,
+                climbable, ladder, material, friction, restitution, tags,
+            }) = entity_def {
+                commands.entity(entity).insert((
+                    Visibility::Hidden,
+                    DrawableCollision {
+                        shape: shape.clone(),
+                        half_extents: half_extents.map(|v| Vec3::new(v[0], v[1], v[2])),
+                        radius: *radius,
+                        height: *height,
+                        mass: *mass,
+                        is_static: *is_static,
+                        climbable: *climbable,
+                        ladder: *ladder,
+                        material: material.clone(),
+                        friction: *friction,
+                        restitution: *restitution,
+                        tags: tags.clone(),
+                    },
+                ));
+                continue;
+            }
+
+            // MESH: apply material to every entity that owns a Mesh3d.
+            // Handles both single-primitive (entity IS the named node) and
+            // multi-primitive (unnamed primitive children of the named node).
+            if node_query.get(entity).map(|(m, _)| m.is_some()).unwrap_or(false) {
+                let cast_shadows = match entity_def {
+                    Some(EntityDef::MESH { cast_shadows }) => *cast_shadows,
+                    _ => true,
+                };
+                let log_name = names.get(entity)
+                    .map(|n| n.as_str().to_owned())
+                    .unwrap_or_default();
+                process_mesh_node(
+                    entity,
+                    &log_name,
+                    cast_shadows,
+                    manifest,
+                    &embedded_images,
+                    &fallback,
+                    &mut commands,
+                    &mat_names,
+                    &node_query,
+                    &mut meshes,
+                    &mut stores,
+                    &mut texture_reg,
+                    &asset_server,
+                );
             }
         }
 
@@ -302,14 +304,14 @@ fn process_mesh_node(
     fallback: &DrawableFallbackTextures,
     commands: &mut Commands,
     mat_names: &Query<&GltfMaterialName>,
-    mesh_handles: &Query<&Mesh3d>,
+    node_query: &Query<(Option<&Mesh3d>, Option<&Children>), Or<(With<Mesh3d>, With<Children>)>>,
     meshes: &mut Assets<Mesh>,
     stores: &mut MaterialStores<'_>,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) {
     // Sanitizace vertex dat — zajistí, že shadery vždy dostanou platná data
-    if let Ok(mesh_h) = mesh_handles.get(entity) {
+    if let Ok((Some(mesh_h), _)) = node_query.get(entity) {
         if let Some(mesh) = meshes.get_mut(mesh_h.id()) {
             let n = mesh.count_vertices();
             if !mesh.contains_attribute(Mesh::ATTRIBUTE_COLOR) {
@@ -575,6 +577,19 @@ pub(crate) fn build_vehicle_glass(
             shatter_map: shatter_map.unwrap_or_else(|| fallback.white_1px.clone()),
             params: build_params(p, 0.0),
         },
+    }
+}
+
+/// Automaticky skryje entity pojmenované s prefixem `COL_` které nemají `DrawableCollision`.
+/// Pokrývá případ GLB modelů bez `.drawable` manifestu — COL_ uzly by jinak zůstaly viditelné.
+pub fn auto_hide_col_nodes(
+    mut commands: Commands,
+    query: Query<(Entity, &Name), (Added<Name>, Without<DrawableCollision>)>,
+) {
+    for (entity, name) in &query {
+        if name.as_str().starts_with("COL_") {
+            commands.entity(entity).insert(Visibility::Hidden);
+        }
     }
 }
 
