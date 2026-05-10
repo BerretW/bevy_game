@@ -35,6 +35,7 @@ swim_speed       = 2.5     # m/s — plavání
 acceleration     = 28.0    # m/s² — zemní akcelerace
 deceleration     = 35.0    # m/s² — brzení/zastavení na zemi
 air_acceleration = 8.0     # m/s² — vzdušná kontrola (snížená)
+movement_smoothing = 12.0  # 0 = bez vyhlazení, vyšší = rychlejší dorovnání na cílovou rychlost
 
 slope_max_angle  = 46.0    # ° — maximální průchodný sklon
 slope_slide_speed = 4.0    # m/s — rychlost sklouznutí z příkřejšího svahu

@@ -163,6 +163,7 @@ const GROUND_CASTER_MAX_DISTANCE: f32 = 0.12;
 
 /// (player.ped.toml) pokud je načten — jinak se použijí fallback konstanty.
 fn apply_player_movement(
+    time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     cfg: Res<ClientConfigResource>,
     look: Res<CameraLookState>,
@@ -189,10 +190,20 @@ fn apply_player_movement(
     let jump   = keys.pressed(bindings.jump);
 
     // Rychlost pohybu z ped profilu nebo fallback
-    let (run_speed, sprint_speed, crouch_speed) = if let Some(p) = ped {
-        (p.movement.run_speed, p.movement.sprint_speed, p.movement.crouch_speed)
+    let (run_speed, sprint_speed, crouch_speed, movement_smoothing) = if let Some(p) = ped {
+        (
+            p.movement.run_speed,
+            p.movement.sprint_speed,
+            p.movement.crouch_speed,
+            p.movement.movement_smoothing,
+        )
     } else {
-        (PLAYER_MOVE_SPEED, PLAYER_MOVE_SPEED * PLAYER_SPRINT_MULT, PLAYER_MOVE_SPEED * PLAYER_CROUCH_MULT)
+        (
+            PLAYER_MOVE_SPEED,
+            PLAYER_MOVE_SPEED * PLAYER_SPRINT_MULT,
+            PLAYER_MOVE_SPEED * PLAYER_CROUCH_MULT,
+            0.0,
+        )
     };
     let speed = if crouch { crouch_speed } else if sprint { sprint_speed } else { run_speed };
 
@@ -218,8 +229,18 @@ fn apply_player_movement(
 
     for (marker, mut vel, shape_hits) in players.iter_mut() {
         if marker.client_id != lid.0 { continue; }
-        vel.x = world_x * speed;
-        vel.z = world_z * speed;
+        let target_x = world_x * speed;
+        let target_z = world_z * speed;
+
+        if movement_smoothing <= 0.0 {
+            vel.x = target_x;
+            vel.z = target_z;
+        } else {
+            // Exponenciální smoothing: vyšší rate = rychlejší dorovnání.
+            let alpha = (1.0 - (-movement_smoothing * time.delta_secs()).exp()).clamp(0.0, 1.0);
+            vel.x = vel.x + (target_x - vel.x) * alpha;
+            vel.z = vel.z + (target_z - vel.z) * alpha;
+        }
 
         let has_ground_contact = shape_hits
             .map(|hits| {
@@ -402,7 +423,9 @@ fn attach_player_model_to_new_players(
                     .lock_rotation_x()
                     .lock_rotation_y()
                     .lock_rotation_z(),
-                Friction::new(0.0),
+                // Nulové tření s Multiply combine rule zabraňuje "wall-stick"
+                // při kontaktu se stěnou během skoku.
+                Friction::ZERO.with_combine_rule(CoefficientCombine::Multiply),
                 // Ground-check pro jump gating (double_jump=false vyžaduje kontakt se zemí).
                 ShapeCaster::new(
                     Collider::sphere(GROUND_CASTER_RADIUS),

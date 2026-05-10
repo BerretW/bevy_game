@@ -138,6 +138,9 @@ pub struct PedMovement {
     pub deceleration: f32,
     /// Akcelerace ve vzduchu [m/s²] — vzdušná kontrola.
     pub air_acceleration: f32,
+    /// Vyhlazení pohybu: 0 = okamžitá změna, vyšší = rychlejší dorovnání na cílovou rychlost.
+    #[serde(default = "default_movement_smoothing")]
+    pub movement_smoothing: f32,
     /// Maximální úhel svahu po kterém lze chodit [°].
     pub slope_max_angle: f32,
     /// Rychlost sklouznutí ze strmého svahu [m/s].
@@ -164,6 +167,7 @@ impl Default for PedMovement {
             acceleration: 28.0,
             deceleration: 35.0,
             air_acceleration: 8.0,
+            movement_smoothing: default_movement_smoothing(),
             slope_max_angle: 46.0,
             slope_slide_speed: 4.0,
             turn_speed: 0.0,
@@ -172,6 +176,10 @@ impl Default for PedMovement {
             hipfire_speed_mult: 0.9,
         }
     }
+}
+
+fn default_movement_smoothing() -> f32 {
+    12.0
 }
 
 // ---------------------------------------------------------------------------
