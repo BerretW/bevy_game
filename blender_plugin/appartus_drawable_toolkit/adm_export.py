@@ -71,12 +71,6 @@ def _collect_mesh_data(obj, material_index=None):
     uv0_layer = None
     uv1_layer = None
     if uv_layers:
-        uv0_layer = None
-
-        # Blender API compatibility:
-        # - newer versions may expose mesh.uv_layers.active_render
-        # - others expose mesh.uv_layers.active
-        # - render layer can also be flagged per-layer via `active_render`
         uv0_layer = getattr(uv_layers, "active_render", None)
         if uv0_layer is None:
             uv0_layer = getattr(uv_layers, "active", None)
@@ -87,21 +81,19 @@ def _collect_mesh_data(obj, material_index=None):
                     break
         if uv0_layer is None:
             uv0_layer = uv_layers[0]
-
         for layer in uv_layers:
             if layer != uv0_layer:
                 uv1_layer = layer
                 break
+
     col_attrs = getattr(mesh, 'color_attributes', [])
     masks0_attr = None
     masks1_attr = None
-    # Hledáme nejdřív podle kanonického jména (bevy_masks / bevy_masks2)
     for ca in col_attrs:
         if ca.name == ATTR_NAME:
             masks0_attr = ca
         elif ca.name == ATTR_NAME2:
             masks1_attr = ca
-    # Fallback: vezmi první dvě atributy pokud kanonické nebyly nalezeny
     if masks0_attr is None:
         for ca in col_attrs:
             if ca is not masks1_attr:
@@ -113,59 +105,116 @@ def _collect_mesh_data(obj, material_index=None):
                 masks1_attr = ca
                 break
 
+    # Pre-fetch all mesh data in bulk — vastly faster than per-element RNA access
+    loop_count = len(mesh.loops)
+    vert_count = len(mesh.vertices)
+
+    vert_cos = [0.0] * (vert_count * 3)
+    mesh.vertices.foreach_get('co', vert_cos)
+
+    loop_vert_idx = [0] * loop_count
+    mesh.loops.foreach_get('vertex_index', loop_vert_idx)
+
+    loop_nrms = [0.0] * (loop_count * 3)
+    mesh.loops.foreach_get('normal', loop_nrms)
+
+    has_tangents = loop_count > 0 and hasattr(mesh.loops[0], 'tangent')
+    loop_tans = loop_bsigns = None
+    if has_tangents:
+        loop_tans   = [0.0] * (loop_count * 3)
+        loop_bsigns = [0.0] * loop_count
+        mesh.loops.foreach_get('tangent', loop_tans)
+        mesh.loops.foreach_get('bitangent_sign', loop_bsigns)
+
+    uv0_data = uv1_data = None
+    if uv0_layer:
+        uv0_data = [0.0] * (loop_count * 2)
+        uv0_layer.data.foreach_get('uv', uv0_data)
+    if uv1_layer:
+        uv1_data = [0.0] * (loop_count * 2)
+        uv1_layer.data.foreach_get('uv', uv1_data)
+
+    # Color attributes: flat RGBA arrays indexed by loop or vertex
+    def _prefetch_colors(attr):
+        if attr is None:
+            return None
+        n = loop_count if attr.domain == 'CORNER' else vert_count
+        flat = [0.0] * (n * 4)
+        attr.data.foreach_get('color', flat)
+        return (flat, attr.domain)
+
+    masks0_colors = _prefetch_colors(masks0_attr)
+    masks1_colors = _prefetch_colors(masks1_attr)
+
+    def _sample_color(colors_tuple, loop_idx, vi):
+        if colors_tuple is None:
+            return (0, 0, 0, 0)
+        flat, domain = colors_tuple
+        base = (loop_idx if domain == 'CORNER' else vi) * 4
+        return tuple(min(255, int(flat[base + k] * 255)) for k in range(4))
+
+    # Pre-fetch triangle data
+    mesh.calc_loop_triangles()
+    num_tris = len(mesh.loop_triangles)
+    tri_mat_idx   = [0]     * num_tris
+    tri_loops_flat = [0]    * (num_tris * 3)
+    tri_use_smooth = [False] * num_tris
+    tri_nrms_flat  = [0.0]  * (num_tris * 3)
+    mesh.loop_triangles.foreach_get('material_index', tri_mat_idx)
+    mesh.loop_triangles.foreach_get('loops',          tri_loops_flat)
+    mesh.loop_triangles.foreach_get('use_smooth',     tri_use_smooth)
+    mesh.loop_triangles.foreach_get('normal',         tri_nrms_flat)
+
     positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices = [], [], [], [], [], [], [], []
     vert_map = {}
 
-    mesh.calc_loop_triangles()
-    for tri in mesh.loop_triangles:
-        if material_index is not None and tri.material_index != material_index:
+    for ti in range(num_tris):
+        if material_index is not None and tri_mat_idx[ti] != material_index:
             continue
-        for loop_idx in tri.loops:
-            loop = mesh.loops[loop_idx]
-            vi = loop.vertex_index
+        use_smooth = tri_use_smooth[ti]
+        tnx = tri_nrms_flat[ti * 3];  tny = tri_nrms_flat[ti * 3 + 1];  tnz = tri_nrms_flat[ti * 3 + 2]
 
-            nrm = loop.normal if tri.use_smooth else tri.normal
-            nrm_key = (round(nrm.x, 4), round(nrm.y, 4), round(nrm.z, 4))
+        for k in range(3):
+            loop_idx = tri_loops_flat[ti * 3 + k]
+            vi = loop_vert_idx[loop_idx]
 
-            uv0 = uv0_layer.data[loop_idx].uv if uv0_layer else None
-            uv0_key = (round(uv0.x, 5), round(1.0 - uv0.y, 5)) if uv0 else (0.0, 0.0)
-            uv1 = uv1_layer.data[loop_idx].uv if uv1_layer else None
-            uv1_key = (round(uv1.x, 5), round(1.0 - uv1.y, 5)) if uv1 else (0.0, 0.0)
+            if use_smooth:
+                nx = loop_nrms[loop_idx * 3];  ny = loop_nrms[loop_idx * 3 + 1];  nz = loop_nrms[loop_idx * 3 + 2]
+            else:
+                nx, ny, nz = tnx, tny, tnz
+            nrm_key = (round(nx, 4), round(ny, 4), round(nz, 4))
+
+            if uv0_data:
+                u0 = uv0_data[loop_idx * 2];  v0 = 1.0 - uv0_data[loop_idx * 2 + 1]
+                uv0_key = (round(u0, 5), round(v0, 5))
+            else:
+                uv0_key = (0.0, 0.0)
+
+            if uv1_data:
+                u1 = uv1_data[loop_idx * 2];  v1 = 1.0 - uv1_data[loop_idx * 2 + 1]
+                uv1_key = (round(u1, 5), round(v1, 5))
+            else:
+                uv1_key = (0.0, 0.0)
 
             key = (vi, nrm_key, uv0_key, uv1_key)
             if key not in vert_map:
-                idx = len(positions)
-                vert_map[key] = idx
+                new_idx = len(positions)
+                vert_map[key] = new_idx
 
-                p = mesh.vertices[vi].co
-                positions.append(_to_bevy_vec3(p))
-                normals.append(_to_bevy_vec3(nrm))
+                px = vert_cos[vi * 3];  py = vert_cos[vi * 3 + 1];  pz = vert_cos[vi * 3 + 2]
+                positions.append((px, pz, -py))   # Blender→Bevy Y-up
+                normals.append((nx, nz, -ny))
 
-                if hasattr(loop, 'tangent'):
-                    t = loop.tangent
-                    s = loop.bitangent_sign
-                    tangents.append((*_to_bevy_vec3(t), s))
+                if has_tangents:
+                    tx = loop_tans[loop_idx * 3];  ty = loop_tans[loop_idx * 3 + 1];  tz = loop_tans[loop_idx * 3 + 2]
+                    tangents.append((tx, tz, -ty, loop_bsigns[loop_idx]))
                 else:
                     tangents.append((1.0, 0.0, 0.0, 1.0))
 
                 uv0s.append(uv0_key)
-
-                if uv1:
-                    uv1s.append((uv1.x, 1.0 - uv1.y))
-                else:
-                    uv1s.append((0.0, 0.0))
-
-                if masks0_attr:
-                    c = _get_color(masks0_attr, loop_idx, vi)
-                    masks0s.append(tuple(min(255, int(ch * 255)) for ch in c))
-                else:
-                    masks0s.append((0, 0, 0, 0))
-
-                if masks1_attr:
-                    c = _get_color(masks1_attr, loop_idx, vi)
-                    masks1s.append(tuple(min(255, int(ch * 255)) for ch in c))
-                else:
-                    masks1s.append((0, 0, 0, 0))
+                uv1s.append((uv1_data[loop_idx * 2], 1.0 - uv1_data[loop_idx * 2 + 1]) if uv1_data else (0.0, 0.0))
+                masks0s.append(_sample_color(masks0_colors, loop_idx, vi))
+                masks1s.append(_sample_color(masks1_colors, loop_idx, vi))
 
             indices.append(vert_map[key])
 
@@ -194,20 +243,21 @@ def _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, ma
     buf += _pack_str(name)
     buf += struct.pack('<III', len(positions), len(indices), flags)
 
+    # Batch-pack entire arrays at once — avoids O(n²) buffer copies from per-vertex +=
     if has_pos:
-        for p in positions: buf += struct.pack('<3f', *p)
+        buf += struct.pack(f'<{len(positions) * 3}f', *[v for p in positions for v in p])
     if has_nrm:
-        for n in normals:   buf += struct.pack('<3f', *n)
+        buf += struct.pack(f'<{len(normals) * 3}f',   *[v for n in normals   for v in n])
     if has_tan:
-        for t in tangents:  buf += struct.pack('<4f', *t)
+        buf += struct.pack(f'<{len(tangents) * 4}f',  *[v for t in tangents  for v in t])
     if has_uv0:
-        for u in uv0s:      buf += struct.pack('<2f', *u)
+        buf += struct.pack(f'<{len(uv0s) * 2}f',      *[v for u in uv0s      for v in u])
     if has_uv1:
-        for u in uv1s:      buf += struct.pack('<2f', *u)
+        buf += struct.pack(f'<{len(uv1s) * 2}f',      *[v for u in uv1s      for v in u])
     if has_m0:
-        for m in masks0s:   buf += struct.pack('4B', *m)
+        buf += struct.pack(f'{len(masks0s) * 4}B',    *[v for m in masks0s   for v in m])
     if has_m1:
-        for m in masks1s:   buf += struct.pack('4B', *m)
+        buf += struct.pack(f'{len(masks1s) * 4}B',    *[v for m in masks1s   for v in m])
 
     buf += struct.pack(f'<{len(indices)}I', *indices)
     return buf
@@ -380,8 +430,8 @@ def export_adm(filepath, objects=None, export_textures=True):
                         except Exception as e:
                             print(f"[adm_export] nelze exportovat texturu '{img_name}': {e}")
 
-    # Build binary
-    buf = b''
+    # Build binary — bytearray is mutable so += never copies the whole buffer
+    buf = bytearray()
 
     # Header
     buf += b'ADM\x00'

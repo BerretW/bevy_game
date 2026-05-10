@@ -1,5 +1,6 @@
 asset_name = "player"
 version = "1.1"
+ped_physics = "player"
 
 [materials]
 "standard" = { template = "standard_pbr", textures = { albedo = { name = "agu_cs_copper01_ab", source = "embedded" }, mrao = { name = "agu_cs_copper01_ma", source = "embedded" }, normal = { name = "agu_cs_copper01_nm", source = "embedded" }, ma = { name = "agu_cs_copper01_ma", source = "embedded" }, mb = { name = "blank_mb", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }

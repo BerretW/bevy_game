@@ -24,8 +24,8 @@ def ensure_masks2_attribute(mesh: bpy.types.Mesh):
         color_attributes.new(name=ATTR_NAME2, type="BYTE_COLOR", domain="CORNER")
     layer = color_attributes[ATTR_NAME2]
     if created:
-        for item in layer.data:
-            item.color = (1.0, 0.0, 0.0, 1.0)
+        count = len(layer.data)
+        layer.data.foreach_set('color', [1.0, 0.0, 0.0, 1.0] * count)
     color_attributes.active_color = layer
 
 
@@ -46,9 +46,13 @@ def encode_masks2_to_uv(mesh: bpy.types.Mesh):
     src = layer.data
     dst = uv_layer.data
     count = min(len(src), len(dst))
-    for i in range(count):
-        c = src[i].color
-        dst[i].uv = (c[0], c[1])  # R→U (AO), G→V (emissive)
+    # foreach_get/foreach_set is orders of magnitude faster than per-element RNA access
+    colors = [0.0] * (count * 4)
+    src.foreach_get('color', colors)
+    r = colors[0::4]
+    g = colors[1::4]
+    uvs = [v for pair in zip(r, g) for v in pair]  # R→U (AO), G→V (emissive)
+    dst.foreach_set('uv', uvs)
     return UV_MASKS2_NAME
 
 
@@ -72,9 +76,13 @@ def decode_masks2_from_uv(mesh: bpy.types.Mesh) -> bool:
     layer = color_attributes[ATTR_NAME2]
     src   = uv_layer.data
     dst   = layer.data
-    for i in range(min(len(src), len(dst))):
-        uv = src[i].uv
-        dst[i].color = (uv[0], uv[1], 0.0, 1.0)  # U→R (AO), V→G (emissive)
+    count = min(len(src), len(dst))
+    uvs = [0.0] * (count * 2)
+    src.foreach_get('uv', uvs)
+    u = uvs[0::2]
+    v = uvs[1::2]
+    colors = [v for quad in zip(u, v, [0.0]*count, [1.0]*count) for v in quad]
+    dst.foreach_set('color', colors)
     mesh.uv_layers.remove(mesh.uv_layers[UV_MASKS2_NAME])
     return True
 
@@ -107,10 +115,11 @@ def fill_alpha_channel(mesh: bpy.types.Mesh, alpha_value: float):
         color_attributes.new(name=ATTR_NAME, type="BYTE_COLOR", domain="CORNER")
     layer = color_attributes[ATTR_NAME]
     clamped = max(0.0, min(1.0, float(alpha_value)))
-    for color_item in layer.data:
-        color = list(color_item.color)
-        color[3] = clamped
-        color_item.color = color
+    count = len(layer.data)
+    colors = [0.0] * (count * 4)
+    layer.data.foreach_get('color', colors)
+    colors[3::4] = [clamped] * count
+    layer.data.foreach_set('color', colors)
     color_attributes.active_color = layer
 
 
@@ -119,8 +128,8 @@ def fill_vertex_preset(mesh: bpy.types.Mesh, rgba: tuple):
     ensure_mask_attribute(mesh)
     layer = mesh.color_attributes[ATTR_NAME]
     r, g, b, a = (max(0.0, min(1.0, float(v))) for v in rgba)
-    for item in layer.data:
-        item.color = (r, g, b, a)
+    count = len(layer.data)
+    layer.data.foreach_set('color', [r, g, b, a] * count)
 
 
 def duplicate_collision_proxy(

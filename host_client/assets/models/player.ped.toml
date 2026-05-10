@@ -1,0 +1,182 @@
+# ===========================================================================
+# Apparatus Ped Physics Definition — player.ped.toml
+# Fyzikální a pohybový profil výchozího hráčského peda.
+# Reference z .drawable: ped_physics = "player"
+# ===========================================================================
+
+[identity]
+display_name = "Default Player"
+model        = "player"
+
+# ---------------------------------------------------------------------------
+# Fyzikální tvar kapsle (Avian RigidBody)
+# ---------------------------------------------------------------------------
+[capsule]
+radius               = 0.35    # m — poloměr kapsle
+height               = 1.80    # m — celková výška ve stoje
+eye_height           = 1.65    # m — výška kamera/očí nad zemí
+mass                 = 80.0    # kg
+friction             = 0.0     # žádné tření — pohyb řídí movement systém přes LinearVelocity
+restitution          = 0.0     # žádný odraz
+linear_damping_air   = 0.05    # odpor vzduchu (tlumení)
+linear_damping_ground = 0.0    # brzdit na zemi čistě přes deceleration
+
+# ---------------------------------------------------------------------------
+# Pohyb
+# ---------------------------------------------------------------------------
+[movement]
+walk_speed       = 2.8     # m/s — pomalá chůze (walk toggle)
+run_speed        = 5.0     # m/s — výchozí pohyb
+sprint_speed     = 8.5     # m/s — sprint (drží shift)
+crouch_speed     = 2.0     # m/s — podřep
+prone_speed      = 1.2     # m/s — leh
+swim_speed       = 2.5     # m/s — plavání
+
+acceleration     = 28.0    # m/s² — zemní akcelerace
+deceleration     = 35.0    # m/s² — brzení/zastavení na zemi
+air_acceleration = 8.0     # m/s² — vzdušná kontrola (snížená)
+
+slope_max_angle  = 46.0    # ° — maximální průchodný sklon
+slope_slide_speed = 4.0    # m/s — rychlost sklouznutí z příkřejšího svahu
+
+turn_speed       = 0.0     # °/s — 0 = okamžitý snap modelu za směrem pohybu
+idle_threshold   = 0.10    # m/s — pod touto rychlostí = idle animace
+
+ads_speed_mult      = 0.60  # multiplikátor rychlosti při mířidlech
+hipfire_speed_mult  = 0.90  # multiplikátor při střelbě od boku
+
+# ---------------------------------------------------------------------------
+# Postoje (výška kapsle, výška kamery, čas přechodu, modifikátory)
+# ---------------------------------------------------------------------------
+[stances.standing]
+capsule_height   = 1.80
+eye_offset_y     = 1.65
+transition_time  = 0.12    # s
+speed_mult       = 1.0
+spread_bonus_deg = 0.0     # ° — bonus/penalizace spreadu zbraně
+
+[stances.crouching]
+capsule_height   = 1.10
+eye_offset_y     = 0.90
+transition_time  = 0.22    # s
+speed_mult       = 0.45
+spread_bonus_deg = -0.08   # záporné = přesnější
+
+[stances.prone]
+capsule_height   = 0.40
+eye_offset_y     = 0.28
+transition_time  = 0.50    # s
+speed_mult       = 0.22
+spread_bonus_deg = -0.15
+
+# ---------------------------------------------------------------------------
+# Skok
+# ---------------------------------------------------------------------------
+[jump]
+impulse               = 4.5    # m/s — počáteční vertikální rychlost
+double_jump           = false
+double_jump_impulse   = 5.0    # m/s — relevantní jen pokud double_jump = true
+
+coyote_time           = 0.12   # s — grace period po opuštění hrany
+jump_buffer_time      = 0.10   # s — registrace skoku před dopadem
+
+hold_gravity_scale    = 0.65   # gravitace při držení tlačítka (floatier vzestup)
+fall_gravity_scale    = 1.80   # gravitace při pádu (snappier dopad)
+base_gravity_scale    = 1.0    # neutrální gravitace
+
+max_fall_speed        = 28.0   # m/s — terminální rychlost
+grounded_vel_threshold = 0.25  # m/s — detekce "je na zemi"
+
+safe_fall_height      = 4.0    # m — výška pádu bez poškození
+fall_damage_per_meter = 8.0    # HP/m nad safe_fall_height
+
+allow_crouch_jump     = true
+allow_prone_jump      = false
+speed_jump_bonus      = 0.0    # vliv horizontální rychlosti na výšku skoku
+
+# ---------------------------------------------------------------------------
+# Vault / Mantle (výstup přes překážky)
+# ---------------------------------------------------------------------------
+[vault]
+enabled              = true
+max_obstacle_height  = 1.30    # m — maximální přeskočitelná překážka
+min_obstacle_height  = 0.30    # m — pod touto = auto step-up (není vault)
+detection_dist       = 0.55    # m — vzdálenost dopředu pro detekci
+detection_width      = 0.25    # m — šířka detekce (tolerance)
+duration             = 0.50    # s — délka vault pohybu
+arc_height           = 0.25    # m — výška oblouku
+forward_dist         = 0.70    # m — horizontální přesun
+stamina_cost         = 8.0     # stamina cost
+allow_while_sprint   = true
+allow_while_airborne = false
+
+# ---------------------------------------------------------------------------
+# Step-up (automatický výstup na nízké schody a hrany)
+# ---------------------------------------------------------------------------
+[step]
+enabled          = true
+max_step_height  = 0.32    # m
+search_dist      = 0.28    # m
+
+# ---------------------------------------------------------------------------
+# Náklon (lean)
+# ---------------------------------------------------------------------------
+[lean]
+enabled             = true
+max_angle_deg       = 22.0  # ° — maximální náklon těla
+speed               = 10.0  # °/s — rychlost přechodu
+body_offset_max     = 0.30  # m — horizontální offset při maximálním náklonu
+camera_roll         = true
+camera_roll_max_deg = 5.0   # ° — roll kamery při plném náklonu
+head_bob            = true
+
+# ---------------------------------------------------------------------------
+# Stamina
+# ---------------------------------------------------------------------------
+[stamina]
+max                  = 100.0
+sprint_drain         = 14.0   # stamina/s při sprintu
+jump_cost            = 8.0    # stamina za skok
+vault_cost           = 10.0   # stamina za vault
+regen_rate           = 9.0    # stamina/s regenerace
+regen_delay          = 1.50   # s — prodleva před regenerací
+exhausted_threshold  = 10.0   # pod touto hranicí = vyčerpaný stav
+
+[stamina.exhausted]
+speed_mult           = 0.55
+spread_penalty_deg   = 0.90
+ads_sway_mult        = 1.60
+block_sprint         = true
+block_jump           = false
+
+# ---------------------------------------------------------------------------
+# Voda
+# ---------------------------------------------------------------------------
+[water]
+swim_depth_threshold  = 1.20  # m — hloubka pro přechod do plavání
+wade_depth_threshold  = 0.50  # m — brodění (zpomalení)
+wade_speed_mult       = 0.70
+dive_enabled          = true
+breath_capacity       = 30.0  # s — délka dechu pod vodou
+drowning_dps          = 5.0   # HP/s při utopení
+underwater_speed      = 3.0   # m/s
+
+# ---------------------------------------------------------------------------
+# Footstep eventy (pro audio a AI)
+# ---------------------------------------------------------------------------
+[footstep]
+emit_distance_walk    = 0.75  # m — stride při chůzi
+emit_distance_run     = 0.90  # m — stride při běhu
+emit_distance_sprint  = 1.10  # m — stride při sprintu
+emit_distance_crouch  = 0.65  # m — stride v podřepu
+emit_audio_events     = true
+
+# ---------------------------------------------------------------------------
+# Ragdoll
+# ---------------------------------------------------------------------------
+[ragdoll]
+enabled           = true
+hit_impulse       = 200.0   # N·s — impulz při zásahu (hit reactions)
+ko_fall_speed     = 12.0    # m/s — minimální rychlost pádu pro KO ragdoll
+active_duration   = 5.0     # s — jak dlouho je ragdoll aktivní
+angular_damping   = 0.50

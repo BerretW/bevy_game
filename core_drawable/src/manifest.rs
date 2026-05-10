@@ -13,6 +13,11 @@ pub struct DrawableManifest {
     pub materials: HashMap<String, MaterialDef>,
     #[serde(default)]
     pub entities: HashMap<String, EntityDef>,
+    /// Volitelný odkaz na `.ped.toml` soubor (bez přípony).
+    /// Pokud je nastaven, drawable registry automaticky nahraje ped physics profil.
+    /// Příklad: `ped_physics = "player"` → načte `models/player.ped.toml`.
+    #[serde(default)]
+    pub ped_physics: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

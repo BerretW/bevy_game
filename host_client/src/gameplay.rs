@@ -30,6 +30,7 @@ use crate::config::ClientConfigResource;
 use crate::native_assets::AdmHandleCache;
 use crate::drawable::AdmSceneRoot;
 use crate::AppState;
+use crate::drawable::{PedPhysicsDef, PedPhysicsRegistry};
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
 const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
@@ -155,20 +156,26 @@ const PLAYER_MOVE_SPEED: f32 = 5.0;
 const PLAYER_SPRINT_MULT: f32 = 1.8;
 const PLAYER_CROUCH_MULT: f32 = 0.5;
 const PLAYER_JUMP_VEL: f32 = 6.0;
-/// Maximální |vy| při kterém se považuje hráč za přistáno na zemi (pro skok).
+/// Fallback konstanty — použijí se pokud player.ped.toml není ještě načten.
 const GROUND_VEL_THRESHOLD: f32 = 0.25;
+const GROUND_CASTER_RADIUS: f32 = 0.28;
+const GROUND_CASTER_MAX_DISTANCE: f32 = 0.12;
 
-/// Aplikuje horizontální pohyb a skok na lokálního hráče přes Avian LinearVelocity.
-/// Musí běžet před collect_and_send_input v FixedUpdate.
+/// (player.ped.toml) pokud je načten — jinak se použijí fallback konstanty.
 fn apply_player_movement(
     keys: Res<ButtonInput<KeyCode>>,
     cfg: Res<ClientConfigResource>,
     look: Res<CameraLookState>,
     local_client_id: Option<Res<LocalClientId>>,
-    mut players: Query<(&PlayerMarker, &mut LinearVelocity), With<Predicted>>,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
+    mut players: Query<(&PlayerMarker, &mut LinearVelocity, Option<&ShapeHits>), With<Predicted>>,
 ) {
     let Some(lid) = local_client_id else { return };
     let bindings = &cfg.0.input.keys;
+
+    // Načti ped profil pro "player" — fallback na konstanty pokud ještě není ready.
+    let ped = ped_reg.0.get("player").and_then(|h| ped_assets.get(h));
 
     let mut move_x = 0.0f32;
     let mut move_y = 0.0f32;
@@ -181,8 +188,20 @@ fn apply_player_movement(
     let crouch = keys.pressed(bindings.crouch);
     let jump   = keys.pressed(bindings.jump);
 
-    let speed_mult = if crouch { PLAYER_CROUCH_MULT } else if sprint { PLAYER_SPRINT_MULT } else { 1.0 };
-    let speed = PLAYER_MOVE_SPEED * speed_mult;
+    // Rychlost pohybu z ped profilu nebo fallback
+    let (run_speed, sprint_speed, crouch_speed) = if let Some(p) = ped {
+        (p.movement.run_speed, p.movement.sprint_speed, p.movement.crouch_speed)
+    } else {
+        (PLAYER_MOVE_SPEED, PLAYER_MOVE_SPEED * PLAYER_SPRINT_MULT, PLAYER_MOVE_SPEED * PLAYER_CROUCH_MULT)
+    };
+    let speed = if crouch { crouch_speed } else if sprint { sprint_speed } else { run_speed };
+
+    // Parametry skoku z ped profilu nebo fallback
+    let (jump_impulse, grounded_thresh, double_jump_enabled) = if let Some(p) = ped {
+        (p.jump.impulse, p.jump.grounded_vel_threshold, p.jump.double_jump)
+    } else {
+        (PLAYER_JUMP_VEL, GROUND_VEL_THRESHOLD, false)
+    };
 
     // Rotace vstupního vektoru podle yaw kamery (world-space).
     let yaw = look.yaw;
@@ -197,13 +216,31 @@ fn apply_player_movement(
         (world_x, world_z)
     };
 
-    for (marker, mut vel) in players.iter_mut() {
+    for (marker, mut vel, shape_hits) in players.iter_mut() {
         if marker.client_id != lid.0 { continue; }
         vel.x = world_x * speed;
         vel.z = world_z * speed;
-        // Skok: pouze pokud je hráč blízko zemi (malá vertikální rychlost).
-        if jump && vel.y.abs() < GROUND_VEL_THRESHOLD {
-            vel.y = PLAYER_JUMP_VEL;
+
+        let has_ground_contact = shape_hits
+            .map(|hits| {
+                hits.iter().any(|hit| {
+                    // normal2 míří od druhého collideru směrem k casteru.
+                    // Pro "zem pod hráčem" chceme výrazně upward normálu.
+                    (-hit.normal2).dot(Vec3::Y) > 0.35
+                })
+            })
+            .unwrap_or(false);
+
+        let can_jump = if double_jump_enabled {
+            // Legacy fallback: když je double-jump zapnutý, ponecháme i velocity gate.
+            has_ground_contact || vel.y.abs() < grounded_thresh
+        } else {
+            // Požadavek: bez double-jump musí být fyzický kontakt pod hráčem.
+            has_ground_contact
+        };
+
+        if jump && can_jump {
+            vel.y = jump_impulse;
         }
     }
 }
@@ -366,6 +403,15 @@ fn attach_player_model_to_new_players(
                     .lock_rotation_y()
                     .lock_rotation_z(),
                 Friction::new(0.0),
+                // Ground-check pro jump gating (double_jump=false vyžaduje kontakt se zemí).
+                ShapeCaster::new(
+                    Collider::sphere(GROUND_CASTER_RADIUS),
+                    Vec3::ZERO,
+                    Quat::IDENTITY,
+                    Dir3::NEG_Y,
+                )
+                .with_max_distance(GROUND_CASTER_MAX_DISTANCE)
+                .with_max_hits(4),
             ))
             .with_children(|p| {
                 p.spawn((

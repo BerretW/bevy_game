@@ -5,8 +5,14 @@ mod map;
 mod manifest;
 mod material;
 mod registry;
+mod ped;
 
 pub use adm::{AdmLoader, AdmScene, AdmSceneRoot, AdmSceneSpawned, AdmNode, AdmNodeType};
+pub use ped::{PedPhysicsDef, PedPhysicsLoader, PedPhysicsRegistry,
+    PedCapsule, PedMovement, PedStances, StanceDef,
+    PedJump, PedVault, PedStep, PedLean, PedStamina, StaminaExhausted,
+    PedWater, PedFootstep, PedRagdoll,
+};
 pub use hook::{
     DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
     DrawableCollision, DisableDrawableCollisions,
@@ -66,6 +72,9 @@ impl Plugin for DrawablePlugin {
             .register_asset_loader(AdmLoader)
             .init_asset::<DrawableManifest>()
             .register_asset_loader(DrawableManifestLoader)
+                        .init_asset::<PedPhysicsDef>()
+                        .register_asset_loader(PedPhysicsLoader)
+                        .init_resource::<PedPhysicsRegistry>()
             .init_asset::<StandardPbrExtension>()
             .init_asset::<LayeredEnvExtension>()
             .init_asset::<VehicleGlassExtension>()
