@@ -18,6 +18,30 @@ ATTR_NAME2 = "bevy_masks2"
 UV_MASKS2_NAME = "_ads_masks2_uv"
 ADS_VERSION = "1.1"
 
+COLLISION_DEFAULT_MATERIAL = "CONCRETE"
+COLLISION_MATERIAL_ITEMS = [
+    ("CONCRETE", "Concrete", "General concrete surfaces"),
+    ("STONE", "Stone", "Natural or cut stone"),
+    ("BRICK", "Brick", "Brick walls and structures"),
+    ("WOOD", "Wood", "Wooden surfaces and props"),
+    ("METAL", "Metal", "Metal plates and beams"),
+    ("GLASS", "Glass", "Glass panes and objects"),
+    ("DIRT", "Dirt", "Packed soil"),
+    ("GRASS", "Grass", "Grass and foliage ground"),
+    ("SAND", "Sand", "Sand terrain"),
+    ("GRAVEL", "Gravel", "Loose small stones"),
+    ("MUD", "Mud", "Wet soil and mud"),
+    ("SNOW", "Snow", "Snow surfaces"),
+    ("ICE", "Ice", "Ice surfaces"),
+    ("WATER", "Water", "Shallow/deep water volume"),
+    ("RUBBER", "Rubber", "Rubberized surface"),
+    ("PLASTIC", "Plastic", "Plastic panels"),
+    ("CERAMIC", "Ceramic", "Tiles and ceramic surfaces"),
+    ("CARPET", "Carpet", "Soft interior carpet"),
+    ("ASPHALT", "Asphalt", "Road/asphalt surfaces"),
+    ("LADDER_METAL", "Ladder Metal", "Climbable metal ladder surface"),
+]
+
 TEXTURE_SLOT_FIELDS = (
     "albedo",
     "mrao",

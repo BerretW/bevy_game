@@ -156,6 +156,8 @@ fn server_receive_credentials(
         return;
     }
 
+    let ace_registry = bridges.ace.clone();
+
     for (mut rx, remote_id) in receivers.iter_mut() {
         let client_id = match remote_id.0 {
             PeerId::Netcode(id) => id,
@@ -201,6 +203,7 @@ fn server_receive_credentials(
                 // ---- LOGIN ----
                 let results = bridges.auth.results.clone();
                 let pending = bridges.auth.pending.clone();
+                let ace = ace_registry.clone();
                 bridge.executor.query_rust(
                     "SELECT account_id, password_hash FROM users WHERE username = ?".into(),
                     vec![serde_json::Value::String(username.clone())],
@@ -216,6 +219,9 @@ fn server_receive_credentials(
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
+                                // FiveM-style authority principal for ACL rules:
+                                // identifier.user:<account_id>
+                                ace.add_identifier(client_id, format!("user:{}", account_id));
                                 pending
                                     .lock()
                                     .unwrap_or_else(|p| p.into_inner())
@@ -256,6 +262,7 @@ fn server_receive_credentials(
                 let results = bridges.auth.results.clone();
                 let pending = bridges.auth.pending.clone();
                 let executor = bridge.executor.clone();
+                let ace = ace_registry.clone();
 
                 // Step 1: check username is free
                 bridge.executor.query_rust(
@@ -297,6 +304,9 @@ fn server_receive_credentials(
                             ],
                             Box::new(move |insert_result| match insert_result {
                                 DbQueryResult::RowsAffected(_) => {
+                                    // FiveM-style authority principal for ACL rules:
+                                    // identifier.user:<account_id>
+                                    ace.add_identifier(client_id, format!("user:{}", account_id2));
                                     pending2
                                         .lock()
                                         .unwrap_or_else(|p| p.into_inner())

@@ -39,12 +39,25 @@ mod vertex_painter;
 // ─── Spuštění ─────────────────────────────────────────────────────────────────
 
 fn main() {
-    // Přeskočíme první arg (název exe) a filtrujeme cargo/OS flagy (začínají '-').
-    let model_paths: Vec<PathBuf> = std::env::args()
-        .skip(1)
-        .filter(|a| !a.starts_with('-'))
-        .map(PathBuf::from)
-        .collect();
+    // Přeskočíme první arg (název exe) a filtrujeme cargo/OS flagy.
+    // Když někdo omylem spustí binárku s `--features dynamic_linking`,
+    // ignorujeme i následující hodnotu, aby se nebrala jako cesta modelu.
+    let mut model_paths: Vec<PathBuf> = Vec::new();
+    let mut skip_next = false;
+    for arg in std::env::args().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--features" || arg == "-F" {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        model_paths.push(PathBuf::from(arg));
+    }
 
     let title = match model_paths.as_slice() {
         [] => "ADS Model Viewer".to_string(),
@@ -122,7 +135,7 @@ const WEATHER_PRESETS: &[(f32, f32, f32, f32, &str)] = &[
     (0.0, 0.0, 0.0, 0.0, "clean"),
     (0.0, 1.0, 0.0, 0.5, "dirty"),
     (0.0, 0.0, 1.0, 0.8, "wet"),
-    (0.6, 0.0, 0.0, 0.0, "snowy"),
+    (1.0, 0.0, 0.0, 0.0, "snowy"),
     (0.2, 0.6, 0.3, 0.5, "combined"),
 ];
 

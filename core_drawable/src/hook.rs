@@ -11,7 +11,7 @@ use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 
 use core_resources::ModelName;
 
-use crate::manifest::{DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
+use crate::manifest::{CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
 use crate::material::{
     DrawableParams,
     LayeredEnvExtension, LayeredEnvMaterial,
@@ -67,6 +67,25 @@ pub struct SceneReadyId(InstanceId);
 /// Marker: drawable hooking byl dokončen. Systém entitu přeskočí.
 #[derive(Component)]
 pub struct DrawableHooked;
+
+/// Runtime kolizní definice odvozená z `.drawable` manifestu.
+///
+/// Fyzikální backend (Avian/Rapier) může tento komponent převést na skutečný collider.
+#[derive(Component, Debug, Clone)]
+pub struct DrawableCollision {
+    pub shape: CollisionShape,
+    pub half_extents: Option<Vec3>,
+    pub radius: Option<f32>,
+    pub height: Option<f32>,
+    pub mass: f32,
+    pub is_static: bool,
+    pub climbable: bool,
+    pub ladder: bool,
+    pub material: CollisionMaterial,
+    pub friction: f32,
+    pub restitution: f32,
+    pub tags: Vec<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Observer: zachytí SceneInstanceReady a uloží InstanceId
@@ -230,9 +249,37 @@ pub fn hook_drawable_scenes(
                         &asset_server,
                     );
                 }
-                EntityDef::COLLISION { .. } => {
-                    // Phase 5: physics. Prozatím jen schováme vizuál.
-                    commands.entity(entity).insert(Visibility::Hidden);
+                EntityDef::COLLISION {
+                    shape,
+                    half_extents,
+                    radius,
+                    height,
+                    mass,
+                    is_static,
+                    climbable,
+                    ladder,
+                    material,
+                    friction,
+                    restitution,
+                    tags,
+                } => {
+                    commands.entity(entity).insert((
+                        Visibility::Hidden,
+                        DrawableCollision {
+                            shape: shape.clone(),
+                            half_extents: half_extents.map(|v| Vec3::new(v[0], v[1], v[2])),
+                            radius: *radius,
+                            height: *height,
+                            mass: *mass,
+                            is_static: *is_static,
+                            climbable: *climbable,
+                            ladder: *ladder,
+                            material: material.clone(),
+                            friction: *friction,
+                            restitution: *restitution,
+                            tags: tags.clone(),
+                        },
+                    ));
                 }
             }
         }
@@ -352,6 +399,7 @@ pub(crate) fn build_params(p: &MaterialParams, mb_alpha_threshold: f32) -> Drawa
             p.l1_tiling.unwrap_or(1.0),
             mb_alpha_threshold,
         ),
+        flags: Vec4::ZERO,
     }
 }
 
@@ -382,6 +430,7 @@ pub(crate) fn build_standard_pbr(
     let normal  = def.textures.get("normal") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let palette = def.textures.get("palette").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let snow    = def.textures.get("snow")   .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let ma      = def.textures.get("ma")     .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let mb      = def.textures.get("mb")     .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
 
     let has_mb = mb.is_some();
@@ -409,13 +458,18 @@ pub(crate) fn build_standard_pbr(
     }
 
     let white = || fallback.white_1px.clone();
+    let mut params = build_params(p, mb_threshold);
+    params.flags.x = if ma.is_some() { 1.0 } else { 0.0 };
+    params.flags.y = if snow.is_some() { 1.0 } else { 0.0 };
+
     StandardPbrMaterial {
         base,
         extension: StandardPbrExtension {
             palette: palette.unwrap_or_else(white),
             snow:    snow.unwrap_or_else(white),
+            ma:      ma.unwrap_or_else(white),
             mb:      mb.unwrap_or_else(white),
-            params:  build_params(p, mb_threshold),
+            params,
         },
     }
 }
@@ -433,7 +487,10 @@ pub(crate) fn build_layered_env(
     let mrao          = def.textures.get("mrao")          .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let normal        = def.textures.get("normal")        .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let layer1_albedo = def.textures.get("layer1_albedo") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let layer1_mrao   = def.textures.get("layer1_mrao")   .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let layer1_normal = def.textures.get("layer1_normal") .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let snow          = def.textures.get("snow")          .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let ma            = def.textures.get("ma")            .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let mb            = def.textures.get("mb")            .map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
 
     let has_mb = mb.is_some();
@@ -461,13 +518,20 @@ pub(crate) fn build_layered_env(
     }
 
     let white = || fallback.white_1px.clone();
+    let mut params = build_params(p, mb_threshold);
+    params.flags.x = if ma.is_some() { 1.0 } else { 0.0 };
+    params.flags.y = if snow.is_some() { 1.0 } else { 0.0 };
+
     LayeredEnvMaterial {
         base,
         extension: LayeredEnvExtension {
             layer1_albedo: layer1_albedo.unwrap_or_else(white),
             layer1_normal: layer1_normal.unwrap_or_else(white),
+            layer1_mrao:   layer1_mrao.unwrap_or_else(white),
+            snow:          snow.unwrap_or_else(white),
+            ma:            ma.unwrap_or_else(white),
             mb:            mb.unwrap_or_else(white),
-            params:        build_params(p, mb_threshold),
+            params,
         },
     }
 }
@@ -475,7 +539,7 @@ pub(crate) fn build_layered_env(
 pub(crate) fn build_vehicle_glass(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
-    _fallback: &DrawableFallbackTextures,
+    fallback: &DrawableFallbackTextures,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) -> VehicleGlassMaterial {
@@ -483,6 +547,7 @@ pub(crate) fn build_vehicle_glass(
 
     let albedo = def.textures.get("albedo").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
     let normal = def.textures.get("normal").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
+    let shatter_map = def.textures.get("shatter_map").map(|t| resolve_tex(t, embedded_images, texture_reg, asset_server));
 
     // Průhlednost ze tint alpha, fallback 0.3 (tmavé záhadné sklo)
     let glass_alpha = p.tint.map(|t| t[3]).unwrap_or(0.3);
@@ -506,7 +571,10 @@ pub(crate) fn build_vehicle_glass(
 
     VehicleGlassMaterial {
         base,
-        extension: VehicleGlassExtension { params: build_params(p, 0.0) },
+        extension: VehicleGlassExtension {
+            shatter_map: shatter_map.unwrap_or_else(|| fallback.white_1px.clone()),
+            params: build_params(p, 0.0),
+        },
     }
 }
 

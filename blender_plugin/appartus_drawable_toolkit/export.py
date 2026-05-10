@@ -6,6 +6,28 @@ from .mesh import is_collision_object
 from .material import get_template_texture_specs, material_texture_value, build_material_inline
 
 
+def _collision_shape_inline(obj, shape: str) -> str:
+    dims = obj.dimensions
+    sx = max(0.0001, float(dims.x))
+    sy = max(0.0001, float(dims.y))
+    sz = max(0.0001, float(dims.z))
+    if shape == "BOX":
+        hx = sx * 0.5
+        hy = sy * 0.5
+        hz = sz * 0.5
+        return (
+            f'half_extents = [{format_float(hx)}, {format_float(hy)}, {format_float(hz)}], '
+        )
+    if shape == "SPHERE":
+        radius = max(sx, sy, sz) * 0.5
+        return f"radius = {format_float(radius)}, "
+    if shape in ("CAPSULE", "CYLINDER"):
+        radius = max(sx, sy) * 0.5
+        height = sz
+        return f"radius = {format_float(radius)}, height = {format_float(height)}, "
+    return ""
+
+
 def gather_target_meshes(context, settings):
     scope = settings.export_scope
     if scope == "SELECTED":
@@ -33,6 +55,10 @@ def validate_export_consistency(target_meshes):
             props = obj.bevy_toolkit_obj
             if not props.is_static and props.mass <= 0.0:
                 warnings.append(f"Collision '{obj.name}' is dynamic but mass <= 0")
+            if props.col_ladder and not props.col_climbable:
+                warnings.append(
+                    f"Collision '{obj.name}' has Ladder=true but Climbable=false (ladder will not be climbable)"
+                )
 
     for obj in target_meshes:
         for slot in obj.material_slots:
@@ -83,13 +109,19 @@ def build_drawable_toml(asset_name: str, target_meshes, used_materials) -> list:
             props      = obj.bevy_toolkit_obj
             tags       = parse_tags(props.tags_csv)
             tags_array = "[" + ", ".join(f'"{toml_escape(tag)}"' for tag in tags) + "]"
+            shape = props.col_shape
+            shape_inline = _collision_shape_inline(obj, shape)
             lines.append(
                 key
                 + " = { "
                 + 'type = "COLLISION", '
-                + f'shape = "{props.col_shape}", '
+                + f'shape = "{shape}", '
+                + shape_inline
                 + f"mass = {format_float(props.mass)}, "
                 + f"is_static = {bool_to_toml(props.is_static)}, "
+                + f"climbable = {bool_to_toml(props.col_climbable)}, "
+                + f"ladder = {bool_to_toml(props.col_ladder)}, "
+                + f'material = "{props.col_material}", '
                 + f"friction = {format_float(props.friction)}, "
                 + f"restitution = {format_float(props.restitution)}, "
                 + f"tags = {tags_array}"

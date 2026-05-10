@@ -11,7 +11,7 @@ use crate::cmd_queue::{
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
-use crate::model_registry::{process_model_commands, ModelCommandQueue, ModelRegistry};
+use crate::model_registry::{process_model_commands, refresh_model_load_states, ModelCommandQueue, ModelRegistry};
 use crate::resolver::resolve_load_order;
 use crate::gui::{FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
 use crate::sandbox::{GameBridges, LocalEventBus, LuaSandbox};
@@ -99,7 +99,7 @@ impl Plugin for ResourcesPlugin {
         // Phase 3.4 - Model Registry
         app.init_resource::<ModelRegistry>();
         app.init_resource::<ModelCommandQueue>();
-        app.add_systems(PostUpdate, process_model_commands);
+        app.add_systems(PostUpdate, (process_model_commands, refresh_model_load_states).chain());
 
         // Phase 3.8 - Cross-sandbox local event bus
         app.init_resource::<LocalEventBus>();
@@ -315,6 +315,7 @@ fn rebuild(
             cmd_queue.clone(),
             local_bus.clone(),
             model_cmds.clone(),
+            model_registry.clone(),
             bridges.raycast.clone(),
             bridges.engine.clone(),
             bridges.input.clone(),

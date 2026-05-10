@@ -21,12 +21,15 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{ConnectionInfo, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, ModelRegistry};
+use core_resources::{ConnectionInfo, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, ModelName, ModelRegistry};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
+use crate::native_assets::AdmHandleCache;
+use crate::drawable::AdmSceneRoot;
+use crate::physics::CollisionWorld;
 use crate::AppState;
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
@@ -503,6 +506,10 @@ fn collect_and_send_input(
     keys: Res<ButtonInput<KeyCode>>,
     cfg: Res<ClientConfigResource>,
     mouse: Res<ButtonInput<MouseButton>>,
+    fixed_time: Res<Time<Fixed>>,
+    local_client_id: Option<Res<LocalClientId>>,
+    collision_world: Res<CollisionWorld>,
+    predicted_players: Query<(&PlayerMarker, &NetTransform), With<Predicted>>,
     look: Res<CameraLookState>,
     mut senders: Query<&mut MessageSender<PlayerInput>>,
     mut tick: Local<u32>,
@@ -537,6 +544,43 @@ fn collect_and_send_input(
     let world_move_x = right_x * move_x + forward_x * move_y;
     let world_move_z = right_z * move_x + forward_z * move_y;
 
+    let mut clamped_move_x = world_move_x;
+    let mut clamped_move_z = world_move_z;
+
+    if (world_move_x != 0.0 || world_move_z != 0.0)
+        && local_client_id.is_some()
+        && !collision_world.colliders.is_empty()
+    {
+        let crouching = keys.pressed(bindings.crouch);
+        let sprinting = keys.pressed(bindings.sprint) && !crouching;
+
+        let mut move_speed = core_net::sim::PLAYER_MOVE_SPEED;
+        if sprinting {
+            move_speed *= core_net::sim::PLAYER_SPRINT_MULTIPLIER;
+        }
+        if crouching {
+            move_speed *= core_net::sim::PLAYER_CROUCH_MULTIPLIER;
+        }
+
+        if let Some(local_id) = local_client_id {
+            let player_pos = predicted_players
+                .iter()
+                .find(|(marker, _)| marker.client_id == local_id.0)
+                .map(|(_, t)| t.translation);
+
+            if let Some(player_pos) = player_pos {
+                let move_dir = Vec3::new(world_move_x, 0.0, world_move_z);
+                let move_delta = move_dir * move_speed * fixed_time.delta_secs();
+                let next_pos = player_pos + move_delta;
+
+                if intersects_static_collider(next_pos, &collision_world) {
+                    clamped_move_x = 0.0;
+                    clamped_move_z = 0.0;
+                }
+            }
+        }
+    }
+
     let mut actions = 0u32;
     if mouse.pressed(mouse_b.attack_primary) { actions |= player_action::PRIMARY_FIRE; }
     if mouse.pressed(mouse_b.attack_secondary) { actions |= player_action::SECONDARY_FIRE; }
@@ -551,7 +595,7 @@ fn collect_and_send_input(
     let yaw = look.yaw.to_degrees();
 
     let input = PlayerInput {
-        move_dir: [world_move_x, world_move_z],
+        move_dir: [clamped_move_x, clamped_move_z],
         look: [yaw, 0.0],
         actions,
         client_tick: *tick,
@@ -560,6 +604,36 @@ fn collect_and_send_input(
     for mut sender in senders.iter_mut() {
         let _ = sender.send::<InputChannel>(input.clone());
     }
+}
+
+fn intersects_static_collider(next_player_pos: Vec3, world: &CollisionWorld) -> bool {
+    // Hráč aproximován capsule → AABB obálka pro rychlé broad-phase blokování pohybu.
+    let player_half = Vec3::new(0.35, 0.9, 0.35);
+    let player_min = Vec3::new(
+        next_player_pos.x - player_half.x,
+        next_player_pos.y,
+        next_player_pos.z - player_half.z,
+    );
+    let player_max = Vec3::new(
+        next_player_pos.x + player_half.x,
+        next_player_pos.y + player_half.y * 2.0,
+        next_player_pos.z + player_half.z,
+    );
+
+    world.colliders.iter().filter(|c| c.is_static).any(|c| {
+        let col_min = c.center - c.half_extents;
+        let col_max = c.center + c.half_extents;
+        aabb_intersects(player_min, player_max, col_min, col_max)
+    })
+}
+
+fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
+    a_min.x <= b_max.x
+        && a_max.x >= b_min.x
+        && a_min.y <= b_max.y
+        && a_max.y >= b_min.y
+        && a_min.z <= b_max.z
+        && a_max.z >= b_min.z
 }
 
 /// Publikuje stav inputu do Lua local event busu jako `input:state`.
@@ -730,14 +804,15 @@ fn handle_engine_cmds(
     }
 }
 
-/// Prida Sprite na lokalni objekty spawnute pres `World.SpawnLocalObject`.
-/// Bez vizualu by byly neviditelne.
+/// Přidá vizuál na lokální objekty spawnuté přes `World.SpawnLocalObject`.
+/// Rozlišuje .adm (AdmSceneRoot) a .glb/.gltf (SceneRoot #Scene0).
 fn attach_mesh_to_local_objects(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     model_registry: Res<ModelRegistry>,
+    adm_cache: Res<AdmHandleCache>,
     new_objs: Query<
         (Entity, &LocalObjectMarker),
         (With<LocalObjectMarker>, Without<LocalObjectVisualAttached>),
@@ -753,25 +828,35 @@ fn attach_mesh_to_local_objects(
         ));
 
         if let Some(path) = model_registry.path(&marker.model) {
-            let scene_path = AssetPath::from_path_buf(path.clone()).with_label("Scene0");
-            let scene: Handle<Scene> = asset_server.load_override(scene_path);
-            commands.entity(entity).with_children(|p| {
-                p.spawn((
-                    SceneRoot(scene),
-                    Transform::from_xyz(0.0, 0.0, 0.0),
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext == "adm" {
+                // ADM: načti přes AdmSceneRoot — DrawablePlugin ho spawne do potomků.
+                let handle = adm_cache.0.get(&marker.model).cloned().unwrap_or_else(|| {
+                    let bevy_path = path.to_string_lossy().replace('\\', "/");
+                    asset_server.load(bevy_path)
+                });
+                commands.entity(entity).insert((
+                    AdmSceneRoot(handle),
+                    ModelName(marker.model.clone()),
                 ));
-            });
+            } else {
+                // GLB / GLTF: standardní #Scene0 label
+                let scene_path = AssetPath::from_path_buf(path.clone()).with_label("Scene0");
+                let scene: Handle<Scene> = asset_server.load_override(scene_path);
+                commands.entity(entity).with_children(|p| {
+                    p.spawn((SceneRoot(scene), Transform::default()));
+                });
+            }
             continue;
         }
 
-        // Fallback: neznamy model = default kostka (debugitelne chovani).
+        // Fallback: neznámý model = zelená kostka (viditelné debugovatelné chování).
         commands.entity(entity).insert((
             Mesh3d(meshes.add(Cuboid::new(0.9, 0.9, 0.9))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.2, 0.85, 0.3),
                 ..default()
             })),
-            Transform::from_xyz(0.0, 0.45, 0.0),
         ));
         warn!(
             "[gameplay/client] LocalObject '{}' not found in ModelRegistry; using fallback cube",

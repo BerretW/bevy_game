@@ -15,6 +15,7 @@ mod gameplay;
 mod gui_render;
 mod lobby;
 mod native_assets;
+mod physics;
 
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
@@ -200,6 +201,7 @@ fn main() {
             ClientCorePlugin,
             FramepacePlugin,
         ))
+        .add_plugins(physics::ClientPhysicsPlugin)
         .insert_resource(FramepaceSettings { limiter: framepace_limiter })
         .run();
 }

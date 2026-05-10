@@ -175,6 +175,9 @@ files {
 - [X] Jump + crouch movement: server sim aplikuje `JUMP` na vertikální rychlost (`NetVelocity.y`) s gravitací/ground clampem; `CROUCH` snižuje rychlost pohybu (a blokuje sprint multiplier)
 - [X] Lua eventy `onPlayerHit` + `onPlayerDeath` emitované serverem přes `LocalEventBus` (JSON payload: attacker, victim, damage, weapon, position)
 - [X] Lua eventy `playerConnecting` + `playerDropped` při connect/disconnect (observer na `Add<Connected>` / `Remove<Connected>`)
+- [X] FiveM-style ACE authority aliases v Lua globals (`AddAce`, `RemoveAce`, `AddPrincipal`, `RemovePrincipal`, `IsAceAllowed`, `IsPrincipalAceAllowed`, `IsPlayerAceAllowed`) nad `ACE.*` namespace
+- [X] Rust auth flow po úspěšném login/register automaticky registruje ACE identifier principal `identifier.user:<account_id>`
+- [X] Server disconnect cleanup automaticky volá ACE purge (`remove_player`) pro `player:{id}` + jeho identifiers
 
 #### 3.4 — Global Model Registry ✅
 
@@ -182,7 +185,7 @@ files {
 - [X] `vfs.rs::scan_stream_models()` — prochází složku `stream/` každého resource (`.glb`, `.gltf`, `.obj`, `.fbx`, `.col`, `.mesh`; konflikty: logovat + first-wins)
 - [X] `process_model_commands` systém (PostUpdate) — drainuje `ModelCommandQueue`, aplikuje `Request`/`Release` na `ModelRegistry`
 - [X] Lua API: `Engine.RequestModel(name)`, `Engine.HasModelLoaded(name) -> bool`, `Engine.SetModelAsNoLongerNeeded(name)`
-- [ ] Async load modelu z disku do GPU (Phase 4 — vyžaduje Bevy AssetServer integraci)
+- [X] Async load modelu z disku do GPU — `Engine.RequestModel` spouští `AssetServer::load_untyped`, `refresh_model_load_states` polluje `LoadState`, `Engine.HasModelLoaded` vrací `true` po dokončení loadu (server/headless fallback = dostupný model)
 
 #### 3.5 — YMAP World Objects ✅ (základ)
 
@@ -220,7 +223,7 @@ files {
 - [X] Robustní init pro resources: `sq:ready` request/response pattern (client `TriggerServerEvent`, server unicast `sq:init`), odolné vůči missed join eventu po reloadu
 - [X] `TriggerClientEvent` nyní akceptuje `target` i jako string u64 (`"123..."`) kvůli Lua number precision limitům
 - [X] Lua-safe player identity: server event payloady (`playerConnecting`, `playerDropped`, `onPlayerPosition`, combat eventy) posílají `id`/`attacker`/`victim` jako stringy; klient clampuje `client_id` do i64 rozsahu
-- [ ] Vystavit `Stats`, `Inventory` komponenty do Lua přes bridge (Phase 4)
+- [ ] Vystavit `Stats`, `Inventory` komponenty do Lua přes bridge (Phase 4) — základ implementován (`Stats`/`Inventory` komponenty, `PlayerStatsCache`, `LuaCommand::SetStat/GiveItem`, `Player.GetStats/GetInventory/SetStat/GiveItem/TakeItem`), ale `Player` namespace je při init přepsán client-only tabulkou s `GetLocalStats`, takže bridge není plně dostupný
 
 #### 3.9 — Entity State API ✅
 
@@ -240,6 +243,10 @@ files {
 
 - [X] **Dual resource loading** — `resolve_path_relative_to_exe` s třístupňovým fallbackem: exe_dir → CWD → `../resources` (pro `cargo run` z build directory)
 - [X] **ADS Blender toolkit refresh** — `blender_plugin/bevy_toolkit.py` exportuje ADS-compliant `.toml` (`asset_name`, `version`, `[materials]`, `[entities]`), podporuje `MESH`/`COLLISION` metadata, texture source (`shared`/`embedded`), vertex mask workflow včetně alpha kanálu, export scope (`ALL`/`SELECTED`/`ACTIVE_COLLECTION`), konzistenční validační warningy před exportem a Sollumz-like workflow (`Convert to Drawable Model`, `Convert to Drawable`, `Create Drawable`, material conversion/embed utility) včetně robustního mapování textur z Principled BSDF graphu, template-specific preview node graphů pro `standard_pbr`/`layered_env`/`vehicle_glass` a deterministického parentingu COL proxy objektů
+- [X] ADS exporter nyní používá aktivní render UV mapu jako `UV0` (místo fixního `uv_layers[0]`) a při deduplikaci vrcholů bere v potaz i `UV1`, takže změny UV map v Blenderu odpovídají výsledku ve vieweru
+- [X] ADS texture loading nyní používá `Repeat` sampler pro embedded ADM i shared DDS textury, aby UV tiling mimo rozsah 0..1 nevedl ke clamp/stretch artefaktům
+- [X] ADS collision export rozšířen o primitive parametry (`half_extents`, `radius`, `height`) generované z Blender rozměrů objektu dle `shape` (BOX/SPHERE/CAPSULE/CYLINDER)
+- [X] ADS collision metadata rozšířena o gameplay flagy `climbable`, `ladder` a `material` (20 předdefinovaných surface typů pro audio/fx routing)
 - [X] **Vlastní GUI framework** — immediate-mode Lua drawing API (`Gui.*`) + Lua threading (`CreateThread` / `Wait`)
   - [X] `GuiDrawBuffer(Arc<Mutex<Vec<DrawCommand>>>)` — sdílený buffer Lua ↔ Bevy
   - [X] `Gui.DrawRect(x, y, w, h, r, g, b, a)` — vyplněný obdélník (normalizované 0–1 souřadnice)
@@ -262,16 +269,19 @@ files {
 - [ ] Integrovat `sqlx` a namapovat Lua Database exporty (základ přítomen jako stub)
 - [ ] Umožnit Lua resources registrovat vlastní WGSL shadery a aplikovat je na materiály
 - [X] **Apparatus Drawable System (ADS)** — data-driven asset container (`[name].glb` + `[name].drawable` TOML manifest)
-  - [X] `DrawableManifest` serde struktury (`MaterialDef`, `EntityDef::MESH/COLLISION`, `TextureInfo`, `MaterialParams`)
+  - [X] `DrawableManifest` serde struktury (`MaterialDef`, `EntityDef::MESH/COLLISION`, `TextureInfo`, `MaterialParams`) + optional collision dimenze (`half_extents`, `radius`, `height`) + collision gameplay metadata (`climbable`, `ladder`, `material`)
   - [X] `DrawableManifestLoader` — Bevy `AssetLoader` pro příponu `.drawable` (TOML 1.1)
   - [X] `DrawableManifestRegistry` — mapa `model_name → Handle<DrawableManifest>`, plněná z `NativeAssetsPlugin`
   - [X] `TextureRegistry` — globální cache sdílených DDS textur (`source = "shared"`)
   - [X] `DrawableMaterial` = `ExtendedMaterial<StandardMaterial, DrawableExtension>` s weather parametry
   - [X] `drawable_extension.wgsl` — fragment shader: vertex color masky (R=layer, G=dirt, B=wet, A=palette), sníh, špína, vlhkost, 1D paleta LUT
+  - [X] Shader parity s Blender preview graphy: `standard_pbr` / `layered_env` / `vehicle_glass` aktualizované na 1:1 mix logiku (dirt/wet/snow/roughness chain, MA override, AO/emissive masky, shatter alpha)
+  - [X] AO fallback pro `bevy_masks2` (`UV1`) ve všech ADS WGSL shaderech — při neinitializovaném `(0,0)` se použije AO=1, aby model ve vieweru nezčernal
+  - [X] Procedurální snow fallback (když chybí `snow` textura) nyní používá detail z normal mapy (`pbr_input.N`) pro akumulaci a přidává "hmotu" přes snow normal blending směrem k world-up
   - [X] `SceneReadyId` observer (`On<SceneInstanceReady>`) + `hook_drawable_scenes` polling systém
   - [X] Vertex color sanitizace (fill `[0,0,0,0]` pokud mesh nemá `ATTRIBUTE_COLOR`)
   - [X] Material swap: GLTF `StandardMaterial` → `DrawableMaterial` podle `[entities]`/`[materials]` v manifestu
-  - [X] COL_ uzly: Schování (`Visibility::Hidden`) — Phase 5 přidá Avian colliders
+  - [X] COL_ uzly: schování (`Visibility::Hidden`) + runtime `DrawableCollision` komponenta (shape + fyzikální metadata) jako bridge pro Phase 5 fyziku
   - [X] `NativeAssetsPlugin` rozšířen o scan `assets/models/*.drawable`
   - [X] Add-on je přejmenovaný na `Appartu Drawable Toolkit` v Blender UI; export ADS používá `Object.bevy_toolkit_obj.export_name` nebo název aktivního mesh objektu jako `asset_name` pro `.drawable` a `.adm` místo názvu scény / .blend souboru
   - [X] Objektový panel v Blenderu teď obsahuje exportní blok a `Export Name`; exportní název se automaticky předvyplní z názvu objektu při konverzi/vytvoření
@@ -281,6 +291,19 @@ files {
 ### Phase 5 — FPS Core Systems
 
 **Filosofie Phase 5:** Rust Core implementuje fyzikální engine, datové kontrakty a autoritativní simulaci. Lua Resources definují vše herně specifické — zbraně, munici, hitboxy, herní módy. Žádná konkrétní zbraň nebo herní pravidlo se nesmí hardcodovat do Rustu.
+
+#### 5.0 — Collision Foundation (in progress)
+
+- [X] Blender ADS export COLLISION entit rozšířen o primitive dimensions (`half_extents`, `radius`, `height`)
+- [X] `core_drawable` ingestuje COLLISION metadata do runtime komponenty `DrawableCollision`
+- [X] `host_client::physics::ClientPhysicsPlugin` buduje engine-native `CollisionWorld` cache (`WorldCollider`) z `DrawableCollision` + `GlobalTransform` každý frame
+- [X] COLLISION metadata obsahují movement flagy `climbable`, `ladder` pro budoucí traversal systém (ledge/ladder logic)
+- [X] COLLISION metadata obsahují `material` enum (20 typů) pro `core/audio` a dopadové VFX routing (footsteps, bullet impacts, debris)
+- [X] `CollisionMaterial` má helper routing API (`footstep_profile`, `impact_profile`) pro rychlé napojení sound/fx resources
+- [X] Klientský movement gate: `collect_and_send_input` blokuje pohyb do statických `CollisionWorld` colliderů přes AABB broad-phase test (okamžité zastavení o objekty)
+- [ ] Narrow-phase solver a rigid-body backend (dočasně bez externí crate kvůli Bevy 0.18 kompatibilitě)
+
+`material` enum (aktuální kontrakt): `CONCRETE`, `STONE`, `BRICK`, `WOOD`, `METAL`, `GLASS`, `DIRT`, `GRASS`, `SAND`, `GRAVEL`, `MUD`, `SNOW`, `ICE`, `WATER`, `RUBBER`, `PLASTIC`, `CERAMIC`, `CARPET`, `ASPHALT`, `LADDER_METAL`.
 
 ---
 
@@ -793,7 +816,7 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
 ```text
 /Cargo.toml                      workspace root, sjednocené [workspace.dependencies] (+ serde_json)
 /blender_plugin/                Blender authoring tooling pro Apparatus Drawable workflow
-  bevy_toolkit.py                 ADS exporter (`.glb` + `.toml`), material/texture metadata, collision entity metadata, vertex mask painting
+  bevy_toolkit.py                 ADS exporter (`.glb` + `.toml`), material/texture metadata, collision entity metadata (+ primitive dimensions, climb/ladder flags, material enum), vertex mask painting
 /core_shared/                    sdílené typy mezi serverem a klientem
   src/lib.rs                       SharedPlugin, LuaEvent (Bevy Message), LuaEventRegistry
 /core_resources/                 VFS + manifest + Lua sandbox (Phase 1–3)
@@ -828,13 +851,15 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
 /server.toml                     repo-tracked default server config (edit jako šablonu)
 /core_drawable/                   Sdílený ADS plugin — používán host_client i model_viewer
   src/lib.rs                       DrawablePlugin (registrace assetů, materiálů, systémů)
-  src/manifest.rs                  DrawableManifest (serde), MaterialDef, EntityDef, CollisionShape
+  src/manifest.rs                  DrawableManifest (serde), MaterialDef, EntityDef, CollisionShape,
+                                     optional collision params (`half_extents`, `radius`, `height`) +
+                                     collision metadata (`climbable`, `ladder`, `material`)
   src/loader.rs                    DrawableManifestLoader (AssetLoader, ext=.drawable)
   src/registry.rs                  DrawableManifestRegistry, GltfHandleCache, TextureRegistry
   src/material.rs                  StandardPbrExtension, LayeredEnvExtension, VehicleGlassExtension,
                                      DrawableParams (shared uniform struct)
   src/hook.rs                      observe_scene_ready, attach_drawable_intent, hook_drawable_scenes,
-                                     DrawableSpawnIntent, DrawableHooked
+                                     DrawableSpawnIntent, DrawableHooked, DrawableCollision
 /model_viewer/                    Standalone ADS Model Viewer (dev tool)
   src/main.rs                      App setup, model loading (CLI args), grid gizmos, UI overlay,
                                      viewer_asset_root() → sdílí host_client/assets/shaders/ v dev módu
@@ -845,6 +870,8 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
   src/gameplay.rs                  ClientGameplayPlugin, update_raycast_bridge, collect_and_send_input,
                                      publish_input_state_to_lua (`input:state` local bus event),
                                      3D player visual attach + 1st/3rd person camera follow
+  src/physics.rs                   ClientPhysicsPlugin, CollisionWorld cache, WorldCollider AABB envelopes z `DrawableCollision`
+                                     (incl. `climbable`, `ladder`, `material` pro traversal/audio/fx)
   src/native_assets.rs             NativeAssetsPlugin — scan assets/fonts/*.{ttf,otf}, assets/models/*.{glb,gltf,drawable}
   src/drawable/mod.rs              Tenký re-export wrapper: `pub use core_drawable::*`
   assets/shaders/                  Sdílené WGSL shadery (standard_pbr, layered_env, vehicle_glass,
@@ -898,7 +925,7 @@ dostupné ve všech `shared_scripts` / `server_scripts` / `client_scripts`:
 | `World.GetAnimationSpeed(handle)`                  | both        | Vrátí rychlost animace (default `1.0`)                                                              |
 | `World.ApplyDamage(target, amount, source?)`       | server only | Enqueue damage intent do `CommandQueue`                                                             |
 | `Engine.RequestModel(name)`                        | both        | Inkrementuje ref_count modelu v `ModelRegistry`                                                     |
-| `Engine.HasModelLoaded(name)`                      | both        | Vrátí `true` pokud je model v registry s `ref_count > 0`                                        |
+| `Engine.HasModelLoaded(name)`                      | both        | Vrátí `true` po dokončení async preloadu (`RequestModel`); na serveru/headless fallback podle dostupnosti modelu |
 | `Engine.SetModelAsNoLongerNeeded(name)`            | both        | Dekrementuje ref_count modelu                                                                         |
 | `Raycast.GetGroundPosition()`                      | client only | Vrátí `{x, y, z}` world-space pozici myši (Y=0 rovina); na serveru vrací `{0,0,0}`            |
 

@@ -26,7 +26,7 @@ use crate::ace::AceRegistry;
 use crate::cmd_queue::{CommandQueue, EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache};
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
-use crate::model_registry::{ModelCommand, ModelCommandQueue};
+use crate::model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry};
 use crate::types::{ResourceId, Side};
 
 // ---------------------------------------------------------------------------
@@ -469,6 +469,7 @@ impl LuaSandbox {
         cmd_queue: CommandQueue,
         local_bus: LocalEventBus,
         model_cmds: ModelCommandQueue,
+        model_registry: ModelRegistry,
         raycast: RaycastBridge,
         engine_state: EngineStateBridge,
         input_bridge: InputBridge,
@@ -507,6 +508,7 @@ impl LuaSandbox {
             &cmd_queue,
             &local_bus,
             &model_cmds,
+            &model_registry,
             &raycast,
             &engine_state,
             &input_bridge,
@@ -808,6 +810,7 @@ fn install_runtime_api(
     cmd_queue: &CommandQueue,
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
+    model_registry: &ModelRegistry,
     raycast: &RaycastBridge,
     engine_state: &EngineStateBridge,
     input_bridge: &InputBridge,
@@ -823,7 +826,7 @@ fn install_runtime_api(
     ace_registry: &AceRegistry,
     auth_bridge: &AuthBridge,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -838,6 +841,7 @@ fn install_runtime_api_inner(
     cmd_queue: &CommandQueue,
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
+    model_registry: &ModelRegistry,
     raycast: &RaycastBridge,
     engine_state: &EngineStateBridge,
     input_bridge: &InputBridge,
@@ -1214,9 +1218,9 @@ fn install_runtime_api_inner(
         Ok(())
     })?)?;
 
-    // HasModelLoaded — Phase 3 stub (always false); Phase 4 doplni async callback
-    engine.set("HasModelLoaded", lua.create_function(|_, _name: String| -> mlua::Result<bool> {
-        Ok(false)
+    let mr = model_registry.clone();
+    engine.set("HasModelLoaded", lua.create_function(move |_, name: String| -> mlua::Result<bool> {
+        Ok(mr.has_loaded(&name))
     })?)?;
 
     let mc = model_cmds.clone();
@@ -2050,6 +2054,63 @@ end
         })?)?;
 
         globals.set("ACE", ace_ns)?;
+
+        // FiveM compatibility aliases (global funcs):
+        // AddAce/AddPrincipal/RemoveAce/RemovePrincipal/IsAceAllowed/IsPlayerAceAllowed
+        // plus principal helper IsPrincipalAceAllowed.
+
+        let ace_ref = ace_registry.clone();
+        globals.set("AddAce", lua.create_function(move |_, (principal, ace_name, mode): (String, String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("AddAce is server-only".into()));
+            }
+            let allow = mode.to_lowercase() != "deny";
+            ace_ref.add_ace(&principal, &ace_name, allow);
+            Ok(())
+        })?)?;
+
+        let ace_ref = ace_registry.clone();
+        globals.set("RemoveAce", lua.create_function(move |_, (principal, ace_name): (String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("RemoveAce is server-only".into()));
+            }
+            ace_ref.remove_ace(&principal, &ace_name);
+            Ok(())
+        })?)?;
+
+        let ace_ref = ace_registry.clone();
+        globals.set("AddPrincipal", lua.create_function(move |_, (child, parent): (String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("AddPrincipal is server-only".into()));
+            }
+            ace_ref.add_principal(&child, &parent);
+            Ok(())
+        })?)?;
+
+        let ace_ref = ace_registry.clone();
+        globals.set("RemovePrincipal", lua.create_function(move |_, (child, parent): (String, String)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("RemovePrincipal is server-only".into()));
+            }
+            ace_ref.remove_principal(&child, &parent);
+            Ok(())
+        })?)?;
+
+        let ace_ref = ace_registry.clone();
+        globals.set("IsAceAllowed", lua.create_function(move |_, (principal, ace_name): (String, String)| {
+            Ok(ace_ref.is_allowed(&principal, &ace_name))
+        })?)?;
+
+        let ace_ref = ace_registry.clone();
+        globals.set("IsPrincipalAceAllowed", lua.create_function(move |_, (principal, ace_name): (String, String)| {
+            Ok(ace_ref.is_allowed(&principal, &ace_name))
+        })?)?;
+
+        let ace_ref = ace_registry.clone();
+        globals.set("IsPlayerAceAllowed", lua.create_function(move |_, (player_id_v, ace_name): (mlua::Value, String)| {
+            let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+            Ok(ace_ref.is_player_allowed(player_id, &ace_name))
+        })?)?;
     }
 
     // -- Auth namespace — login/register flow ----------------------------------

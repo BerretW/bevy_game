@@ -188,6 +188,9 @@ class BEVY_OT_GenerateCol(bpy.types.Operator):
         new_obj.name = f"COL_{src.name}"
         new_obj.bevy_toolkit_obj.is_col    = True
         new_obj.bevy_toolkit_obj.col_shape = "CONVEX"
+        new_obj.bevy_toolkit_obj.col_climbable = False
+        new_obj.bevy_toolkit_obj.col_ladder = False
+        new_obj.bevy_toolkit_obj.col_material = "CONCRETE"
         new_obj.display_type = "WIRE"
         new_obj.hide_render  = True
         context.collection.objects.link(new_obj)

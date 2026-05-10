@@ -67,6 +67,30 @@ def _collect_mesh_data(obj):
         pass
 
     uv_layers = mesh.uv_layers
+    uv0_layer = None
+    uv1_layer = None
+    if uv_layers:
+        uv0_layer = None
+
+        # Blender API compatibility:
+        # - newer versions may expose mesh.uv_layers.active_render
+        # - others expose mesh.uv_layers.active
+        # - render layer can also be flagged per-layer via `active_render`
+        uv0_layer = getattr(uv_layers, "active_render", None)
+        if uv0_layer is None:
+            uv0_layer = getattr(uv_layers, "active", None)
+        if uv0_layer is None:
+            for layer in uv_layers:
+                if getattr(layer, "active_render", False):
+                    uv0_layer = layer
+                    break
+        if uv0_layer is None:
+            uv0_layer = uv_layers[0]
+
+        for layer in uv_layers:
+            if layer != uv0_layer:
+                uv1_layer = layer
+                break
     col_attrs = getattr(mesh, 'color_attributes', [])
     masks0_attr = None
     masks1_attr = None
@@ -100,10 +124,12 @@ def _collect_mesh_data(obj):
             nrm = loop.normal if tri.use_smooth else tri.normal
             nrm_key = (round(nrm.x, 4), round(nrm.y, 4), round(nrm.z, 4))
 
-            uv0 = uv_layers[0].data[loop_idx].uv if uv_layers else None
+            uv0 = uv0_layer.data[loop_idx].uv if uv0_layer else None
             uv0_key = (round(uv0.x, 5), round(1.0 - uv0.y, 5)) if uv0 else (0.0, 0.0)
+            uv1 = uv1_layer.data[loop_idx].uv if uv1_layer else None
+            uv1_key = (round(uv1.x, 5), round(1.0 - uv1.y, 5)) if uv1 else (0.0, 0.0)
 
-            key = (vi, nrm_key, uv0_key)
+            key = (vi, nrm_key, uv0_key, uv1_key)
             if key not in vert_map:
                 idx = len(positions)
                 vert_map[key] = idx
@@ -121,9 +147,8 @@ def _collect_mesh_data(obj):
 
                 uv0s.append(uv0_key)
 
-                if len(uv_layers) > 1:
-                    u1 = uv_layers[1].data[loop_idx].uv
-                    uv1s.append((u1.x, 1.0 - u1.y))
+                if uv1:
+                    uv1s.append((uv1.x, 1.0 - uv1.y))
                 else:
                     uv1s.append((0.0, 0.0))
 

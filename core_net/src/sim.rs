@@ -7,7 +7,7 @@
 //! * Lua eventy: `playerConnecting`, `playerDropped`, `onPlayerHit`, `onPlayerDeath`.
 
 use bevy::prelude::*;
-use core_resources::{LocalEventBus};
+use core_resources::{GameBridges, LocalEventBus};
 use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::server::LinkOf;
@@ -164,6 +164,7 @@ fn spawn_player_on_connect(
 fn emit_player_disconnect(
     trigger: On<Remove, Connected>,
     remote_ids: Query<&RemoteId>,
+    bridges: Res<GameBridges>,
     local_bus: Res<LocalEventBus>,
 ) {
     let entity = trigger.entity;
@@ -174,6 +175,9 @@ fn emit_player_disconnect(
         .unwrap_or(0);
 
     info!("[sim/server] client {} disconnected", client_id);
+
+    // FiveM-style ACE cleanup: remove player principals/identifiers on leave.
+    bridges.ace.remove_player(client_id);
 
     let payload = serde_json::to_vec(&serde_json::json!({
         "id": client_id.to_string(),

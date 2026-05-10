@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bevy::gltf::Gltf;
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 
 use crate::manifest::DrawableManifest;
@@ -32,7 +33,17 @@ impl TextureRegistry {
         // Konvence: sdílené textury žijí ve stream/textures/.
         // DDS je preferovaný formát; fallback přípony lze přidat podle potřeby.
         let path = format!("stream/textures/{}.dds", name);
-        let handle: Handle<Image> = asset_server.load(path);
+        let handle: Handle<Image> = asset_server.load_with_settings(
+            path,
+            |settings: &mut ImageLoaderSettings| {
+                settings.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                    address_mode_u: ImageAddressMode::Repeat,
+                    address_mode_v: ImageAddressMode::Repeat,
+                    address_mode_w: ImageAddressMode::Repeat,
+                    ..default()
+                });
+            },
+        );
         self.0.insert(name.to_string(), handle.clone());
         handle
     }

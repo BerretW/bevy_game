@@ -2,7 +2,13 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
 use bevy::asset::{AssetLoader, LoadContext, RenderAssetUsages};
-use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
+use bevy::image::{
+    CompressedImageFormats,
+    ImageAddressMode,
+    ImageSampler,
+    ImageSamplerDescriptor,
+    ImageType,
+};
 use bevy::prelude::*;
 use bevy::mesh::{Indices, PrimitiveTopology};
 
@@ -27,6 +33,15 @@ const ATTR_UV0:    u32 = 1 << 3;
 const ATTR_UV1:    u32 = 1 << 4;
 const ATTR_MASKS0: u32 = 1 << 5;
 const ATTR_MASKS1: u32 = 1 << 6;
+
+fn repeat_sampler() -> ImageSampler {
+    ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_w: ImageAddressMode::Repeat,
+        ..default()
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Asset typy
@@ -175,7 +190,7 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
                 image_type,
                 CompressedImageFormats::all(),
                 is_srgb_bool,
-                ImageSampler::Default,
+                repeat_sampler(),
                 RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
             ).map_err(|e| AdmError::ImageDecode(e.to_string()))?;
 

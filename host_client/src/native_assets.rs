@@ -14,14 +14,20 @@ use bevy::prelude::*;
 
 use core_resources::ModelRegistry;
 
-use crate::drawable::{DrawableManifestRegistry, GltfHandleCache};
+use crate::drawable::{AdmScene, DrawableManifestRegistry, GltfHandleCache};
 use crate::gui_render::GuiFontRegistry;
+
+/// Cache ADM assetů — analogie GltfHandleCache, ale pro .adm formát.
+/// Klíč = stem bez přípony (= ModelRegistry name).
+#[derive(Resource, Default)]
+pub struct AdmHandleCache(pub std::collections::HashMap<String, Handle<AdmScene>>);
 
 pub struct NativeAssetsPlugin;
 
 impl Plugin for NativeAssetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, load_native_assets);
+        app.init_resource::<AdmHandleCache>()
+           .add_systems(Startup, load_native_assets);
     }
 }
 
@@ -44,10 +50,11 @@ fn load_native_assets(
     mut model_reg: ResMut<ModelRegistry>,
     mut drawable_reg: ResMut<DrawableManifestRegistry>,
     mut gltf_cache: ResMut<GltfHandleCache>,
+    mut adm_cache: ResMut<AdmHandleCache>,
 ) {
     let root = asset_root();
     load_native_fonts(&asset_server, &mut font_reg, &root);
-    register_native_models(&asset_server, &mut model_reg, &mut gltf_cache, &root);
+    register_native_models(&asset_server, &mut model_reg, &mut gltf_cache, &mut adm_cache, &root);
     load_native_drawables(&asset_server, &mut drawable_reg, &root);
 }
 
@@ -104,6 +111,7 @@ fn register_native_models(
     asset_server: &AssetServer,
     model_reg: &mut ModelRegistry,
     gltf_cache: &mut GltfHandleCache,
+    adm_cache: &mut AdmHandleCache,
     root: &PathBuf,
 ) {
     let model_dir = root.join("models");
@@ -118,20 +126,37 @@ fn register_native_models(
     for entry in entries.flatten() {
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !matches!(ext, "glb" | "gltf") { continue; }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
 
-        let bevy_path = format!("models/{}.{}", stem, ext);
-        model_reg.register_native(stem.to_string(), bevy_path.clone());
-        // include_source = true: zachová raw gltf::Gltf v Gltf::source →
-        // umožní lookup embedded textur podle jména přes gltf.images().
-        let handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
-            bevy_path.clone(),
-            |s: &mut bevy::gltf::GltfLoaderSettings| {
-                s.include_source = true;
-            },
-        );
-        gltf_cache.0.insert(stem.to_string(), (handle, bevy_path));
-        info!("[native_assets] model registered: '{}'", stem);
+        match ext {
+            "adm" => {
+                let bevy_path = format!("models/{}.adm", stem);
+                model_reg.register_native(stem.to_string(), bevy_path.clone());
+                let handle: Handle<AdmScene> = asset_server.load(bevy_path);
+                adm_cache.0.insert(stem.to_string(), handle);
+                info!("[native_assets] adm model registered: '{}'", stem);
+            }
+            "glb" | "gltf" => {
+                // ADM má přednost — pokud existuje .adm se stejným stemem, přeskočíme GLB.
+                let adm_path = path.with_extension("adm");
+                if adm_path.exists() {
+                    info!("[native_assets] skipping '{}' (adm exists)", stem);
+                    continue;
+                }
+                let bevy_path = format!("models/{}.{}", stem, ext);
+                model_reg.register_native(stem.to_string(), bevy_path.clone());
+                // include_source = true: zachová raw gltf::Gltf v Gltf::source →
+                // umožní lookup embedded textur podle jména přes gltf.images().
+                let handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
+                    bevy_path.clone(),
+                    |s: &mut bevy::gltf::GltfLoaderSettings| {
+                        s.include_source = true;
+                    },
+                );
+                gltf_cache.0.insert(stem.to_string(), (handle, bevy_path));
+                info!("[native_assets] glb model registered: '{}'", stem);
+            }
+            _ => {}
+        }
     }
 }

@@ -8,12 +8,13 @@ mod registry;
 pub use adm::{AdmLoader, AdmScene, AdmSceneRoot, AdmSceneSpawned, AdmNode, AdmNodeType};
 pub use hook::{
     DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
+    DrawableCollision,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
     setup_fallback_textures,
 };
 pub use loader::DrawableManifestLoader;
 pub use manifest::{
-    CollisionShape, DrawableManifest, EntityDef, MaterialDef,
+    CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef,
     MaterialParams, TextureInfo, TextureSource,
 };
 #[allow(unused_imports)]

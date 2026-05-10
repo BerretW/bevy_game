@@ -14,6 +14,7 @@ pub struct DrawableParams {
     pub tint:    Vec4,
     pub weather: Vec4,
     pub tiling:  Vec4,
+    pub flags:   Vec4,
 }
 
 impl Default for DrawableParams {
@@ -22,6 +23,7 @@ impl Default for DrawableParams {
             tint:    Vec4::ONE,
             weather: Vec4::ZERO,
             tiling:  Vec4::new(1.0, 1.0, 1.0, 0.0),
+            flags:   Vec4::ZERO,
         }
     }
 }
@@ -31,7 +33,7 @@ impl Default for DrawableParams {
 /// Rozšíření pro `standard_pbr` šablonu.
 ///
 /// Vertex color konvence (ATTRIBUTE_COLOR):
-///   R = míchání vrstev (0=base, 1=druhá vrstva)
+///   R = rezervováno (nevyužito)
 ///   G = krev/špína maska
 ///   B = vlhkost/kaluž maska
 ///   A = paleta UV (1D LUT tintování)
@@ -50,13 +52,17 @@ pub struct StandardPbrExtension {
     #[sampler(103)]
     pub snow: Handle<Image>,
 
-    #[uniform(104)]
+    #[texture(104)]
+    #[sampler(105)]
+    pub ma: Handle<Image>,
+
+    #[uniform(106)]
     pub params: DrawableParams,
 
     /// MB textura — alpha kanál řídí průhlednostní masku.
     /// `params.tiling.w` (mb_alpha_threshold) > 0 aktivuje alpha clip v shaderu.
-    #[texture(105)]
-    #[sampler(106)]
+    #[texture(107)]
+    #[sampler(108)]
     pub mb: Handle<Image>,
 }
 
@@ -65,6 +71,7 @@ impl Default for StandardPbrExtension {
         Self {
             palette: Handle::default(),
             snow:    Handle::default(),
+            ma:      Handle::default(),
             params:  DrawableParams::default(),
             mb:      Handle::default(),
         }
@@ -103,12 +110,24 @@ pub struct LayeredEnvExtension {
     #[sampler(103)]
     pub layer1_normal: Handle<Image>,
 
-    #[uniform(104)]
+    #[texture(104)]
+    #[sampler(105)]
+    pub layer1_mrao: Handle<Image>,
+
+    #[texture(106)]
+    #[sampler(107)]
+    pub snow: Handle<Image>,
+
+    #[texture(108)]
+    #[sampler(109)]
+    pub ma: Handle<Image>,
+
+    #[uniform(110)]
     pub params: DrawableParams,
 
     /// MB textura — alpha kanál řídí průhlednostní masku.
-    #[texture(105)]
-    #[sampler(106)]
+    #[texture(111)]
+    #[sampler(112)]
     pub mb: Handle<Image>,
 }
 
@@ -117,6 +136,9 @@ impl Default for LayeredEnvExtension {
         Self {
             layer1_albedo: Handle::default(),
             layer1_normal: Handle::default(),
+            layer1_mrao:   Handle::default(),
+            snow:          Handle::default(),
+            ma:            Handle::default(),
             params:        DrawableParams::default(),
             mb:            Handle::default(),
         }
@@ -145,7 +167,11 @@ impl MaterialExtension for LayeredEnvExtension {
 ///   100 — DrawableParams uniform
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone, Default)]
 pub struct VehicleGlassExtension {
-    #[uniform(100)]
+    #[texture(100)]
+    #[sampler(101)]
+    pub shatter_map: Handle<Image>,
+
+    #[uniform(102)]
     pub params: DrawableParams,
 }
 

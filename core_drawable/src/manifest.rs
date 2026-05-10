@@ -70,9 +70,21 @@ pub enum EntityDef {
     COLLISION {
         shape: CollisionShape,
         #[serde(default)]
+        half_extents: Option<[f32; 3]>,
+        #[serde(default)]
+        radius: Option<f32>,
+        #[serde(default)]
+        height: Option<f32>,
+        #[serde(default)]
         mass: f32,
         #[serde(default)]
         is_static: bool,
+        #[serde(default)]
+        climbable: bool,
+        #[serde(default)]
+        ladder: bool,
+        #[serde(default)]
+        material: CollisionMaterial,
         #[serde(default)]
         friction: f32,
         #[serde(default)]
@@ -91,4 +103,82 @@ pub enum CollisionShape {
     Cylinder,
     Convex,
     Mesh,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CollisionMaterial {
+    #[default]
+    Concrete,
+    Stone,
+    Brick,
+    Wood,
+    Metal,
+    Glass,
+    Dirt,
+    Grass,
+    Sand,
+    Gravel,
+    Mud,
+    Snow,
+    Ice,
+    Water,
+    Rubber,
+    Plastic,
+    Ceramic,
+    Carpet,
+    Asphalt,
+    LadderMetal,
+}
+
+impl CollisionMaterial {
+    pub fn footstep_profile(&self) -> &'static str {
+        match self {
+            CollisionMaterial::Concrete => "footstep_concrete",
+            CollisionMaterial::Stone => "footstep_stone",
+            CollisionMaterial::Brick => "footstep_brick",
+            CollisionMaterial::Wood => "footstep_wood",
+            CollisionMaterial::Metal => "footstep_metal",
+            CollisionMaterial::Glass => "footstep_glass",
+            CollisionMaterial::Dirt => "footstep_dirt",
+            CollisionMaterial::Grass => "footstep_grass",
+            CollisionMaterial::Sand => "footstep_sand",
+            CollisionMaterial::Gravel => "footstep_gravel",
+            CollisionMaterial::Mud => "footstep_mud",
+            CollisionMaterial::Snow => "footstep_snow",
+            CollisionMaterial::Ice => "footstep_ice",
+            CollisionMaterial::Water => "footstep_water",
+            CollisionMaterial::Rubber => "footstep_rubber",
+            CollisionMaterial::Plastic => "footstep_plastic",
+            CollisionMaterial::Ceramic => "footstep_ceramic",
+            CollisionMaterial::Carpet => "footstep_carpet",
+            CollisionMaterial::Asphalt => "footstep_asphalt",
+            CollisionMaterial::LadderMetal => "footstep_ladder_metal",
+        }
+    }
+
+    pub fn impact_profile(&self) -> &'static str {
+        match self {
+            CollisionMaterial::Concrete => "impact_concrete_dust",
+            CollisionMaterial::Stone => "impact_stone_chip",
+            CollisionMaterial::Brick => "impact_brick_chip",
+            CollisionMaterial::Wood => "impact_wood_splinter",
+            CollisionMaterial::Metal => "impact_metal_spark",
+            CollisionMaterial::Glass => "impact_glass_shard",
+            CollisionMaterial::Dirt => "impact_dirt_puff",
+            CollisionMaterial::Grass => "impact_grass_puff",
+            CollisionMaterial::Sand => "impact_sand_puff",
+            CollisionMaterial::Gravel => "impact_gravel_spray",
+            CollisionMaterial::Mud => "impact_mud_splash",
+            CollisionMaterial::Snow => "impact_snow_puff",
+            CollisionMaterial::Ice => "impact_ice_shard",
+            CollisionMaterial::Water => "impact_water_splash",
+            CollisionMaterial::Rubber => "impact_rubber_thud",
+            CollisionMaterial::Plastic => "impact_plastic_frag",
+            CollisionMaterial::Ceramic => "impact_ceramic_shard",
+            CollisionMaterial::Carpet => "impact_carpet_thud",
+            CollisionMaterial::Asphalt => "impact_asphalt_chip",
+            CollisionMaterial::LadderMetal => "impact_ladder_metal_spark",
+        }
+    }
 }

@@ -1,4 +1,5 @@
 import bpy
+from .constants import COLLISION_DEFAULT_MATERIAL, COLLISION_MATERIAL_ITEMS
 from .material import on_template_changed, _on_texture_update, _on_param_update, _on_ma_mb_update
 
 
@@ -20,6 +21,13 @@ class BevyObjectProps(bpy.types.PropertyGroup):
     )
     mass:        bpy.props.FloatProperty(name="Mass",        default=1.0, min=0.0)
     is_static:   bpy.props.BoolProperty(name="Static",       default=False)
+    col_climbable: bpy.props.BoolProperty(name="Climbable",  default=False)
+    col_ladder:    bpy.props.BoolProperty(name="Ladder",     default=False)
+    col_material:  bpy.props.EnumProperty(
+        name="Material",
+        items=COLLISION_MATERIAL_ITEMS,
+        default=COLLISION_DEFAULT_MATERIAL,
+    )
     friction:    bpy.props.FloatProperty(name="Friction",    default=0.6, min=0.0)
     restitution: bpy.props.FloatProperty(name="Restitution", default=0.2, min=0.0)
     tags_csv:    bpy.props.StringProperty(name="Tags",       default="")

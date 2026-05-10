@@ -21,6 +21,7 @@ struct DrawableParams {
     tint:    vec4<f32>,  // RGBA multiplikátor
     weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
     tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=nevyužito
+    flags:   vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var palette_texture: texture_2d<f32>;
@@ -52,9 +53,24 @@ fn fragment(
     if snow_factor > 0.001 {
         let snow_uv  = in.uv * params.tiling.x;
         let snow_col = textureSample(snow_texture, snow_sampler, snow_uv);
-        pbr_input.material.base_color           = mix(pbr_input.material.base_color, snow_col, snow_factor);
-        pbr_input.material.perceptual_roughness = mix(pbr_input.material.perceptual_roughness, 0.95, snow_factor);
+        // Hranový AO: stín na kraji sněhové vrstvy → iluze výšky a objemu
+        let edge_mag = length(vec2<f32>(dpdx(snow_factor), dpdy(snow_factor)));
+        let edge_ao  = 1.0 - clamp(edge_mag * 12.0, 0.0, 0.35);
+        let snow_color = vec4<f32>(snow_col.rgb * edge_ao, snow_col.a);
+        pbr_input.material.base_color           = mix(pbr_input.material.base_color, snow_color, snow_factor);
+        pbr_input.material.perceptual_roughness = mix(pbr_input.material.perceptual_roughness, 0.62, snow_factor);
         pbr_input.material.metallic             = mix(pbr_input.material.metallic, 0.0, snow_factor);
+        // Snow micro-normaly ze screen-space gradientu — krystalová zrnitost bez zplošťování
+        let geo_n   = normalize(pbr_input.world_normal);
+        let dP_dx   = dpdx(in.world_position.xyz);
+        let dP_dy   = dpdy(in.world_position.xyz);
+        let snow_h  = dot(snow_col.rgb, vec3<f32>(0.333));
+        let str     = snow_factor * 10.0;
+        let T       = dP_dx + dpdx(snow_h) * str * geo_n;
+        let B       = dP_dy + dpdy(snow_h) * str * geo_n;
+        var micro_N = normalize(cross(T, B));
+        micro_N = select(-micro_N, micro_N, dot(micro_N, geo_n) > 0.0);
+        pbr_input.N = normalize(mix(pbr_input.N, micro_N, clamp(snow_factor * 0.55, 0.0, 0.55)));
     }
 
     // 3. Špína / krev: vertex G × dirt_level — ztmaví povrch do špinavě hnědé
