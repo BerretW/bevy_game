@@ -28,6 +28,7 @@ use bevy::window::WindowResolution;
 use core_drawable::{
     AdmScene, AdmSceneRoot,
     CollisionShape, DrawableCollision,
+    LodGroup,
     DrawableManifest, DrawableManifestRegistry, DrawablePlugin, EntityDef,
     GltfHandleCache, TextureSource,
     StandardPbrMaterial, LayeredEnvMaterial,
@@ -72,6 +73,7 @@ fn main() {
 
     App::new()
         .init_resource::<WeatherState>()
+        .init_resource::<LodViewerState>()
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
@@ -103,9 +105,11 @@ fn main() {
             (
                 camera::orbit_camera,
                 handle_keyboard,
+                handle_lod_key,
                 handle_material_debug,
                 draw_grid,
                 draw_colliders,
+                draw_lod_circles,
                 sync_mesh_visibility_for_collider_mode,
                 update_info_overlay,
                 update_collider_panel,
@@ -115,6 +119,12 @@ fn main() {
                 textures::show_extract_status,
             ),
         )
+        // apply_forced_lod must run AFTER update_lod_visibility (which lives in Update via DrawablePlugin).
+        // PostUpdate is always after Update, so this ordering is guaranteed without ambiguous SystemTypeSet.
+        .add_systems(PostUpdate, (
+            apply_forced_lod,
+            update_lod_panel.after(apply_forced_lod),
+        ))
         .run();
 }
 
@@ -122,6 +132,12 @@ fn main() {
 
 #[derive(Resource)]
 struct ModelPaths(Vec<PathBuf>);
+
+#[derive(Resource, Default)]
+struct LodViewerState {
+    forced: Option<u8>,
+    panel_active: bool,
+}
 
 #[derive(Resource)]
 struct ViewerState {
@@ -240,7 +256,7 @@ fn setup_scene(mut commands: Commands) {
         Text::new(
             "Pravé drag: orbit  |  Střední drag: pan  |  Kolečko: zoom  \
              |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export\n\
-             W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery",
+             W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  L: LOD úroveň",
         ),
         TextFont { font_size: 13.0, ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
@@ -297,6 +313,22 @@ fn setup_scene(mut commands: Commands) {
         Visibility::Hidden,
         ColliderPanel,
     ));
+
+    // LOD info panel (dole vpravo) — zobrazí se pokud model má LOD skupiny
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 12.5, ..default() },
+        TextColor(Color::srgba(0.4, 0.9, 1.0, 0.90)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(50.0),
+            right: Val::Px(8.0),
+            max_width: Val::Px(500.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        LodPanel,
+    ));
 }
 
 // ─── Markery ──────────────────────────────────────────────────────────────────
@@ -309,6 +341,9 @@ struct DebugStatus;
 
 #[derive(Component)]
 struct ColliderPanel;
+
+#[derive(Component)]
+struct LodPanel;
 
 // ─── Model loading ────────────────────────────────────────────────────────────
 
@@ -850,6 +885,143 @@ fn draw_arc_gizmo(
         let next = center + (t1 * a.cos() + t2 * a.sin()) * radius;
         gizmos.line(prev, next, color);
         prev = next;
+    }
+}
+
+// ─── LOD viewer ───────────────────────────────────────────────────────────────
+
+/// L = zobrazí panel / cykluje auto → LOD0 → LOD1 → ... → auto
+fn handle_lod_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut lod_state: ResMut<LodViewerState>,
+    lod_groups: Query<&LodGroup>,
+) {
+    if !keys.just_pressed(KeyCode::KeyL) { return; }
+
+    lod_state.panel_active = true;
+
+    let max_levels = lod_groups.iter()
+        .map(|g| g.lod_entities.len())
+        .max()
+        .unwrap_or(0);
+
+    if max_levels == 0 { return; } // panel shows "0 skupin" message
+
+    lod_state.forced = match lod_state.forced {
+        None => Some(0),
+        Some(n) => {
+            let next = n as usize + 1;
+            if next >= max_levels { None } else { Some(next as u8) }
+        }
+    };
+}
+
+/// Přepíše viditelnost LOD entit na vybrané úrovni; resetuje active_lod na u8::MAX
+/// aby update_lod_visibility vždy přepočítalo při přepnutí zpět do auto módu.
+fn apply_forced_lod(
+    lod_state: Res<LodViewerState>,
+    mut lod_groups: Query<&mut LodGroup>,
+    mut visibility_q: Query<&mut Visibility>,
+) {
+    let Some(forced) = lod_state.forced else { return };
+
+    for mut lod in &mut lod_groups {
+        lod.active_lod = u8::MAX; // Invalidate so auto mode recalculates next frame
+        for (level_idx, entities) in lod.lod_entities.iter().enumerate() {
+            let vis = if level_idx as u8 == forced {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            for &entity in entities {
+                if let Ok(mut v) = visibility_q.get_mut(entity) {
+                    *v = vis;
+                }
+            }
+        }
+    }
+}
+
+fn update_lod_panel(
+    mut lod_state: ResMut<LodViewerState>,
+    lod_groups: Query<&LodGroup>,
+    mut panel: Query<(&mut Text, &mut Visibility), With<LodPanel>>,
+) {
+    let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
+
+    let groups: Vec<&LodGroup> = lod_groups.iter().collect();
+
+    // Auto-show panel as soon as any LOD group is detected
+    if !groups.is_empty() {
+        lod_state.panel_active = true;
+    }
+
+    if !lod_state.panel_active {
+        *vis = Visibility::Hidden;
+        return;
+    }
+    *vis = Visibility::Visible;
+
+    if groups.is_empty() {
+        txt.0 = "── LOD ──\nŽádné LOD skupiny (model nemá _LOD1+ uzly)".to_string();
+        return;
+    }
+
+    let total_levels: usize = groups.iter().map(|g| g.lod_entities.len()).sum();
+    let mode_str = match lod_state.forced {
+        None => "auto".to_string(),
+        Some(n) => format!("LOD{} vynuceno", n),
+    };
+    let mut lines = vec![
+        format!("── LOD ({}) ──", mode_str),
+        format!("Skupiny: {}  celkem úrovní: {}", groups.len(), total_levels),
+    ];
+
+    for (i, group) in groups.iter().enumerate() {
+        let num_levels = group.lod_entities.len();
+        let dists: Vec<String> = group.lod_dist_sq.iter()
+            .map(|&d| format!("{:.0}m", d.sqrt()))
+            .collect();
+        let active_str = if group.active_lod == u8::MAX {
+            "—".to_string()
+        } else {
+            format!("LOD{}", group.active_lod)
+        };
+        lines.push(format!(
+            "  [{i}] {num_levels} úrovní  vzdálenosti:[{}]  aktivní:{active_str}{}",
+            if dists.is_empty() { "výchozí".to_string() } else { dists.join(", ") },
+            if group.cull_beyond_last { "  cull" } else { "" },
+        ));
+    }
+
+    txt.0 = lines.join("\n");
+}
+
+/// Kreslí kruhy ve vzdálenostech LOD přechodů jako orientační gizma.
+fn draw_lod_circles(
+    mut gizmos: Gizmos,
+    lod_groups: Query<(&GlobalTransform, &LodGroup)>,
+) {
+    const LOD_COLORS: [Color; 3] = [
+        Color::srgb(0.2, 1.0, 0.2),  // LOD0→1 zelená
+        Color::srgb(1.0, 1.0, 0.2),  // LOD1→2 žlutá
+        Color::srgb(1.0, 0.4, 0.2),  // LOD2→3 oranžová
+    ];
+
+    for (gt, lod) in &lod_groups {
+        let center = gt.translation();
+        for (i, &dist_sq) in lod.lod_dist_sq.iter().enumerate() {
+            let radius = dist_sq.sqrt();
+            let color = LOD_COLORS.get(i).copied()
+                .unwrap_or(Color::srgb(0.8, 0.2, 0.8));
+            draw_arc_gizmo(
+                &mut gizmos,
+                Vec3::new(center.x, 0.001, center.z),
+                Vec3::X, Vec3::Z,
+                radius, 0.0, std::f32::consts::TAU, 64,
+                color,
+            );
+        }
     }
 }
 
