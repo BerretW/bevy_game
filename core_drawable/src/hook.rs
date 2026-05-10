@@ -333,12 +333,28 @@ fn process_mesh_node(
 
     // Jméno GLTF materiálu → lookup v manifestu
     let gltf_mat_name = mat_names.get(entity).map(|m| m.0.as_str()).unwrap_or("");
-    let Some(mat_def) = manifest.materials.get(gltf_mat_name) else {
-        debug!(
-            "[drawable] '{}': GLTF mat '{}' není v manifestu, swap přeskočen",
-            node_name, gltf_mat_name
-        );
-        return;
+    let mat_def = match manifest.materials.get(gltf_mat_name) {
+        Some(m) => m,
+        None => {
+            if !gltf_mat_name.is_empty() {
+                warn!(
+                    "[drawable] '{}': GLTF mat '{}' NOT found. Available: {:?}",
+                    node_name, gltf_mat_name,
+                    manifest.materials.keys().collect::<Vec<_>>()
+                );
+            }
+            // Fallback: use first available material
+            match manifest.materials.values().next() {
+                Some(m) => {
+                    warn!("[drawable] '{}': Using first material as fallback", node_name);
+                    m
+                }
+                None => {
+                    error!("[drawable] '{}': No materials available", node_name);
+                    return;
+                }
+            }
+        }
     };
 
     let applied = match mat_def.template.as_str() {

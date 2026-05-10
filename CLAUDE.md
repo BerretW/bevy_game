@@ -286,6 +286,17 @@ files {
   - [X] Add-on je přejmenovaný na `Appartu Drawable Toolkit` v Blender UI; export ADS používá `Object.bevy_toolkit_obj.export_name` nebo název aktivního mesh objektu jako `asset_name` pro `.drawable` a `.adm` místo názvu scény / .blend souboru
   - [X] Objektový panel v Blenderu teď obsahuje exportní blok a `Export Name`; exportní název se automaticky předvyplní z názvu objektu při konverzi/vytvoření
 
+  ### ADS — Known Limitations & Workarounds
+
+  **Více materiálů na jednom mesh objektu:** Když má mesh v Blenderu multiple `material_slots` (polygony s různými materiály), Blender GLTF exporter je rozděluje na více GLTF primitiv. Bevy loader pak každému primitivu přiřadí `GltfMaterialName` podle materiálu. Avšak `process_mesh_node` v `core_drawable` hledá jedno jméno materiálu na entitu, což nefunguje pro případ, kdy entita reprezentuje jen jedno primitivum.
+
+  **Řešení (OP) — Doporučené přístupy:**
+  1. **V Blenderu**: Rozděl mesh s více materiály na více mesh objektů — jeden za materiál. Pak každý bude mít jeden materiál a bude fungovat správně.
+  2. **Fallback (implementováno)**: Když se GLTF `GltfMaterialName` nenajde v manifestu, `process_mesh_node` použije první dostupný materiál v manifestu. Vypíše warning do logu.
+  3. **Budoucí**: Implementovat per-primitiva material mapping — uložit v manifestu mapování `entity_name → [(material_name, polygon_range)]`.
+
+  Ještě není uzavřeno, ale workaround je v Blenderu: **pokud chceš mesh s více materiály, export jednotlivé mesh části zvlášť a spojí je v runtime do jednoho modelu, pokud je to potřeba.**
+
 ---
 
 ### Phase 5 — FPS Core Systems

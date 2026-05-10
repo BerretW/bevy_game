@@ -1,8 +1,8 @@
 bl_info = {
     "name": "Appartu Drawable Toolkit",
     "author": "Advanced Game Dev",
-    "version": (4, 0),
-    "blender": (3, 6, 0),
+    "version": (4, 1),
+    "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Appartu",
     "description": "ADS pipeline: masks, collision metadata, GLB+Drawable export",
     "category": "Import-Export",

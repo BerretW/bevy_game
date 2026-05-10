@@ -43,9 +43,10 @@ def _get_color(attr, loop_idx, vert_idx):
     return (c[0], c[1], c[2], c[3] if len(c) > 3 else 1.0)
 
 
-def _collect_mesh_data(obj):
+def _collect_mesh_data(obj, material_index=None):
     """
     Získá mesh data ze object v object-local space.
+    Pokud je zadán material_index, exportuje pouze trojúhelníky s daným material slotem.
     Vrátí: (positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices)
     Vše v Bevy souřadnicovém systému.
     """
@@ -117,6 +118,8 @@ def _collect_mesh_data(obj):
 
     mesh.calc_loop_triangles()
     for tri in mesh.loop_triangles:
+        if material_index is not None and tri.material_index != material_index:
+            continue
         for loop_idx in tri.loops:
             loop = mesh.loops[loop_idx]
             vi = loop.vertex_index
@@ -282,26 +285,52 @@ def export_adm(filepath, objects=None, export_textures=True):
         if obj.parent and obj.parent in obj_to_node:
             parent_idx = obj_to_node[obj.parent]
 
-        # Material name
-        mat_name = ''
-        if obj.active_material:
-            mat_name = obj.active_material.name
-
-        # Mesh data
-        mesh_idx = -1
-        if node_type == 0:  # pouze MESH uzly mají geometrii
-            key = obj.data.name if obj.data else obj.name
-            if key not in mesh_index_map:
-                mesh_index_map[key] = len(mesh_data_list)
-                data = _collect_mesh_data(obj)
-                mesh_data_list.append((obj.name, *data))
-            mesh_idx = mesh_index_map[key]
-
-        node_idx = len(node_list)
-        obj_to_node[obj] = node_idx
-
         mat_bevy = _to_bevy_mat4(obj.matrix_local)
-        node_list.append((obj.name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
+
+        if node_type == 0 and len(obj.material_slots) > 1:
+            # Multi-material mesh: jeden node per material slot.
+            # Pojmenování: slot 0 → obj.name, slot N → "obj.name.N"
+            # Tečkový suffix zajišťuje, že base_name() regex \.\d+$ funguje při re-importu.
+            first_node_idx = None
+            for mat_idx, slot in enumerate(obj.material_slots):
+                mat_name = slot.material.name if slot.material else ''
+                sub_name = obj.name if mat_idx == 0 else f"{obj.name}.{mat_idx}"
+
+                mesh_key = f"__mat_{obj.data.name if obj.data else obj.name}_{mat_idx}"
+                if mesh_key not in mesh_index_map:
+                    data = _collect_mesh_data(obj, material_index=mat_idx)
+                    if not data[0]:  # žádné trojúhelníky nepoužívají tento material slot
+                        continue
+                    mesh_index_map[mesh_key] = len(mesh_data_list)
+                    mesh_data_list.append((sub_name, *data))
+
+                if mesh_key not in mesh_index_map:
+                    continue  # byl přeskočen (prázdný slot)
+
+                mesh_idx = mesh_index_map[mesh_key]
+                node_idx = len(node_list)
+                if first_node_idx is None:
+                    first_node_idx = node_idx
+                node_list.append((sub_name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
+
+            if first_node_idx is not None:
+                obj_to_node[obj] = first_node_idx
+        else:
+            # Single material nebo COLLISION
+            mat_name = obj.active_material.name if obj.active_material else ''
+
+            mesh_idx = -1
+            if node_type == 0:
+                key = obj.data.name if obj.data else obj.name
+                if key not in mesh_index_map:
+                    mesh_index_map[key] = len(mesh_data_list)
+                    data = _collect_mesh_data(obj)
+                    mesh_data_list.append((obj.name, *data))
+                mesh_idx = mesh_index_map[key]
+
+            node_idx = len(node_list)
+            obj_to_node[obj] = node_idx
+            node_list.append((obj.name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
 
     # Sbíráme embedded textury (ze všech materiálů s bevy_toolkit props)
     # V ADM se balí VŠECHNY přiřazené textury bez ohledu na _embedded flag
