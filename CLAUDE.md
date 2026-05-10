@@ -195,6 +195,8 @@ files {
 - [X] `process_combat` (FixedUpdate) — čte `LastPlayerInputs`, `PRIMARY_FIRE` bitflag + proximity + angle check, aplikuje dmg na `Health`
 - [X] `tick_weapon_cooldowns` (FixedUpdate) — decrementuje `WeaponCooldown.remaining`
 - [X] Camera-relative movement input: klient rotuje WASD vektor podle yaw kamery a server dostává world-space `move_dir`
+- [X] **FiveM-style client-trusted movement (Phase 3.3+)**: klient běží Avian fyziku lokálně (Dynamic capsule na player root entitě), odesílá fyzikální `position` v `PlayerInput`; server ji přímo zapíše do `NetTransform` bez server-side simulace pohybu — `apply_inputs_to_velocity` + `integrate_velocity` nahrazeny `trust_client_position`
+- [X] `sync_net_transform_to_render` přeskakuje lokálního hráče pro pozici (Avian Transform ji řídí); rotaci (yaw modelu) stále synchronizuje ze serveru
 - [X] Player yaw sync: server zapisuje `PlayerInput.look[0]` do `NetTransform.rotation`; klient při render sync aplikuje i rotaci, takže model/sprite míří směrem kamery
 - [X] Player movement smoothing: klientský `sync_net_transform_to_render` používá exponenciální lerp/slerp (translation + rotation), aby se snížil jitter při síťových korekcích
 - [X] Klientský startup cleanup: `setup_scene_and_camera` už nespawnuje debug plane/orientační kostky/osy; scéna spoléhá na map instancing (`ClientMapPlugin`) a ADM assety

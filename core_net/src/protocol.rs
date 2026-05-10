@@ -119,6 +119,9 @@ pub struct PlayerInput {
     /// Bitfield aktivních akcí — viz [`PlayerAction`] konstanty.
     pub actions: u32,
     pub client_tick: u32,
+    /// Klientská fyzikální pozice (FiveM-style client-trusted).
+    /// Server ji přímo zapíše do NetTransform — žádná server-side simulace pohybu.
+    pub position: [f32; 3],
 }
 
 /// **Server → Client** ~10 Hz — snapshot stavu lokálního hráče.

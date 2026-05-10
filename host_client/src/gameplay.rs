@@ -9,7 +9,6 @@ use bevy::prelude::*;
 use bevy::transform::components::TransformTreeChanged;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use avian3d::prelude::*;
-use avian3d::math::Dir;
 use core_net::{ClientHandshakeState, HandshakeStatus};
 use bevy::asset::AssetPath;
 use std::collections::HashSet;
@@ -28,7 +27,6 @@ use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
-use crate::physics::StaticWorldCollider;
 use crate::native_assets::AdmHandleCache;
 use crate::drawable::AdmSceneRoot;
 use crate::AppState;
@@ -144,11 +142,72 @@ impl Plugin for ClientGameplayPlugin {
         );
         app.add_systems(
             FixedUpdate,
-            collect_and_send_input.run_if(in_state(AppState::InGame)),
+            (
+                apply_player_movement,
+                collect_and_send_input,
+            ).chain().run_if(in_state(AppState::InGame)),
         );
         // app.add_systems(Update, debug_player_movement.run_if(on_timer(std::time::Duration::from_secs(2))));
     }
 }
+
+const PLAYER_MOVE_SPEED: f32 = 5.0;
+const PLAYER_SPRINT_MULT: f32 = 1.8;
+const PLAYER_CROUCH_MULT: f32 = 0.5;
+const PLAYER_JUMP_VEL: f32 = 6.0;
+/// Maximální |vy| při kterém se považuje hráč za přistáno na zemi (pro skok).
+const GROUND_VEL_THRESHOLD: f32 = 0.25;
+
+/// Aplikuje horizontální pohyb a skok na lokálního hráče přes Avian LinearVelocity.
+/// Musí běžet před collect_and_send_input v FixedUpdate.
+fn apply_player_movement(
+    keys: Res<ButtonInput<KeyCode>>,
+    cfg: Res<ClientConfigResource>,
+    look: Res<CameraLookState>,
+    local_client_id: Option<Res<LocalClientId>>,
+    mut players: Query<(&PlayerMarker, &mut LinearVelocity), With<Predicted>>,
+) {
+    let Some(lid) = local_client_id else { return };
+    let bindings = &cfg.0.input.keys;
+
+    let mut move_x = 0.0f32;
+    let mut move_y = 0.0f32;
+    if keys.pressed(bindings.move_forward)  { move_y += 1.0; }
+    if keys.pressed(bindings.move_backward) { move_y -= 1.0; }
+    if keys.pressed(bindings.move_right)    { move_x -= 1.0; }
+    if keys.pressed(bindings.move_left)     { move_x += 1.0; }
+
+    let sprint = keys.pressed(bindings.sprint);
+    let crouch = keys.pressed(bindings.crouch);
+    let jump   = keys.pressed(bindings.jump);
+
+    let speed_mult = if crouch { PLAYER_CROUCH_MULT } else if sprint { PLAYER_SPRINT_MULT } else { 1.0 };
+    let speed = PLAYER_MOVE_SPEED * speed_mult;
+
+    // Rotace vstupního vektoru podle yaw kamery (world-space).
+    let yaw = look.yaw;
+    let world_x = yaw.cos() * move_x + yaw.sin() * move_y;
+    let world_z = -yaw.sin() * move_x + yaw.cos() * move_y;
+
+    let mag2 = world_x * world_x + world_z * world_z;
+    let (world_x, world_z) = if mag2 > 1.0 {
+        let inv = mag2.sqrt().recip();
+        (world_x * inv, world_z * inv)
+    } else {
+        (world_x, world_z)
+    };
+
+    for (marker, mut vel) in players.iter_mut() {
+        if marker.client_id != lid.0 { continue; }
+        vel.x = world_x * speed;
+        vel.z = world_z * speed;
+        // Skok: pouze pokud je hráč blízko zemi (malá vertikální rychlost).
+        if jump && vel.y.abs() < GROUND_VEL_THRESHOLD {
+            vel.y = PLAYER_JUMP_VEL;
+        }
+    }
+}
+
 
 fn setup_scene_and_camera(
     mut commands: Commands,
@@ -299,10 +358,20 @@ fn attach_player_model_to_new_players(
                 InheritedVisibility::default(),
                 ViewVisibility::default(),
                 PlayerVisualAttached,
+                // FiveM-style: RigidBody přímo na root entitě hráče.
+                // COL_player z player.drawable bude compound collider tohoto těla.
+                RigidBody::Dynamic,
+                LockedAxes::new()
+                    .lock_rotation_x()
+                    .lock_rotation_y()
+                    .lock_rotation_z(),
+                Friction::new(0.0),
             ))
             .with_children(|p| {
                 p.spawn((
                     AdmSceneRoot(model.0.clone()),
+                    // Bez DisableDrawableCollisions — COL_player z manifestu
+                    // se stane compound coliderem parent RigidBody.
                     ModelName("player".to_string()),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                     GlobalTransform::default(),
@@ -321,6 +390,7 @@ fn attach_player_model_to_new_players(
 
 fn sync_net_transform_to_render(
     time: Res<Time>,
+    local_client_id: Option<Res<LocalClientId>>,
     mut predicted_q: Query<
         (
             &mut Transform,
@@ -331,8 +401,18 @@ fn sync_net_transform_to_render(
         With<Predicted>,
     >,
 ) {
+    let local_id = local_client_id.map(|r| r.0);
     // Preferuj server-confirmed stav, fallback na local predicted NetTransform.
-    for (mut local, _marker, predicted_net, confirmed_net) in predicted_q.iter_mut() {
+    for (mut local, marker, predicted_net, confirmed_net) in predicted_q.iter_mut() {
+        // FiveM-style: lokálního hráče neovlivňujeme — jeho Transform řídí Avian fyzika.
+        if Some(marker.client_id) == local_id {
+            // Rotaci ale stále synchronizujeme ze serveru (yaw modelu)
+            let src = confirmed_net.map(|c| &c.0).unwrap_or(predicted_net);
+            let dt = time.delta_secs();
+            let rot_alpha = (1.0 - (-ROTATION_SMOOTHING_RATE * dt).exp()).clamp(0.0, 1.0);
+            local.rotation = local.rotation.slerp(src.rotation, rot_alpha);
+            continue;
+        }
         let src = confirmed_net.map(|c| &c.0).unwrap_or(predicted_net);
         let target_pos = Vec3::new(src.translation.x, src.translation.y, src.translation.z);
         let dt = time.delta_secs();
@@ -442,11 +522,9 @@ fn collect_and_send_input(
     keys: Res<ButtonInput<KeyCode>>,
     cfg: Res<ClientConfigResource>,
     mouse: Res<ButtonInput<MouseButton>>,
-    fixed_time: Res<Time<Fixed>>,
     local_client_id: Option<Res<LocalClientId>>,
-    spatial_query: SpatialQuery,
-    static_world_colliders: Query<(), With<StaticWorldCollider>>,
-    predicted_players: Query<(&PlayerMarker, &NetTransform), With<Predicted>>,
+    // FiveM-style: čteme Transform (fyzikální pozici), nikoli NetTransform
+    predicted_players: Query<(&PlayerMarker, &Transform), With<Predicted>>,
     look: Res<CameraLookState>,
     mut senders: Query<&mut MessageSender<PlayerInput>>,
     mut tick: Local<u32>,
@@ -470,56 +548,10 @@ fn collect_and_send_input(
         move_y *= inv;
     }
 
-    // Klientske WASD je v "camera-local" prostoru.
-    // Server sim ale ocekava world-space move_dir, takze vektor
-    // pred odeslanim otocime podle aktualni yaw kamery.
+    // World-space WASD rotovaný podle yaw kamery
     let yaw_rad = look.yaw;
-    let forward_x = yaw_rad.sin();
-    let forward_z = yaw_rad.cos();
-    let right_x = yaw_rad.cos();
-    let right_z = -yaw_rad.sin();
-    let world_move_x = right_x * move_x + forward_x * move_y;
-    let world_move_z = right_z * move_x + forward_z * move_y;
-
-    let mut clamped_move_x = world_move_x;
-    let mut clamped_move_z = world_move_z;
-
-    if (world_move_x != 0.0 || world_move_z != 0.0) && local_client_id.is_some() {
-        let crouching = keys.pressed(bindings.crouch);
-        let sprinting = keys.pressed(bindings.sprint) && !crouching;
-
-        let mut move_speed = core_net::sim::PLAYER_MOVE_SPEED;
-        if sprinting {
-            move_speed *= core_net::sim::PLAYER_SPRINT_MULTIPLIER;
-        }
-        if crouching {
-            move_speed *= core_net::sim::PLAYER_CROUCH_MULTIPLIER;
-        }
-
-        if let Some(local_id) = local_client_id {
-            let player_pos = predicted_players
-                .iter()
-                .find(|(marker, _)| marker.client_id == local_id.0)
-                .map(|(_, t)| t.translation);
-
-            if let Some(player_pos) = player_pos {
-                let move_dir = Vec3::new(world_move_x, 0.0, world_move_z);
-                let max_move_distance = move_speed * fixed_time.delta_secs();
-                let desired_move_delta = move_dir * max_move_distance;
-                let resolved_move_delta = resolve_movement_with_colliders(
-                    player_pos,
-                    desired_move_delta,
-                    &spatial_query,
-                    &static_world_colliders,
-                );
-
-                if max_move_distance > 0.00001 {
-                    clamped_move_x = (resolved_move_delta.x / max_move_distance).clamp(-1.0, 1.0);
-                    clamped_move_z = (resolved_move_delta.z / max_move_distance).clamp(-1.0, 1.0);
-                }
-            }
-        }
-    }
+    let world_move_x = yaw_rad.cos() * move_x + yaw_rad.sin() * move_y;
+    let world_move_z = -yaw_rad.sin() * move_x + yaw_rad.cos() * move_y;
 
     let mut actions = 0u32;
     if mouse.pressed(mouse_b.attack_primary) { actions |= player_action::PRIMARY_FIRE; }
@@ -531,14 +563,22 @@ fn collect_and_send_input(
     if keys.pressed(bindings.interact) { actions |= player_action::INTERACT; }
     if keys.pressed(bindings.use_item) { actions |= player_action::USE_ITEM; }
 
-    // Yaw posilame primo z kamery (stabilni mouse-delta kontrola).
+    // Aktuální fyzikální pozice lokálního hráče (z Avian Transform, ne NetTransform)
+    let physics_pos = local_client_id.as_ref().and_then(|lid| {
+        predicted_players
+            .iter()
+            .find(|(m, _)| m.client_id == lid.0)
+            .map(|(_, t)| t.translation)
+    }).unwrap_or(Vec3::ZERO);
+
     let yaw = look.yaw.to_degrees();
 
     let input = PlayerInput {
-        move_dir: [clamped_move_x, clamped_move_z],
+        move_dir: [world_move_x, world_move_z],
         look: [yaw, 0.0],
         actions,
         client_tick: *tick,
+        position: [physics_pos.x, physics_pos.y, physics_pos.z],
     };
 
     for mut sender in senders.iter_mut() {
@@ -546,80 +586,6 @@ fn collect_and_send_input(
     }
 }
 
-fn resolve_movement_with_colliders(
-    player_pos: Vec3,
-    desired_move_delta: Vec3,
-    spatial_query: &SpatialQuery,
-    static_world_colliders: &Query<(), With<StaticWorldCollider>>,
-) -> Vec3 {
-    const SKIN_WIDTH: f32 = 0.02;
-
-    if desired_move_delta.length_squared() <= 0.0000001 {
-        return Vec3::ZERO;
-    }
-
-    // Hráč aproximován kapslí: síťová pozice je u nohou, proto offset středu nahoru.
-    let player_shape = Collider::capsule(0.35, 1.1);
-    let shape_origin = Vec3::new(player_pos.x, player_pos.y + 0.9, player_pos.z);
-
-    let Some((move_dir, move_distance)) = Dir::new_and_length(desired_move_delta).ok() else {
-        return Vec3::ZERO;
-    };
-
-    let cast_cfg = ShapeCastConfig::from_max_distance(move_distance);
-    let cast_filter = SpatialQueryFilter::default();
-
-    let first_hit = spatial_query.cast_shape_predicate(
-        &player_shape,
-        shape_origin,
-        Quat::IDENTITY,
-        move_dir,
-        &cast_cfg,
-        &cast_filter,
-        &|entity| static_world_colliders.get(entity).is_ok(),
-    );
-
-    let Some(hit) = first_hit else {
-        return desired_move_delta;
-    };
-
-    let first_move = move_dir.as_vec3() * (hit.distance - SKIN_WIDTH).max(0.0);
-    let remaining = desired_move_delta - first_move;
-    if remaining.length_squared() <= 0.0000001 {
-        return first_move;
-    }
-
-    // Jednoduchy wall-slide: odstran komponentu smerem do kolizni normaly.
-    let wall_normal = Vec3::new(hit.normal1.x, 0.0, hit.normal1.z).normalize_or_zero();
-    if wall_normal.length_squared() <= 0.0000001 {
-        return first_move;
-    }
-
-    let slide_delta = remaining - wall_normal * remaining.dot(wall_normal);
-    let Some((slide_dir, slide_distance)) = Dir::new_and_length(slide_delta).ok() else {
-        return first_move;
-    };
-
-    let slide_origin = shape_origin + first_move;
-    let slide_cfg = ShapeCastConfig::from_max_distance(slide_distance);
-    let slide_hit = spatial_query.cast_shape_predicate(
-        &player_shape,
-        slide_origin,
-        Quat::IDENTITY,
-        slide_dir,
-        &slide_cfg,
-        &cast_filter,
-        &|entity| static_world_colliders.get(entity).is_ok(),
-    );
-
-    let slide_move = if let Some(hit) = slide_hit {
-        slide_dir.as_vec3() * (hit.distance - SKIN_WIDTH).max(0.0)
-    } else {
-        slide_delta
-    };
-
-    first_move + slide_move
-}
 
 /// Publikuje stav inputu do Lua local event busu jako `input:state`.
 /// Resource skripty tak mohou robustne cist klavesove vstupy bez vazby

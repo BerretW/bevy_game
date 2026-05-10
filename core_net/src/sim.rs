@@ -89,8 +89,9 @@ impl Plugin for ServerSimPlugin {
         app.add_systems(
             FixedUpdate,
             (
-                apply_inputs_to_velocity,
-                integrate_velocity,
+                // FiveM-style: server důvěřuje klientské fyzikální pozici.
+                // apply_inputs_to_velocity + integrate_velocity nahrazeny trust_client_position.
+                trust_client_position,
                 emit_player_positions,
                 tick_weapon_cooldowns,
                 process_combat,
@@ -206,59 +207,25 @@ fn attach_replication_to_networked_object(
 // Pohyb
 // ---------------------------------------------------------------------------
 
-fn apply_inputs_to_velocity(
+/// FiveM-style: server přijme klientem poslanou fyzikální pozici a přímo ji
+/// zapíše do NetTransform. Žádná server-side simulace pohybu ani gravitace.
+/// Sanitizace: NaN/Inf hodnoty se ignorují (klient zůstane na posledním místě).
+fn trust_client_position(
     last_inputs: Res<LastPlayerInputs>,
-    mut players: Query<(&PlayerMarker, &mut NetVelocity, &mut NetTransform)>,
+    mut players: Query<(&PlayerMarker, &mut NetTransform)>,
 ) {
-    for (marker, mut vel, mut transform) in players.iter_mut() {
-        if let Some(input) = last_inputs.get(marker.client_id) {
-            let crouching = (input.actions & player_action::CROUCH) != 0;
-            let sprinting = (input.actions & player_action::SPRINT) != 0 && !crouching;
+    for (marker, mut transform) in players.iter_mut() {
+        let Some(input) = last_inputs.get(marker.client_id) else { continue };
 
-            let mut move_speed = PLAYER_MOVE_SPEED;
-            if sprinting {
-                move_speed *= PLAYER_SPRINT_MULTIPLIER;
-            }
-            if crouching {
-                move_speed *= PLAYER_CROUCH_MULTIPLIER;
-            }
+        let [px, py, pz] = input.position;
+        if px.is_finite() && py.is_finite() && pz.is_finite() {
+            transform.translation = Vec3::new(px, py, pz);
+        }
 
-            vel.0.x = input.move_dir[0] * move_speed;
-            vel.0.z = input.move_dir[1] * move_speed;
-
-            let on_ground = transform.translation.y <= GROUND_Y + 0.001;
-            if on_ground {
-                transform.translation.y = GROUND_Y;
-                if vel.0.y < 0.0 {
-                    vel.0.y = 0.0;
-                }
-                if (input.actions & player_action::JUMP) != 0 {
-                    vel.0.y = PLAYER_JUMP_SPEED;
-                }
-            }
-
-            // Kamerovy yaw z klienta preneseme do autoritativni rotace hrace,
-            // aby klienti renderovali model ve smeru pohledu.
-            let yaw_rad = input.look[0].to_radians();
+        // Yaw rotace — stále přenášíme z look[0]
+        let yaw_rad = input.look[0].to_radians();
+        if yaw_rad.is_finite() {
             transform.rotation = Quat::from_rotation_y(yaw_rad);
-        }
-    }
-}
-
-fn integrate_velocity(mut q: Query<(&mut NetTransform, &mut NetVelocity)>, time: Res<Time<Fixed>>) {
-    let dt = time.delta_secs();
-    for (mut t, mut v) in q.iter_mut() {
-        t.translation += v.0 * dt;
-
-        if t.translation.y > GROUND_Y || v.0.y > 0.0 {
-            v.0.y -= PLAYER_GRAVITY * dt;
-        }
-
-        if t.translation.y <= GROUND_Y {
-            t.translation.y = GROUND_Y;
-            if v.0.y < 0.0 {
-                v.0.y = 0.0;
-            }
         }
     }
 }

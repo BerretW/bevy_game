@@ -52,9 +52,29 @@ fn toggle_physics_debug(
 #[derive(Component, Debug)]
 pub struct StaticWorldCollider;
 
+/// Projde řetěz ChildOf nahoru a vrátí `true` pokud nějaký předek má `RigidBody`.
+/// Zabraňuje tomu, aby child COL_* entity (compound colliders) dostávaly vlastní RigidBody.
+fn has_rigidbody_ancestor(
+    entity: Entity,
+    child_of_q: &Query<&bevy::ecs::hierarchy::ChildOf>,
+    rb_q: &Query<Has<RigidBody>>,
+) -> bool {
+    let mut current = entity;
+    while let Ok(child_of) = child_of_q.get(current) {
+        let parent = child_of.parent();
+        if rb_q.get(parent).unwrap_or(false) {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
 fn attach_or_update_drawable_colliders(
     mut commands: Commands,
     q: Query<(Entity, &DrawableCollision, Option<&Mesh3d>), Or<(Added<DrawableCollision>, Changed<DrawableCollision>)>>,
+    child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
+    rb_q: Query<Has<RigidBody>>,
 ) {
     for (entity, dc, mesh) in &q {
         let mut ecmd = commands.entity(entity);
@@ -78,17 +98,24 @@ fn attach_or_update_drawable_colliders(
             }
         }
 
-        if dc.is_static {
-            ecmd.insert((RigidBody::Static, StaticWorldCollider));
-        } else {
-            ecmd.insert(RigidBody::Dynamic);
-            ecmd.remove::<StaticWorldCollider>();
-        }
+        // Pokud má entita předka s RigidBody, je součástí compound collideru.
+        // Přidáme jen Collider (bez vlastního RigidBody) — Avian ho automaticky
+        // přiřadí k nejbližšímu RigidBody předkovi.
+        let has_rb_ancestor = has_rigidbody_ancestor(entity, &child_of_q, &rb_q);
 
-        if let Some(locked_axes) = locked_axes_from_drawable(dc) {
-            ecmd.insert(locked_axes);
-        } else {
-            ecmd.remove::<LockedAxes>();
+        if !has_rb_ancestor {
+            if dc.is_static {
+                ecmd.insert((RigidBody::Static, StaticWorldCollider));
+            } else {
+                ecmd.insert(RigidBody::Dynamic);
+                ecmd.remove::<StaticWorldCollider>();
+            }
+
+            if let Some(locked_axes) = locked_axes_from_drawable(dc) {
+                ecmd.insert(locked_axes);
+            } else {
+                ecmd.remove::<LockedAxes>();
+            }
         }
 
         if dc.friction > 0.0 {
