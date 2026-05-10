@@ -3,7 +3,6 @@
 //! Phase 3.7: `RaycastBridge` se aktualizuje kazdy frame z pozice mysi.
 //! Lua sandbox cte pres `Raycast.GetGroundPosition()`.
 
-use bevy::math::primitives::{Cuboid, Plane3d};
 use bevy::input::mouse::MouseMotion;
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
@@ -29,6 +28,7 @@ use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
+use crate::physics::StaticWorldCollider;
 use crate::native_assets::AdmHandleCache;
 use crate::drawable::AdmSceneRoot;
 use crate::AppState;
@@ -152,8 +152,6 @@ impl Plugin for ClientGameplayPlugin {
 
 fn setup_scene_and_camera(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
 ) {
     commands.spawn((
@@ -174,59 +172,6 @@ fn setup_scene_and_camera(
             -0.8,
             0.0,
         )),
-    ));
-
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(200.0, 200.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.12, 0.16, 0.12),
-            perceptual_roughness: 0.95,
-            ..default()
-        })),
-    ));
-
-    // Orientacni body ve svete: je hned videt, jestli se hybe hrac nebo scena.
-    let marker_mesh = meshes.add(Cuboid::new(1.2, 2.8, 1.2));
-    let marker_positions = [
-        (Vec3::new(0.0, 1.4, 0.0), Color::srgb(1.0, 0.2, 0.2)),
-        (Vec3::new(10.0, 1.4, 0.0), Color::srgb(1.0, 0.85, 0.2)),
-        (Vec3::new(-10.0, 1.4, 0.0), Color::srgb(0.2, 0.85, 1.0)),
-        (Vec3::new(0.0, 1.4, 10.0), Color::srgb(0.2, 1.0, 0.35)),
-        (Vec3::new(0.0, 1.4, -10.0), Color::srgb(1.0, 0.35, 0.9)),
-        (Vec3::new(18.0, 1.4, 18.0), Color::srgb(1.0, 0.55, 0.15)),
-        (Vec3::new(-18.0, 1.4, -18.0), Color::srgb(0.65, 0.4, 1.0)),
-    ];
-    for (pos, color) in marker_positions {
-        commands.spawn((
-            Mesh3d(marker_mesh.clone()),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: color,
-                emissive: color.into(),
-                perceptual_roughness: 0.45,
-                ..default()
-            })),
-            Transform::from_translation(pos),
-        ));
-    }
-
-    // Delsi referencni objekty kolem os X/Z.
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(30.0, 0.3, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.85, 0.2, 0.2),
-            emissive: Color::srgb(0.25, 0.05, 0.05).into(),
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 0.15, 0.0),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(1.0, 0.3, 30.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.2, 0.75, 0.95),
-            emissive: Color::srgb(0.05, 0.15, 0.2).into(),
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 0.15, 0.0),
     ));
 
     commands.insert_resource(PlayerModelHandle(asset_server.load::<crate::drawable::AdmScene>(PLAYER_MODEL_ASSET_PATH)));
@@ -500,6 +445,7 @@ fn collect_and_send_input(
     fixed_time: Res<Time<Fixed>>,
     local_client_id: Option<Res<LocalClientId>>,
     spatial_query: SpatialQuery,
+    static_world_colliders: Query<(), With<StaticWorldCollider>>,
     predicted_players: Query<(&PlayerMarker, &NetTransform), With<Predicted>>,
     look: Res<CameraLookState>,
     mut senders: Query<&mut MessageSender<PlayerInput>>,
@@ -564,6 +510,7 @@ fn collect_and_send_input(
                     player_pos,
                     desired_move_delta,
                     &spatial_query,
+                    &static_world_colliders,
                 );
 
                 if max_move_distance > 0.00001 {
@@ -603,6 +550,7 @@ fn resolve_movement_with_colliders(
     player_pos: Vec3,
     desired_move_delta: Vec3,
     spatial_query: &SpatialQuery,
+    static_world_colliders: &Query<(), With<StaticWorldCollider>>,
 ) -> Vec3 {
     const SKIN_WIDTH: f32 = 0.02;
 
@@ -628,7 +576,7 @@ fn resolve_movement_with_colliders(
         move_dir,
         &cast_cfg,
         &cast_filter,
-        &|_| true,
+        &|entity| static_world_colliders.get(entity).is_ok(),
     );
 
     let Some(hit) = first_hit else {
@@ -661,7 +609,7 @@ fn resolve_movement_with_colliders(
         slide_dir,
         &slide_cfg,
         &cast_filter,
-        &|_| true,
+        &|entity| static_world_colliders.get(entity).is_ok(),
     );
 
     let slide_move = if let Some(hit) = slide_hit {

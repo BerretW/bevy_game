@@ -637,6 +637,12 @@ fn draw_colliders(
                     draw_box_gizmo(&mut gizmos, center, rot, he, color);
                 }
             }
+            CollisionShape::Navmesh => {
+                if !draw_mesh_wireframe(&mut gizmos, mesh3d, &mesh_assets, gt, Color::srgb(0.95, 0.15, 0.8)) {
+                    let he = dc.half_extents.unwrap_or(Vec3::splat(0.5)) * scale;
+                    draw_box_gizmo(&mut gizmos, center, rot, he, Color::srgb(0.95, 0.15, 0.8));
+                }
+            }
             CollisionShape::Sphere => {
                 let r = dc.radius.unwrap_or(0.5) * scale.max_element();
                 draw_sphere_gizmo(&mut gizmos, center, rot, r, color);
@@ -730,7 +736,7 @@ fn update_collider_panel(
     } else {
         for (i, (dc, pos)) in items.iter().enumerate() {
             let size_str = match &dc.shape {
-                CollisionShape::Box | CollisionShape::Convex | CollisionShape::Mesh => {
+                CollisionShape::Box | CollisionShape::Convex | CollisionShape::Mesh | CollisionShape::Navmesh => {
                     let he = dc.half_extents.unwrap_or(Vec3::splat(0.5));
                     format!("he:[{:.2},{:.2},{:.2}]", he.x, he.y, he.z)
                 }

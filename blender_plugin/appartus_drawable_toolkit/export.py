@@ -30,7 +30,7 @@ def _collision_shape_inline(obj, shape: str) -> str:
         radius = max(hx, hz)  # radius in Bevy XZ plane
         height = hy * 2.0     # full height in Bevy Y direction
         return f"radius = {format_float(radius)}, height = {format_float(height)}, "
-    if shape in ("CONVEX", "MESH"):
+    if shape in ("CONVEX", "MESH", "NAVMESH"):
         return (
             f'half_extents = [{format_float(hx)}, {format_float(hy)}, {format_float(hz)}], '
         )

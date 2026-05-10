@@ -16,6 +16,7 @@ class BevyObjectProps(bpy.types.PropertyGroup):
             ("CYLINDER","CYLINDER",""),
             ("CONVEX",  "CONVEX",  ""),
             ("MESH",    "MESH",    ""),
+            ("NAVMESH", "NAVMESH", "AI navigation-only surface"),
         ],
         default="CONVEX",
     )

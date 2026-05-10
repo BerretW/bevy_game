@@ -116,6 +116,10 @@ class BEVY_PT_ObjectPanel(bpy.types.Panel):
         export_box.prop(settings, "apply_modifiers")
         export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
         export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")
+        map_box = layout.box()
+        map_box.label(text="Map Tools", icon="WORLD")
+        map_box.operator("bevy.export_map_manifest", text="Export Map TOML", icon="EXPORT")
+        map_box.operator("bevy.import_map_manifest", text="Import Map TOML", icon="IMPORT")
 
 
 class BEVY_PT_Panel(bpy.types.Panel):
@@ -232,3 +236,7 @@ class BEVY_PT_Panel(bpy.types.Panel):
         export_box.prop(settings, "apply_modifiers")
         export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
         export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")
+        map_box = layout.box()
+        map_box.label(text="Map Tools", icon="WORLD")
+        map_box.operator("bevy.export_map_manifest", text="Export Map TOML", icon="EXPORT")
+        map_box.operator("bevy.import_map_manifest", text="Import Map TOML", icon="IMPORT")

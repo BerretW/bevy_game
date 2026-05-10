@@ -1,6 +1,7 @@
 mod adm;
 mod hook;
 mod loader;
+mod map;
 mod manifest;
 mod material;
 mod registry;
@@ -13,6 +14,7 @@ pub use hook::{
     setup_fallback_textures, auto_hide_col_nodes,
 };
 pub use loader::DrawableManifestLoader;
+pub use map::{MapInstanceDef, MapManifest};
 pub use manifest::{
     CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef,
     MaterialParams, TextureInfo, TextureSource,

@@ -172,6 +172,7 @@ files {
 - [X] Camera-relative movement input: klient rotuje WASD vektor podle yaw kamery a server dostává world-space `move_dir`
 - [X] Player yaw sync: server zapisuje `PlayerInput.look[0]` do `NetTransform.rotation`; klient při render sync aplikuje i rotaci, takže model/sprite míří směrem kamery
 - [X] Player movement smoothing: klientský `sync_net_transform_to_render` používá exponenciální lerp/slerp (translation + rotation), aby se snížil jitter při síťových korekcích
+- [X] Klientský startup cleanup: `setup_scene_and_camera` už nespawnuje debug plane/orientační kostky/osy; scéna spoléhá na map instancing (`ClientMapPlugin`) a ADM assety
 - [X] Jump + crouch movement: server sim aplikuje `JUMP` na vertikální rychlost (`NetVelocity.y`) s gravitací/ground clampem; `CROUCH` snižuje rychlost pohybu (a blokuje sprint multiplier)
 - [X] Lua eventy `onPlayerHit` + `onPlayerDeath` emitované serverem přes `LocalEventBus` (JSON payload: attacker, victim, damage, weapon, position)
 - [X] Lua eventy `playerConnecting` + `playerDropped` při connect/disconnect (observer na `Add<Connected>` / `Remove<Connected>`)
@@ -312,7 +313,13 @@ files {
 - [X] COLLISION metadata obsahují `material` enum (20 typů) pro `core/audio` a dopadové VFX routing (footsteps, bullet impacts, debris)
 - [X] `CollisionMaterial` má helper routing API (`footstep_profile`, `impact_profile`) pro rychlé napojení sound/fx resources
 - [X] Klientský movement gate: `collect_and_send_input` používá Avian `SpatialQuery::cast_shape_predicate` (capsule sweep) proti solid colliderům + základní wall-slide (projected remaining delta)
+- [X] Klientský movement gate nyní filtruje sweep pouze na `StaticWorldCollider`, takže hráče neblokují jeho vlastní/dynamické drawable collidery
 - [X] Narrow-phase solver a rigid-body backend (Avian 0.6, Bevy 0.18 kompatibilní)
+- [X] Nový `CollisionShape::NAVMESH` kontrakt v `.drawable` (`shape = "NAVMESH"`) — navmesh povrchy jsou ingestované do `DrawableCollision`
+- [X] `host_client::physics` nyní `NAVMESH` nepromítá do Avian rigid-body colliderů (navigation-only), ale extrahuje trojúhelníky do `NavMeshSurfaceCache`
+- [X] Blender toolkit rozšířen o `NAVMESH` shape + map workflow (`Export Map TOML` / `Import Map TOML`) pro editaci map instancí a navmesh-only markerů
+- [X] Klientský `ClientMapPlugin` načítá mapy z `host_client/assets/maps/*.map.toml` a spawnuje instancované modely dle TOML transformací
+- [X] `example.map.toml` obsahuje viditelnou terrain instanci (`terrain_main`) místo `navmesh_only` debug-only spawnu
 
 `material` enum (aktuální kontrakt): `CONCRETE`, `STONE`, `BRICK`, `WOOD`, `METAL`, `GLASS`, `DIRT`, `GRASS`, `SAND`, `GRAVEL`, `MUD`, `SNOW`, `ICE`, `WATER`, `RUBBER`, `PLASTIC`, `CERAMIC`, `CARPET`, `ASPHALT`, `LADDER_METAL`.
 
@@ -862,8 +869,9 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
 /server.toml                     repo-tracked default server config (edit jako šablonu)
 /core_drawable/                   Sdílený ADS plugin — používán host_client i model_viewer
   src/lib.rs                       DrawablePlugin (registrace assetů, materiálů, systémů)
+  src/map.rs                       `MapManifest` + `MapInstanceDef` (TOML kontrakt pro map instance)
   src/manifest.rs                  DrawableManifest (serde), MaterialDef, EntityDef, CollisionShape,
-                                     optional collision params (`half_extents`, `radius`, `height`) +
+                                     optional collision params (`half_extents`, `radius`, `height`, `NAVMESH`) +
                                      collision metadata (`climbable`, `ladder`, `material`)
   src/loader.rs                    DrawableManifestLoader (AssetLoader, ext=.drawable)
   src/registry.rs                  DrawableManifestRegistry, GltfHandleCache, TextureRegistry
@@ -882,7 +890,9 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
                                      publish_input_state_to_lua (`input:state` local bus event),
                                      3D player visual attach + 1st/3rd person camera follow
   src/physics.rs                   ClientPhysicsPlugin + Avian (`PhysicsPlugins`), mapping `DrawableCollision`
-                                     na `Collider`/`ColliderConstructor` (incl. `TrimeshFromMesh`) + `StaticWorldCollider`
+                                     na `Collider`/`ColliderConstructor` (incl. `TrimeshFromMesh`) + `StaticWorldCollider`,
+                                     `NAVMESH` extraction do `NavMeshSurfaceCache` (AI navigation data)
+  src/map_loader.rs                `ClientMapPlugin` — load `assets/maps/*.map.toml`, spawn map instance entit přes `LocalObjectMarker`
   src/native_assets.rs             NativeAssetsPlugin — scan assets/fonts/*.{ttf,otf}, assets/models/*.{glb,gltf,drawable}
   src/drawable/mod.rs              Tenký re-export wrapper: `pub use core_drawable::*`
   assets/shaders/                  Sdílené WGSL shadery (standard_pbr, layered_env, vehicle_glass,

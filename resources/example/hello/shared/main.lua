@@ -8,4 +8,3 @@ log_info(string.format(
     -- protože sandboxy jsou izolované. Slouží jako sanity check.
     tostring(Core)
 ))
-World.SpawnLocalObject("kostka", {x=3, y=1, z=3}, {x=0, y=0, z=0})

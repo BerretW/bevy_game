@@ -14,6 +14,7 @@ mod drawable;
 mod gameplay;
 mod gui_render;
 mod lobby;
+mod map_loader;
 mod native_assets;
 mod physics;
 
@@ -201,6 +202,7 @@ fn main() {
             ClientCorePlugin,
             FramepacePlugin,
         ))
+        .add_plugins(map_loader::ClientMapPlugin)
         .add_plugins(physics::ClientPhysicsPlugin)
         .insert_resource(FramepaceSettings { limiter: framepace_limiter })
         .run();

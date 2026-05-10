@@ -14,6 +14,7 @@ from .material import (
     set_material_texture_source, clear_embedded_images, _sync_texture_node,
 )
 from .export import gather_target_meshes, validate_export_consistency, build_drawable_toml, save_companion_textures
+from .utils import parse_tags
 
 
 def _get_active_material(context):
@@ -53,6 +54,51 @@ def _prefill_export_name(obj):
         return
     if not props.export_name.strip():
         props.export_name = bpy.path.clean_name(obj.name)
+
+
+def _blender_pos_to_map(pos: Vector):
+    return (float(pos.x), float(pos.z), float(-pos.y))
+
+
+def _map_pos_to_blender(pos):
+    return Vector((float(pos[0]), float(-pos[2]), float(pos[1])))
+
+
+def _blender_rot_to_map_deg(rot_deg: Vector):
+    return (float(rot_deg.x), float(rot_deg.z), float(-rot_deg.y))
+
+
+def _map_rot_deg_to_blender(rot_deg):
+    return Vector((float(rot_deg[0]), float(-rot_deg[2]), float(rot_deg[1])))
+
+
+def _format_map_float(value: float) -> str:
+    s = f"{float(value):.6g}"
+    if "." not in s and "e" not in s and "E" not in s:
+        s += ".0"
+    return s
+
+
+def _format_map_vec3(values):
+    return "[" + ", ".join(_format_map_float(v) for v in values) + "]"
+
+
+def _build_map_manifest_lines(instances):
+    lines = ['version = "1.0"', ""]
+    for item in instances:
+        lines.append("[[instances]]")
+        lines.append(f'id = "{item["id"]}"')
+        lines.append(f'model = "{item["model"]}"')
+        lines.append(f'position = {_format_map_vec3(item["position"])}')
+        lines.append(f'rotation_deg = {_format_map_vec3(item["rotation_deg"])}')
+        lines.append(f'scale = {_format_map_vec3(item["scale"])}')
+        if item["navmesh_only"]:
+            lines.append("navmesh_only = true")
+        if item["tags"]:
+            tags = ", ".join(f'"{t}"' for t in item["tags"])
+            lines.append(f"tags = [{tags}]")
+        lines.append("")
+    return lines
 
 
 class BEVY_OT_InitProject(bpy.types.Operator):
@@ -673,7 +719,7 @@ def _apply_entity_from_drawable(obj, ent_data):
             radius = float(ent_data.get("radius", 0.5))
             height = float(ent_data.get("height", 2.0))
             
-            if shape in ("BOX", "CONVEX", "MESH"):
+            if shape in ("BOX", "CONVEX", "MESH", "NAVMESH"):
                 bmesh.ops.create_cube(bm, size=2.0)
                 for v in bm.verts:
                     # Převod rozměrů Bevy souřadnic (Y-up) zpět na Blender rozměry (Z-up)
@@ -868,6 +914,153 @@ class ADS_OT_export_adm(bpy.types.Operator):
             self.report({'WARNING'}, f".drawable selhal: {e}")
 
         self.report({'INFO'}, f"ADM: {meshes} meshů, {nodes} uzlů → {os.path.basename(adm_path)} + {os.path.basename(drawable_path)}")
+        return {'FINISHED'}
+
+
+class BEVY_OT_ExportMapManifest(bpy.types.Operator):
+    bl_idname = "bevy.export_map_manifest"
+    bl_label = "Export Map TOML"
+    bl_description = "Export selected (or all) mesh objects to a map TOML manifest"
+
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.toml", options={'HIDDEN'})
+    use_selection: bpy.props.BoolProperty(name="Pouze výběr", default=True)
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+            default = os.path.join(blend_dir, "map.map.toml") if blend_dir else "map.map.toml"
+            self.filepath = default
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        if self.use_selection:
+            objects = [o for o in context.selected_objects if o.type == 'MESH']
+        else:
+            objects = [o for o in context.scene.objects if o.type == 'MESH']
+
+        if not objects:
+            self.report({'WARNING'}, "Žádné mesh objekty pro map export")
+            return {'CANCELLED'}
+
+        instances = []
+        for idx, obj in enumerate(objects):
+            props = getattr(obj, 'bevy_toolkit_obj', None)
+            export_name = props.export_name.strip() if props else ""
+            model = export_name or bpy.path.clean_name(obj.name)
+            position = _blender_pos_to_map(obj.location)
+            rot_deg = obj.rotation_euler.to_matrix().to_euler('XYZ')
+            rotation = _blender_rot_to_map_deg(Vector((
+                rot_deg.x * (180.0 / 3.141592653589793),
+                rot_deg.y * (180.0 / 3.141592653589793),
+                rot_deg.z * (180.0 / 3.141592653589793),
+            )))
+            scale = (float(obj.scale.x), float(obj.scale.z), float(obj.scale.y))
+            tags = parse_tags(props.tags_csv) if props else []
+            navmesh_only = bool(props and props.is_col and props.col_shape == 'NAVMESH')
+
+            instances.append({
+                "id": f"{model}_{idx}",
+                "model": model,
+                "position": position,
+                "rotation_deg": rotation,
+                "scale": scale,
+                "tags": tags,
+                "navmesh_only": navmesh_only,
+            })
+
+        lines = _build_map_manifest_lines(instances)
+        try:
+            with open(self.filepath, 'w', encoding='utf-8') as fh:
+                fh.write("\n".join(lines) + "\n")
+        except Exception as e:
+            self.report({'ERROR'}, f"Nelze zapsat map TOML: {e}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Map export: {len(instances)} instancí → {os.path.basename(self.filepath)}")
+        return {'FINISHED'}
+
+
+class BEVY_OT_ImportMapManifest(bpy.types.Operator):
+    bl_idname = "bevy.import_map_manifest"
+    bl_label = "Import Map TOML"
+    bl_description = "Import map TOML and create editable scene placeholders"
+
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.toml", options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        try:
+            import tomllib
+        except ImportError:
+            self.report({'ERROR'}, "tomllib není dostupné (vyžaduje Blender/Python 3.11+)")
+            return {'CANCELLED'}
+
+        if not os.path.isfile(self.filepath):
+            self.report({'ERROR'}, f"Soubor nenalezen: {self.filepath}")
+            return {'CANCELLED'}
+
+        try:
+            with open(self.filepath, 'rb') as fh:
+                data = tomllib.load(fh)
+        except Exception as e:
+            self.report({'ERROR'}, f"Nelze načíst TOML: {e}")
+            return {'CANCELLED'}
+
+        instances = data.get('instances', [])
+        if not isinstance(instances, list) or not instances:
+            self.report({'WARNING'}, "Map TOML neobsahuje žádné [[instances]]")
+            return {'CANCELLED'}
+
+        imported = 0
+        for idx, entry in enumerate(instances):
+            model = str(entry.get('model', f'instance_{idx}')).strip() or f'instance_{idx}'
+            obj_name = str(entry.get('id', f'map_{model}_{idx}')).strip() or f'map_{model}_{idx}'
+
+            mesh = bpy.data.meshes.new(obj_name + "_mesh")
+            mesh.from_pydata(
+                [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)],
+                [],
+                [(0, 1, 2, 3)],
+            )
+            obj = bpy.data.objects.new(obj_name, mesh)
+            context.collection.objects.link(obj)
+
+            pos = entry.get('position', [0.0, 0.0, 0.0])
+            rot = entry.get('rotation_deg', [0.0, 0.0, 0.0])
+            scl = entry.get('scale', [1.0, 1.0, 1.0])
+
+            obj.location = _map_pos_to_blender(pos)
+            obj.rotation_mode = 'XYZ'
+            rot_blender_deg = _map_rot_deg_to_blender(rot)
+            obj.rotation_euler = Vector((
+                rot_blender_deg.x * (3.141592653589793 / 180.0),
+                rot_blender_deg.y * (3.141592653589793 / 180.0),
+                rot_blender_deg.z * (3.141592653589793 / 180.0),
+            ))
+            obj.scale = Vector((float(scl[0]), float(scl[2]), float(scl[1])))
+
+            props = obj.bevy_toolkit_obj
+            props.export_name = model
+            navmesh_only = bool(entry.get('navmesh_only', False))
+            if navmesh_only:
+                props.is_col = True
+                props.col_shape = 'NAVMESH'
+                obj.display_type = 'WIRE'
+                obj.hide_render = True
+
+            tags = entry.get('tags', [])
+            if isinstance(tags, list):
+                props.tags_csv = ",".join(str(t) for t in tags)
+
+            imported += 1
+
+        self.report({'INFO'}, f"Map import: vytvořeno {imported} objektů")
         return {'FINISHED'}
 
 

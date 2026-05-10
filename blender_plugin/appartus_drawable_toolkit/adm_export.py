@@ -327,7 +327,7 @@ def export_adm(filepath, objects=None, export_textures=True):
                 needs_mesh = True
             elif node_type == 1: # Kolizní mesh
                 shape = obj.bevy_toolkit_obj.col_shape
-                if shape in ("MESH", "CONVEX"):
+                if shape in ("MESH", "CONVEX", "NAVMESH"):
                     needs_mesh = True
 
             if needs_mesh:

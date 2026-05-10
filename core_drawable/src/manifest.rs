@@ -103,6 +103,7 @@ pub enum CollisionShape {
     Cylinder,
     Convex,
     Mesh,
+    Navmesh,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
