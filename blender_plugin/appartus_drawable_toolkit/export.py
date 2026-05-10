@@ -118,6 +118,12 @@ def build_drawable_toml(asset_name: str, target_meshes, used_materials) -> list:
             props      = obj.bevy_toolkit_obj
             tags       = parse_tags(props.tags_csv)
             tags_array = "[" + ", ".join(f'"{toml_escape(tag)}"' for tag in tags) + "]"
+            lock_translation = (
+                f"[{bool_to_toml(props.lock_tx)}, {bool_to_toml(props.lock_ty)}, {bool_to_toml(props.lock_tz)}]"
+            )
+            lock_rotation = (
+                f"[{bool_to_toml(props.lock_rx)}, {bool_to_toml(props.lock_ry)}, {bool_to_toml(props.lock_rz)}]"
+            )
             shape = props.col_shape
             shape_inline = _collision_shape_inline(obj, shape)
             lines.append(
@@ -133,7 +139,9 @@ def build_drawable_toml(asset_name: str, target_meshes, used_materials) -> list:
                 + f'material = "{props.col_material}", '
                 + f"friction = {format_float(props.friction)}, "
                 + f"restitution = {format_float(props.restitution)}, "
-                + f"tags = {tags_array}"
+                + f"tags = {tags_array}, "
+                + f"lock_translation = {lock_translation}, "
+                + f"lock_rotation = {lock_rotation}"
                 + " }"
             )
         else:

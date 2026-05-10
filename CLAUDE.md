@@ -75,6 +75,30 @@ files {
 
 ## Coding Standards & Guardrails
 
+### 0. KRITICKÁ ARCHITEKTONICKÁ PRAVIDLA
+
+#### Kolize — Drawable Manifest je JEDINOU pravdou
+
+**ZÁSADA:** Kolize (colliders) MOHOU existovat POUZE jako explicitní `COLLISION` entity definice v `.drawable` manifestu. **Žádná auto-generace z mesh geometrie bez manifestu.**
+
+- **Vykázáno (Phase 3.5):** Odstraněny všechny fallback mechanismy:
+  - ✓ ADM pipeline (`core_drawable/src/adm.rs`): Fallback z mesh AABB odstraněn
+  - ✓ GLTF pipeline (`core_drawable/src/hook.rs`): COL_* uzly bez manifestu logují warning
+  - ✓ Physics engine (`host_client/src/physics.rs`): Zpracovává POUZE `DrawableCollision` komponenty
+  
+- **Enforcement:** Entita bez `DrawableCollision` komponenty = žádná fyzika, bez výjimek
+- **Autoritativnost:** `.drawable` manifest je zdrojem pravdy; Blender toolkit (`.obj` exportu, properties) mapuje přímo na manifest definice
+
+**Pravidlo:** Při authoringu v Blenderu:
+1. Vytvořit `COL_*` uzly (pojmenovávání)
+2. Zaregistrovat v `Apparatus Drawable Toolkit` → Properties panel → COLLISION metadata
+3. Export → `.drawable` TOML manifest obsahuje `[[entities]]` s typ="COLLISION"
+4. Absence v manifestu = fyzika neexistuje, bez tichých fallback mechanismů
+
+**Pro vývojáře:** Pokud chyběj fyzika, zkontroluj `.drawable` manifest — NEměli se objevit tichá fallback kolize.
+
+---
+
 ### 1. Rust / Lua Boundary
 
 | Pravidlo    | Detail                                                                                                         |
@@ -151,6 +175,7 @@ files {
 - [X] Kamera režimy klienta: 3rd person / 1st person toggle (`F6`) se sledováním lokálního hráče
 - [X] Kamera stabilizace: look ovládán `MouseMotion` delta (`yaw/pitch` s clamp), cursor lock (`CursorGrabMode::Locked`), bez nelineární rotace podle pozice kurzoru
 - [X] GLTF `SceneRoot` stabilizace: registrace reflektovaných typů (`Transform`, `GlobalTransform`, `Visibility`, `InheritedVisibility`, `ViewVisibility`, `TransformTreeChanged`, `Mesh3d`, `MeshMaterial3d<StandardMaterial>`, `Aabb`, `SkinnedMesh`, `GltfExtras`, `GltfSceneExtras`, `GltfMeshExtras`, `GltfMeshName`, `GltfMaterialExtras`, `GltfMaterialName`, `ChildOf`, `Children`, `Name`) v klientském pluginu
+- [X] **Player fysika (Phase 3.5)**: Hráč entita dostane `DrawableCollision` s CAPSULE tvar (0.4m radius, 1.7m height) — vizuální ADM model je dítě s `DisableDrawableCollisions` markerem (zabránění duplikaci fyziky)
 
 #### 3.2 — Command Queue & Bezpečný Lua Bridge ✅
 
@@ -304,12 +329,19 @@ files {
 
 **Filosofie Phase 5:** Rust Core implementuje fyzikální engine, datové kontrakty a autoritativní simulaci. Lua Resources definují vše herně specifické — zbraně, munici, hitboxy, herní módy. Žádná konkrétní zbraň nebo herní pravidlo se nesmí hardcodovat do Rustu.
 
-#### 5.0 — Collision Foundation (in progress)
+#### 5.0 — Collision Foundation ✅
+
+**Architektonické pravidlo:** Kolize MOHOU existovat POUZE jako explicitní `COLLISION` entity definice v `.drawable` manifestu. Žádná auto-generace z mesh geometrie bez manifestu.
 
 - [X] Blender ADS export COLLISION entit rozšířen o primitive dimensions (`half_extents`, `radius`, `height`)
 - [X] `core_drawable` ingestuje COLLISION metadata do runtime komponenty `DrawableCollision`
-- [X] `host_client::physics::ClientPhysicsPlugin` používá Avian 0.6 (`PhysicsPlugins`) a mapuje `DrawableCollision` na runtime `Collider` / `ColliderConstructor` (`TrimeshFromMesh`, `ConvexHullFromMesh`)
-- [X] `DrawableCollision` podporuje axis-lock flagy (`lock_translation`, `lock_rotation`) z `.drawable`; `host_client::physics` je mapuje na Avian `LockedAxes`, takže dynamické collidery lze zamknout po osách (fix rolloutu/odpojování od vizuálu)
+- [X] `host_client::physics::ClientPhysicsPlugin` používá Avian 0.6 (`PhysicsPlugins`) a mapuje `DrawableCollision` na runtime `Collider` / `ColliderConstructor` (`TrimeshFromMesh`, `ConvexHullFromMesh`) — POUZE z DrawableCollision
+- [X] **Enforcement (Phase 3.5):** Odstraněny fallback mechanismy:
+  - ✓ ADM pipeline (`core_drawable/src/adm.rs`): Fallback z mesh AABB pro unnamed collidery ODSTRANĚN — nyní vyžaduje manifest definici
+  - ✓ GLTF pipeline (`core_drawable/src/hook.rs`): COL_* uzly bez manifestu logují warning, nejsou tichě skryty
+  - ✓ Physics: Zpracovává POUZE entity s `DrawableCollision` komponentou
+- [X] `DrawableCollision` podporuje axis-lock flagy (`lock_translation`, `lock_rotation`) z `.drawable`; `host_client::physics` je mapuje na Avian `LockedAxes`, takže dynamické collidery lze zamknout po osách
+- [X] `DisableDrawableCollisions` marker na drawable root entitě vypne runtime fyziku `COLLISION` uzlů (uzly zůstanou skryté); používá se pro hráčův vizuální ADM model, aby se `COL_*` rigid body neodpojoval od render reprezentace
 - [X] COLLISION metadata obsahují movement flagy `climbable`, `ladder` pro budoucí traversal systém (ledge/ladder logic)
 - [X] COLLISION metadata obsahují `material` enum (20 typů) pro `core/audio` a dopadové VFX routing (footsteps, bullet impacts, debris)
 - [X] `CollisionMaterial` má helper routing API (`footstep_profile`, `impact_profile`) pro rychlé napojení sound/fx resources
@@ -319,8 +351,10 @@ files {
 - [X] Nový `CollisionShape::NAVMESH` kontrakt v `.drawable` (`shape = "NAVMESH"`) — navmesh povrchy jsou ingestované do `DrawableCollision`
 - [X] `host_client::physics` nyní `NAVMESH` nepromítá do Avian rigid-body colliderů (navigation-only), ale extrahuje trojúhelníky do `NavMeshSurfaceCache`
 - [X] Blender toolkit rozšířen o `NAVMESH` shape + map workflow (`Export Map TOML` / `Import Map TOML`) pro editaci map instancí a navmesh-only markerů
+- [X] Blender toolkit COLLISION panel/export/import podporuje axis lock flagy (`lock_translation`, `lock_rotation`) pro zamykání pohybu/rotace collideru po osách
 - [X] Klientský `ClientMapPlugin` načítá mapy z `host_client/assets/maps/*.map.toml` a spawnuje instancované modely dle TOML transformací
 - [X] `example.map.toml` obsahuje viditelnou terrain instanci (`terrain_main`) místo `navmesh_only` debug-only spawnu
+
 
 `material` enum (aktuální kontrakt): `CONCRETE`, `STONE`, `BRICK`, `WOOD`, `METAL`, `GLASS`, `DIRT`, `GRASS`, `SAND`, `GRAVEL`, `MUD`, `SNOW`, `ICE`, `WATER`, `RUBBER`, `PLASTIC`, `CERAMIC`, `CARPET`, `ASPHALT`, `LADDER_METAL`.
 

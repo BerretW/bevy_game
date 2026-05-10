@@ -245,6 +245,12 @@ class BEVY_OT_GenerateCol(bpy.types.Operator):
         new_obj.bevy_toolkit_obj.col_climbable = False
         new_obj.bevy_toolkit_obj.col_ladder = False
         new_obj.bevy_toolkit_obj.col_material = "CONCRETE"
+        new_obj.bevy_toolkit_obj.lock_tx = False
+        new_obj.bevy_toolkit_obj.lock_ty = False
+        new_obj.bevy_toolkit_obj.lock_tz = False
+        new_obj.bevy_toolkit_obj.lock_rx = False
+        new_obj.bevy_toolkit_obj.lock_ry = False
+        new_obj.bevy_toolkit_obj.lock_rz = False
         new_obj.display_type = "WIRE"
         new_obj.hide_render  = True
         context.collection.objects.link(new_obj)
@@ -689,6 +695,11 @@ def _apply_material_from_drawable(mat, mat_data, search_dir=None):
 def _apply_entity_from_drawable(obj, ent_data):
     obj_props = obj.bevy_toolkit_obj
     if ent_data.get("type") == "COLLISION":
+        def _bool3(value, default=(False, False, False)):
+            if isinstance(value, (list, tuple)) and len(value) == 3:
+                return (bool(value[0]), bool(value[1]), bool(value[2]))
+            return default
+
         shape = ent_data.get("shape", "CONVEX")
         obj_props.is_col      = True
         obj_props.col_shape   = shape
@@ -701,6 +712,10 @@ def _apply_entity_from_drawable(obj, ent_data):
         obj_props.friction    = float(ent_data.get("friction",    0.6))
         obj_props.restitution = float(ent_data.get("restitution", 0.2))
         obj_props.tags_csv    = ",".join(ent_data.get("tags",[]))
+        lock_t = _bool3(ent_data.get("lock_translation", (False, False, False)))
+        lock_r = _bool3(ent_data.get("lock_rotation", (False, False, False)))
+        obj_props.lock_tx, obj_props.lock_ty, obj_props.lock_tz = lock_t
+        obj_props.lock_rx, obj_props.lock_ry, obj_props.lock_rz = lock_r
         
         # Aby collider v Blenderu neblokoval výhled, nastavíme zobrazení na 'WIRE'
         obj.display_type      = "WIRE"

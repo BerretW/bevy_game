@@ -32,6 +32,12 @@ class BevyObjectProps(bpy.types.PropertyGroup):
     friction:    bpy.props.FloatProperty(name="Friction",    default=0.6, min=0.0)
     restitution: bpy.props.FloatProperty(name="Restitution", default=0.2, min=0.0)
     tags_csv:    bpy.props.StringProperty(name="Tags",       default="")
+    lock_tx:     bpy.props.BoolProperty(name="Lock Move X", default=False)
+    lock_ty:     bpy.props.BoolProperty(name="Lock Move Y", default=False)
+    lock_tz:     bpy.props.BoolProperty(name="Lock Move Z", default=False)
+    lock_rx:     bpy.props.BoolProperty(name="Lock Rot X",  default=False)
+    lock_ry:     bpy.props.BoolProperty(name="Lock Rot Y",  default=False)
+    lock_rz:     bpy.props.BoolProperty(name="Lock Rot Z",  default=False)
 
 
 class BevyMaterialProps(bpy.types.PropertyGroup):

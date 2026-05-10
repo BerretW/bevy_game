@@ -9,7 +9,7 @@ mod registry;
 pub use adm::{AdmLoader, AdmScene, AdmSceneRoot, AdmSceneSpawned, AdmNode, AdmNodeType};
 pub use hook::{
     DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
-    DrawableCollision,
+    DrawableCollision, DisableDrawableCollisions,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
     setup_fallback_textures, auto_hide_col_nodes,
 };

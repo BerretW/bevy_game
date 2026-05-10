@@ -68,6 +68,11 @@ pub struct SceneReadyId(InstanceId);
 #[derive(Component)]
 pub struct DrawableHooked;
 
+/// Pokud je marker na root entitě drawable scény, `COLLISION` uzly se
+/// stále schovají, ale nevloží se `DrawableCollision` (tj. bez runtime fyziky).
+#[derive(Component)]
+pub struct DisableDrawableCollisions;
+
 /// Runtime kolizní definice odvozená z `.drawable` manifestu.
 ///
 /// Fyzikální backend (Avian/Rapier) může tento komponent převést na skutečný collider.
@@ -196,7 +201,13 @@ pub fn hook_drawable_scenes(
     gltfs: Res<Assets<Gltf>>,
     fallback: Res<DrawableFallbackTextures>,
     pending: Query<
-        (Entity, &SceneReadyId, &DrawableSpawnIntent, &ModelName),
+        (
+            Entity,
+            &SceneReadyId,
+            &DrawableSpawnIntent,
+            &ModelName,
+            Option<&DisableDrawableCollisions>,
+        ),
         Without<DrawableHooked>,
     >,
     names: Query<&Name>,
@@ -209,7 +220,7 @@ pub fn hook_drawable_scenes(
     mut texture_reg: ResMut<TextureRegistry>,
     asset_server: Res<AssetServer>,
 ) {
-    for (root_entity, scene_ready, intent, model_name) in &pending {
+    for (root_entity, scene_ready, intent, model_name, disable_collisions) in &pending {
         // Čekáme na manifest
         let Some(manifest) = manifests.get(&intent.manifest_handle) else { continue };
         // Čekáme na úplné spawnutí scene
@@ -240,6 +251,11 @@ pub fn hook_drawable_scenes(
                 climbable, ladder, material, friction, restitution, tags,
                 lock_translation, lock_rotation,
             }) = entity_def {
+                if disable_collisions.is_some() {
+                    commands.entity(entity).insert(Visibility::Hidden);
+                    continue;
+                }
+
                 commands.entity(entity).insert((
                     Visibility::Hidden,
                     DrawableCollision {
@@ -601,14 +617,19 @@ pub(crate) fn build_vehicle_glass(
     }
 }
 
-/// Automaticky skryje entity pojmenované s prefixem `COL_` které nemají `DrawableCollision`.
-/// Pokrývá případ GLB modelů bez `.drawable` manifestu — COL_ uzly by jinak zůstaly viditelné.
+/// Validace: COL_* uzly MUSÍ mít DrawableCollision (definováno v .drawable manifestu).
+/// Absence = chyba v authoringu — uzel bez manifest definice se neskrývá, ale loguje se warning.
 pub fn auto_hide_col_nodes(
     mut commands: Commands,
     query: Query<(Entity, &Name), (Added<Name>, Without<DrawableCollision>)>,
 ) {
     for (entity, name) in &query {
         if name.as_str().starts_with("COL_") {
+            warn!(
+                "[drawable] COL_* uzel '{}' nemá DrawableCollision definici v .drawable manifestu — bude ignorován",
+                name.as_str()
+            );
+            // Skrýt, ale upozornit — authorský problém, ne runtime problém
             commands.entity(entity).insert(Visibility::Hidden);
         }
     }

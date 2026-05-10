@@ -17,7 +17,12 @@ use core_resources::ModelName;
 use crate::manifest::DrawableManifest;
 use crate::material::{LayeredEnvMaterial, StandardPbrMaterial, VehicleGlassMaterial};
 use crate::registry::{DrawableManifestRegistry, TextureRegistry};
-use crate::hook::{build_standard_pbr, build_layered_env, build_vehicle_glass};
+use crate::hook::{
+    build_standard_pbr,
+    build_layered_env,
+    build_vehicle_glass,
+    DisableDrawableCollisions,
+};
 
 // ---------------------------------------------------------------------------
 // Konstanty
@@ -426,7 +431,10 @@ fn read_u32_vec(cur: &mut Cursor<&[u8]>, count: usize) -> Result<Vec<u32>, AdmEr
 pub fn spawn_adm_scenes(
     mut default_mat: Local<Option<Handle<StandardMaterial>>>,
     mut commands: Commands,
-    query: Query<(Entity, &AdmSceneRoot, &ModelName), Without<AdmSceneSpawned>>,
+    query: Query<
+        (Entity, &AdmSceneRoot, &ModelName, Option<&DisableDrawableCollisions>),
+        Without<AdmSceneSpawned>,
+    >,
     adm_assets: Res<Assets<AdmScene>>,
     drawable_reg: Res<DrawableManifestRegistry>,
     manifests: Res<Assets<DrawableManifest>>,
@@ -443,7 +451,7 @@ pub fn spawn_adm_scenes(
         std_base_mats.add(StandardMaterial::default())
     }).clone();
 
-    for (root_entity, adm_root, model_name) in &query {
+    for (root_entity, adm_root, model_name, disable_collisions) in &query {
         let Some(scene) = adm_assets.get(&adm_root.0) else { continue };
 
         // Optionally get drawable manifest
@@ -515,6 +523,12 @@ pub fn spawn_adm_scenes(
                 AdmNodeType::Collision => {
                     entity_cmd.insert(Visibility::Hidden);
 
+                    if disable_collisions.is_some() {
+                        let entity_id = entity_cmd.id();
+                        node_entities.push(entity_id);
+                        continue;
+                    }
+
                     // PŘIDÁNO: Pokud má collider z Blenderu exportovanou geometrii, 
                     // připojíme mu Handle<Mesh>. Fyzikální systém si ho pak přečte.
                     if let Some(mesh_idx) = node.mesh_index {
@@ -575,32 +589,15 @@ pub fn spawn_adm_scenes(
                         None
                     };
 
-                    // Fallback: no manifest — use mesh AABB with sane defaults.
-                    let col = col.or_else(|| {
-                        let he = node.mesh_index
-                            .and_then(|mi| scene.mesh_aabbs.get(mi))
-                            .and_then(|ab| ab.as_ref())
-                            .map(|(_, he)| *he);
-                        Some(crate::hook::DrawableCollision {
-                            shape: crate::manifest::CollisionShape::Box,
-                            half_extents: he,
-                            radius: None,
-                            height: None,
-                            mass: 0.0,
-                            is_static: true,
-                            climbable: false,
-                            ladder: false,
-                            material: crate::manifest::CollisionMaterial::Concrete,
-                            friction: 0.5,
-                            restitution: 0.2,
-                            tags: vec![],
-                            lock_translation: None,
-                            lock_rotation: None,
-                        })
-                    });
-
+                    // Kolize MUSÍ být definované v .drawable manifestu — žádná auto-generace.
                     if let Some(col) = col {
                         entity_cmd.insert(col);
+                    } else if node.node_type == AdmNodeType::Collision {
+                        // COLLISION uzel bez manifest definice = chyba v authoringu
+                        warn!(
+                            "[drawable] ADM node '{}' je COLLISION ale chybí definice v .drawable manifestu",
+                            node.name
+                        );
                     }
                 }
                 AdmNodeType::Empty => {}
