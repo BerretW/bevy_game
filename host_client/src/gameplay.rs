@@ -30,7 +30,7 @@ use lightyear::prelude::Predicted;
 use crate::config::ClientConfigResource;
 use crate::physics::StaticWorldCollider;
 use crate::native_assets::AdmHandleCache;
-use crate::drawable::{AdmSceneRoot, DisableDrawableCollisions, DrawableCollision, CollisionShape, CollisionMaterial};
+use crate::drawable::AdmSceneRoot;
 use crate::AppState;
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
@@ -290,24 +290,6 @@ fn attach_player_model_to_new_players(
             continue;
         }
 
-        // Hráč dostane capsule collider pro fyziku
-        let player_collider = DrawableCollision {
-            shape: CollisionShape::Capsule,
-            half_extents: None,
-            radius: Some(0.4),
-            height: Some(1.7),
-            mass: 80.0,
-            is_static: false,
-            climbable: false,
-            ladder: false,
-            material: CollisionMaterial::Concrete,
-            friction: 0.0,
-            restitution: 0.0,
-            tags: vec![],
-            lock_translation: Some([false, false, false]),
-            lock_rotation: Some([false, true, true]),
-        };
-
         commands
             .entity(entity)
             .insert((
@@ -317,12 +299,10 @@ fn attach_player_model_to_new_players(
                 InheritedVisibility::default(),
                 ViewVisibility::default(),
                 PlayerVisualAttached,
-                player_collider,
             ))
             .with_children(|p| {
                 p.spawn((
                     AdmSceneRoot(model.0.clone()),
-                    DisableDrawableCollisions,
                     ModelName("player".to_string()),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                     GlobalTransform::default(),

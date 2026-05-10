@@ -7,4 +7,4 @@ version = "1.1"
 
 [entities]
 "player" = { type = "MESH", cast_shadows = true }
-"COL_player" = { type = "COLLISION", shape = "MESH", half_extents = [1.0, 1.89807, 1.0], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, true, true] }
+"COL_player" = { type = "COLLISION", shape = "MESH", half_extents = [1.0, 1.89807, 1.0], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [true, true, true] }

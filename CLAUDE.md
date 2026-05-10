@@ -175,7 +175,7 @@ files {
 - [X] Kamera režimy klienta: 3rd person / 1st person toggle (`F6`) se sledováním lokálního hráče
 - [X] Kamera stabilizace: look ovládán `MouseMotion` delta (`yaw/pitch` s clamp), cursor lock (`CursorGrabMode::Locked`), bez nelineární rotace podle pozice kurzoru
 - [X] GLTF `SceneRoot` stabilizace: registrace reflektovaných typů (`Transform`, `GlobalTransform`, `Visibility`, `InheritedVisibility`, `ViewVisibility`, `TransformTreeChanged`, `Mesh3d`, `MeshMaterial3d<StandardMaterial>`, `Aabb`, `SkinnedMesh`, `GltfExtras`, `GltfSceneExtras`, `GltfMeshExtras`, `GltfMeshName`, `GltfMaterialExtras`, `GltfMaterialName`, `ChildOf`, `Children`, `Name`) v klientském pluginu
-- [X] **Player fysika (Phase 3.5)**: Hráč entita dostane `DrawableCollision` s CAPSULE tvar (0.4m radius, 1.7m height) — vizuální ADM model je dítě s `DisableDrawableCollisions` markerem (zabránění duplikaci fyziky)
+- [X] **Player fysika (Phase 3.5)**: Hráč používá kolizi autoritativně z `player.drawable` (`COLLISION` entity, včetně `lock_translation`/`lock_rotation`) bez natvrdo kapsle v klientském attach kroku
 
 #### 3.2 — Command Queue & Bezpečný Lua Bridge ✅
 
@@ -341,7 +341,8 @@ files {
   - ✓ GLTF pipeline (`core_drawable/src/hook.rs`): COL_* uzly bez manifestu logují warning, nejsou tichě skryty
   - ✓ Physics: Zpracovává POUZE entity s `DrawableCollision` komponentou
 - [X] `DrawableCollision` podporuje axis-lock flagy (`lock_translation`, `lock_rotation`) z `.drawable`; `host_client::physics` je mapuje na Avian `LockedAxes`, takže dynamické collidery lze zamknout po osách
-- [X] `DisableDrawableCollisions` marker na drawable root entitě vypne runtime fyziku `COLLISION` uzlů (uzly zůstanou skryté); používá se pro hráčův vizuální ADM model, aby se `COL_*` rigid body neodpojoval od render reprezentace
+- [X] `DisableDrawableCollisions` marker na drawable root entitě vypne runtime fyziku `COLLISION` uzlů (uzly zůstanou skryté); používá se jen tam, kde resource výslovně nechce runtime kolize z manifestu
+- [X] `host_client::physics` mapuje non-static `DrawableCollision` na `RigidBody::Dynamic`; stabilita hráčova collideru je řízená `lock_rotation`/`lock_translation` flagy přímo v `player.drawable`
 - [X] COLLISION metadata obsahují movement flagy `climbable`, `ladder` pro budoucí traversal systém (ledge/ladder logic)
 - [X] COLLISION metadata obsahují `material` enum (20 typů) pro `core/audio` a dopadové VFX routing (footsteps, bullet impacts, debris)
 - [X] `CollisionMaterial` má helper routing API (`footstep_profile`, `impact_profile`) pro rychlé napojení sound/fx resources
