@@ -85,6 +85,8 @@ pub struct DrawableCollision {
     pub friction: f32,
     pub restitution: f32,
     pub tags: Vec<String>,
+    pub lock_translation: Option<[bool; 3]>,
+    pub lock_rotation: Option<[bool; 3]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +238,7 @@ pub fn hook_drawable_scenes(
             if let Some(EntityDef::COLLISION {
                 shape, half_extents, radius, height, mass, is_static,
                 climbable, ladder, material, friction, restitution, tags,
+                lock_translation, lock_rotation,
             }) = entity_def {
                 commands.entity(entity).insert((
                     Visibility::Hidden,
@@ -252,6 +255,8 @@ pub fn hook_drawable_scenes(
                         friction: *friction,
                         restitution: *restitution,
                         tags: tags.clone(),
+                        lock_translation: *lock_translation,
+                        lock_rotation: *lock_rotation,
                     },
                 ));
                 continue;

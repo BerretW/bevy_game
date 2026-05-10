@@ -63,6 +63,7 @@ fn attach_or_update_drawable_colliders(
             ecmd.remove::<ColliderConstructor>();
             ecmd.remove::<RigidBody>();
             ecmd.remove::<StaticWorldCollider>();
+            ecmd.remove::<LockedAxes>();
             continue;
         };
 
@@ -84,6 +85,12 @@ fn attach_or_update_drawable_colliders(
             ecmd.remove::<StaticWorldCollider>();
         }
 
+        if let Some(locked_axes) = locked_axes_from_drawable(dc) {
+            ecmd.insert(locked_axes);
+        } else {
+            ecmd.remove::<LockedAxes>();
+        }
+
         if dc.friction > 0.0 {
             ecmd.insert(Friction::new(dc.friction));
         }
@@ -91,6 +98,24 @@ fn attach_or_update_drawable_colliders(
             ecmd.insert(Restitution::new(dc.restitution));
         }
     }
+}
+
+fn locked_axes_from_drawable(dc: &DrawableCollision) -> Option<LockedAxes> {
+    let mut axes = LockedAxes::new();
+    let mut any = false;
+
+    if let Some([x, y, z]) = dc.lock_translation {
+        if x { axes = axes.lock_translation_x(); any = true; }
+        if y { axes = axes.lock_translation_y(); any = true; }
+        if z { axes = axes.lock_translation_z(); any = true; }
+    }
+    if let Some([x, y, z]) = dc.lock_rotation {
+        if x { axes = axes.lock_rotation_x(); any = true; }
+        if y { axes = axes.lock_rotation_y(); any = true; }
+        if z { axes = axes.lock_rotation_z(); any = true; }
+    }
+
+    if any { Some(axes) } else { None }
 }
 
 enum ColliderSpec {

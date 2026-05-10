@@ -91,6 +91,10 @@ pub enum EntityDef {
         restitution: f32,
         #[serde(default)]
         tags: Vec<String>,
+        #[serde(default)]
+        lock_translation: Option<[bool; 3]>,
+        #[serde(default)]
+        lock_rotation: Option<[bool; 3]>,
     },
 }
 

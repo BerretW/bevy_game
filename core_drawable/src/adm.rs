@@ -538,6 +538,8 @@ pub fn spawn_adm_scenes(
                             friction,
                             restitution,
                             tags,
+                            lock_translation,
+                            lock_rotation,
                         }) = manifest.entities.get(&node.name)
                         {
                             // Prefer manifest half_extents, then fall back to mesh AABB.
@@ -563,6 +565,8 @@ pub fn spawn_adm_scenes(
                                 friction: *friction,
                                 restitution: *restitution,
                                 tags: tags.clone(),
+                                lock_translation: *lock_translation,
+                                lock_rotation: *lock_rotation,
                             })
                         } else {
                             None
@@ -590,6 +594,8 @@ pub fn spawn_adm_scenes(
                             friction: 0.5,
                             restitution: 0.2,
                             tags: vec![],
+                            lock_translation: None,
+                            lock_rotation: None,
                         })
                     });
 

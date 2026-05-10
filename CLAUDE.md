@@ -309,6 +309,7 @@ files {
 - [X] Blender ADS export COLLISION entit rozšířen o primitive dimensions (`half_extents`, `radius`, `height`)
 - [X] `core_drawable` ingestuje COLLISION metadata do runtime komponenty `DrawableCollision`
 - [X] `host_client::physics::ClientPhysicsPlugin` používá Avian 0.6 (`PhysicsPlugins`) a mapuje `DrawableCollision` na runtime `Collider` / `ColliderConstructor` (`TrimeshFromMesh`, `ConvexHullFromMesh`)
+- [X] `DrawableCollision` podporuje axis-lock flagy (`lock_translation`, `lock_rotation`) z `.drawable`; `host_client::physics` je mapuje na Avian `LockedAxes`, takže dynamické collidery lze zamknout po osách (fix rolloutu/odpojování od vizuálu)
 - [X] COLLISION metadata obsahují movement flagy `climbable`, `ladder` pro budoucí traversal systém (ledge/ladder logic)
 - [X] COLLISION metadata obsahují `material` enum (20 typů) pro `core/audio` a dopadové VFX routing (footsteps, bullet impacts, debris)
 - [X] `CollisionMaterial` má helper routing API (`footstep_profile`, `impact_profile`) pro rychlé napojení sound/fx resources
@@ -872,7 +873,7 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
   src/map.rs                       `MapManifest` + `MapInstanceDef` (TOML kontrakt pro map instance)
   src/manifest.rs                  DrawableManifest (serde), MaterialDef, EntityDef, CollisionShape,
                                      optional collision params (`half_extents`, `radius`, `height`, `NAVMESH`) +
-                                     collision metadata (`climbable`, `ladder`, `material`)
+                                     collision metadata (`climbable`, `ladder`, `material`, `lock_translation`, `lock_rotation`)
   src/loader.rs                    DrawableManifestLoader (AssetLoader, ext=.drawable)
   src/registry.rs                  DrawableManifestRegistry, GltfHandleCache, TextureRegistry
   src/material.rs                  StandardPbrExtension, LayeredEnvExtension, VehicleGlassExtension,
