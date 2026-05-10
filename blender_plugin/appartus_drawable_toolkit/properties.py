@@ -154,3 +154,25 @@ class BevyExportProps(bpy.types.PropertyGroup):
     center_to_selection: bpy.props.BoolProperty(name="Center To Selection", default=True)
     drawable_dict_name:  bpy.props.StringProperty(name="Dictionary Name",   default="DrawableDictionary")
     alpha_fill_value:    bpy.props.FloatProperty(name="Tint Alpha",          default=1.0, min=0.0, max=1.0)
+
+    # LOD nastavení — exportují se do sekce [lod] v .drawable manifestu
+    lod_distance_0: bpy.props.FloatProperty(
+        name="LOD0→1",
+        description="Vzdálenost (m) přechodu z LOD0 na LOD1",
+        default=15.0, min=0.1, unit='LENGTH',
+    )
+    lod_distance_1: bpy.props.FloatProperty(
+        name="LOD1→2",
+        description="Vzdálenost (m) přechodu z LOD1 na LOD2",
+        default=40.0, min=0.1, unit='LENGTH',
+    )
+    lod_distance_2: bpy.props.FloatProperty(
+        name="LOD2→3",
+        description="Vzdálenost (m) přechodu z LOD2 na LOD3",
+        default=80.0, min=0.1, unit='LENGTH',
+    )
+    lod_cull_beyond_last: bpy.props.BoolProperty(
+        name="Cull Beyond Last LOD",
+        description="Skryj model za poslední LOD vzdáleností",
+        default=False,
+    )

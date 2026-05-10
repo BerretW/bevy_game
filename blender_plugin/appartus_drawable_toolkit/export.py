@@ -1,9 +1,25 @@
 import os
+import re
 import bpy
 from .constants import ADS_VERSION, OPTIONAL_TEXTURE_SLOTS, NON_GLTF_SLOTS
 from .utils import toml_escape, format_float, bool_to_toml, parse_tags, first_non_empty, image_basename
 from .mesh import is_collision_object
 from .material import get_template_texture_specs, material_texture_value, build_material_inline
+
+
+def _lod_level_from_name(name: str) -> int:
+    """Vrátí LOD úroveň z názvu objektu. 'Wall_LOD1' → 1, 'Wall' → 0."""
+    m = re.search(r'_LOD(\d+)$', name, re.IGNORECASE)
+    return int(m.group(1)) if m else 0
+
+
+def _has_lod_variants(target_meshes) -> bool:
+    """True pokud alespoň jeden mesh (ne collision) má _LODn suffix."""
+    return any(
+        _lod_level_from_name(obj.name) > 0
+        for obj in target_meshes
+        if not is_collision_object(obj)
+    )
 
 
 def _collision_shape_inline(obj, shape: str) -> str:
@@ -101,10 +117,31 @@ def validate_export_consistency(target_meshes):
 
 def build_drawable_toml(asset_name: str, target_meshes, used_materials) -> list:
     """Return a list of TOML lines for the .drawable file."""
+    settings = bpy.context.scene.bevy_toolkit_export
+
     lines = []
     lines.append(f'asset_name = "{toml_escape(asset_name)}"')
     lines.append(f'version = "{ADS_VERSION}"')
     lines.append("")
+
+    # LOD sekce — exportuje se pokud existují LOD varianty nebo cull_beyond_last
+    has_lod = _has_lod_variants(target_meshes)
+    if has_lod or settings.lod_cull_beyond_last:
+        # Zjisti kolik LOD úrovní skutečně existuje
+        max_lod = max(
+            (_lod_level_from_name(obj.name) for obj in target_meshes if not is_collision_object(obj)),
+            default=0,
+        )
+        # Sestav seznam vzdáleností jen pro přechody které existují (LOD0→1, LOD1→2, ...)
+        distance_props = [settings.lod_distance_0, settings.lod_distance_1, settings.lod_distance_2]
+        distances = [format_float(distance_props[i]) for i in range(min(max_lod, 3))]
+        dists_str = "[" + ", ".join(distances) + "]"
+
+        lines.append("[lod]")
+        lines.append(f"distances = {dists_str}")
+        lines.append(f"cull_beyond_last = {bool_to_toml(settings.lod_cull_beyond_last)}")
+        lines.append("")
+
     lines.append("[materials]")
     for mat in used_materials:
         inline = build_material_inline(mat)

@@ -1,6 +1,7 @@
 mod adm;
 mod hook;
 mod loader;
+mod lod;
 mod map;
 mod manifest;
 mod material;
@@ -15,14 +16,15 @@ pub use ped::{PedPhysicsDef, PedPhysicsLoader, PedPhysicsRegistry,
 };
 pub use hook::{
     DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
-    DrawableCollision, DisableDrawableCollisions,
+    DrawableCollision, DisableDrawableCollisions, DrawableMaterialsParam,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
     setup_fallback_textures, auto_hide_col_nodes,
 };
 pub use loader::DrawableManifestLoader;
+pub use lod::{DefaultLodDistances, LodGroup, LodLevel, parse_lod_level, update_lod_visibility};
 pub use map::{MapInstanceDef, MapManifest};
 pub use manifest::{
-    CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef,
+    CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, LodConfig, MaterialDef,
     MaterialParams, TextureInfo, TextureSource,
 };
 #[allow(unused_imports)]
@@ -84,6 +86,7 @@ impl Plugin for DrawablePlugin {
             .init_resource::<DrawableManifestRegistry>()
             .init_resource::<GltfHandleCache>()
             .init_resource::<TextureRegistry>()
+            .init_resource::<DefaultLodDistances>()
             .add_observer(observe_scene_ready)
             .add_systems(Startup, setup_fallback_textures)
             .add_systems(
@@ -93,6 +96,7 @@ impl Plugin for DrawablePlugin {
                     attach_drawable_intent,
                     hook_drawable_scenes.after(attach_drawable_intent),
                     adm::spawn_adm_scenes.after(hook_drawable_scenes),
+                    update_lod_visibility.after(hook_drawable_scenes),
                 ),
             );
     }

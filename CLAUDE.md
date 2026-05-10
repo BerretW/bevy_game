@@ -313,6 +313,14 @@ files {
   - [X] `NativeAssetsPlugin` rozšířen o scan `assets/models/*.drawable`
   - [X] Add-on je přejmenovaný na `Appartu Drawable Toolkit` v Blender UI; export ADS používá `Object.bevy_toolkit_obj.export_name` nebo název aktivního mesh objektu jako `asset_name` pro `.drawable` a `.adm` místo názvu scény / .blend souboru
   - [X] Objektový panel v Blenderu teď obsahuje exportní blok a `Export Name`; exportní název se automaticky předvyplní z názvu objektu při konverzi/vytvoření
+  - [X] **LOD systém (Level of Detail)** — automatické přepínání mesh úrovní podle vzdálenosti od kamery
+    - Pojmenování: GLTF uzly se suffixem `_LOD0` (nebo bez suffixu = LOD0), `_LOD1`, `_LOD2`, `_LOD3`
+    - `DrawableManifest` obsahuje volitelnou sekci `[lod]` s `distances` (vzdálenosti v metrech) a `cull_beyond_last`
+    - `LodGroup` komponent na drawable root entitě, `LodLevel(u8)` na každém LOD uzlu
+    - `update_lod_visibility` systém v `Update` přepíná `Visibility::Hidden/Inherited` dle vzdálenosti od `Camera3d`
+    - `DefaultLodDistances` resource (default: LOD0→1 při 15 m, LOD1→2 při 40 m, LOD2→3 při 80 m)
+    - Fallback: model bez `_LODn` uzlů funguje normálně (žádný `LodGroup`, žádná overhead)
+    - Blender toolkit: auto-detekce LOD z názvu objektu, nastavení vzdáleností v export panelu (`LOD Distances`)
 
   ### ADS — Known Limitations & Workarounds
 

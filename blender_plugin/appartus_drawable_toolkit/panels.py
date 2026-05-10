@@ -1,7 +1,13 @@
+import re
 import bpy
 from .constants import SLOT_COLORSPACE
 from .mesh import is_collision_object
 from .material import get_template_texture_specs
+
+
+def _lod_level_from_name(name: str) -> int:
+    m = re.search(r'_LOD(\d+)$', name, re.IGNORECASE)
+    return int(m.group(1)) if m else 0
 
 
 def _draw_bevy_material_props(layout, mat):
@@ -117,6 +123,15 @@ class BEVY_PT_ObjectPanel(bpy.types.Panel):
             entity_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
             entity_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
 
+            # LOD info (pouze pro mesh objekty)
+            export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
+            lod_level = _lod_level_from_name(export_name)
+            lod_row = entity_box.row()
+            lod_row.label(
+                text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
+                icon="MOD_DECIM",
+            )
+
         export_box = layout.box()
         export_box.label(text="Import / Export", icon="EXPORT")
         export_box.operator("bevy.import_drawable", text="Import Drawable", icon="IMPORT")
@@ -125,6 +140,16 @@ class BEVY_PT_ObjectPanel(bpy.types.Panel):
         export_box.prop(settings, "apply_modifiers")
         export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
         export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")
+
+        # LOD vzdálenosti
+        lod_box = export_box.box()
+        lod_box.label(text="LOD Distances", icon="MOD_DECIM")
+        col = lod_box.column(align=True)
+        col.prop(settings, "lod_distance_0")
+        col.prop(settings, "lod_distance_1")
+        col.prop(settings, "lod_distance_2")
+        lod_box.prop(settings, "lod_cull_beyond_last")
+
         map_box = layout.box()
         map_box.label(text="Map Tools", icon="WORLD")
         map_box.operator("bevy.export_map_manifest", text="Export Map TOML", icon="EXPORT")
@@ -209,6 +234,13 @@ class BEVY_PT_Panel(bpy.types.Panel):
                 physics_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
                 physics_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
 
+                export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
+                lod_level = _lod_level_from_name(export_name)
+                physics_box.label(
+                    text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
+                    icon="MOD_DECIM",
+                )
+
             paint_box = layout.box()
             paint_box.label(text="Vertex Masks", icon="VPAINT_HLT")
 
@@ -254,6 +286,15 @@ class BEVY_PT_Panel(bpy.types.Panel):
         export_box.prop(settings, "apply_modifiers")
         export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
         export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")
+
+        lod_box = export_box.box()
+        lod_box.label(text="LOD Distances", icon="MOD_DECIM")
+        col = lod_box.column(align=True)
+        col.prop(settings, "lod_distance_0")
+        col.prop(settings, "lod_distance_1")
+        col.prop(settings, "lod_distance_2")
+        lod_box.prop(settings, "lod_cull_beyond_last")
+
         map_box = layout.box()
         map_box.label(text="Map Tools", icon="WORLD")
         map_box.operator("bevy.export_map_manifest", text="Export Map TOML", icon="EXPORT")

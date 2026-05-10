@@ -18,6 +18,34 @@ pub struct DrawableManifest {
     /// Příklad: `ped_physics = "player"` → načte `models/player.ped.toml`.
     #[serde(default)]
     pub ped_physics: Option<String>,
+    /// Volitelná konfigurace LOD přepínání.
+    /// Prázdná = single LOD (žádné přepínání, engine použije výchozí vzdálenosti pokud existují _LODn uzly).
+    #[serde(default)]
+    pub lod: LodConfig,
+}
+
+/// Konfigurace LOD pro drawable asset.
+///
+/// Definuje vzdálenosti (v metrech) pro přechody mezi LOD úrovněmi.
+/// GLTF uzly pojmenované `*_LOD1`, `*_LOD2`, `*_LOD3` jsou automaticky
+/// přiřazeny ke svým LOD úrovním. Uzly bez suffixu (nebo `*_LOD0`) = LOD0.
+///
+/// Příklad v `.drawable`:
+/// ```toml
+/// [lod]
+/// distances = [15.0, 40.0, 80.0]
+/// cull_beyond_last = false
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LodConfig {
+    /// Vzdálenosti v metrech kde dochází k LOD přechodům.
+    /// `distances[0]` = přechod LOD0→LOD1, `distances[1]` = LOD1→LOD2, atd.
+    /// Prázdné = použij `DefaultLodDistances` resource (pokud existují _LODn uzly).
+    #[serde(default)]
+    pub distances: Vec<f32>,
+    /// Pokud `true`, model se skryje za poslední LOD vzdáleností.
+    #[serde(default)]
+    pub cull_beyond_last: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

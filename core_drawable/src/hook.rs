@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use bevy::ecs::system::SystemParam;
 use bevy::gltf::{Gltf, GltfAssetLabel, GltfMaterialName};
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
@@ -11,6 +12,7 @@ use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 
 use core_resources::ModelName;
 
+use crate::lod::{parse_lod_level, DefaultLodDistances, LodGroup, LodLevel};
 use crate::manifest::{CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
 use crate::material::{
     DrawableParams,
@@ -177,6 +179,26 @@ fn build_embedded_image_map(
 }
 
 // ---------------------------------------------------------------------------
+// SystemParam bundle — sdružuje material+LOD resources pro hook_drawable_scenes
+// (Bevy limit je 16 system params; bez bundlu bychom překročili limit)
+// ---------------------------------------------------------------------------
+
+/// Bundle 9 resources do jednoho SystemParam — udržuje počet parametrů hook
+/// systému pod Bevy limitem 16.
+#[derive(SystemParam)]
+pub struct DrawableMaterialsParam<'w> {
+    pub fallback:     Res<'w, DrawableFallbackTextures>,
+    pub default_lod:  Res<'w, DefaultLodDistances>,
+    pub gltf_cache:   Res<'w, GltfHandleCache>,
+    pub gltfs:        Res<'w, Assets<Gltf>>,
+    pub std_pbr:      ResMut<'w, Assets<StandardPbrMaterial>>,
+    pub layered:      ResMut<'w, Assets<LayeredEnvMaterial>>,
+    pub glass:        ResMut<'w, Assets<VehicleGlassMaterial>>,
+    pub texture_reg:  ResMut<'w, TextureRegistry>,
+    pub asset_server: Res<'w, AssetServer>,
+}
+
+// ---------------------------------------------------------------------------
 // Interní store — sdružuje 3 asset kolekce pro předání do process_mesh_node
 // ---------------------------------------------------------------------------
 
@@ -191,15 +213,13 @@ struct MaterialStores<'a> {
 // ---------------------------------------------------------------------------
 
 /// Čeká, dokud není scene spawned A manifest načten, pak projde uzly a aplikuje
-/// drawable definice (materiály, schování COL_ uzlů, vertex color sanitizace).
+/// drawable definice (materiály, schování COL_ uzlů, vertex color sanitizace, LOD setup).
 #[allow(clippy::too_many_arguments)]
 pub fn hook_drawable_scenes(
     mut commands: Commands,
     scene_spawner: Res<SceneSpawner>,
     manifests: Res<Assets<DrawableManifest>>,
-    gltf_cache: Res<GltfHandleCache>,
-    gltfs: Res<Assets<Gltf>>,
-    fallback: Res<DrawableFallbackTextures>,
+    mut mat: DrawableMaterialsParam<'_>,
     pending: Query<
         (
             Entity,
@@ -214,11 +234,6 @@ pub fn hook_drawable_scenes(
     mat_names: Query<&GltfMaterialName>,
     node_query: Query<(Option<&Mesh3d>, Option<&Children>), Or<(With<Mesh3d>, With<Children>)>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut std_materials: ResMut<Assets<StandardPbrMaterial>>,
-    mut env_materials: ResMut<Assets<LayeredEnvMaterial>>,
-    mut glass_materials: ResMut<Assets<VehicleGlassMaterial>>,
-    mut texture_reg: ResMut<TextureRegistry>,
-    asset_server: Res<AssetServer>,
 ) {
     for (root_entity, scene_ready, intent, model_name, disable_collisions) in &pending {
         // Čekáme na manifest
@@ -227,23 +242,23 @@ pub fn hook_drawable_scenes(
         if !scene_spawner.instance_is_ready(scene_ready.0) { continue }
 
         // Sestaví name→Handle<Image> mapu pro embedded textury tohoto modelu.
+        // Borrows mat.gltf_cache, mat.gltfs, mat.asset_server only within this block.
         let embedded_images = {
-            let entry = gltf_cache.0.get(&model_name.0);
-            let gltf = entry.as_ref().and_then(|(h, _)| gltfs.get(h));
+            let entry = mat.gltf_cache.0.get(&model_name.0);
+            let gltf = entry.as_ref().and_then(|(h, _)| mat.gltfs.get(h));
             let path = entry.map(|(_, p)| p.as_str()).unwrap_or("");
-            build_embedded_image_map(gltf, path, &asset_server)
+            build_embedded_image_map(gltf, path, &mat.asset_server)
         };
 
-        let mut stores = MaterialStores {
-            std_pbr: &mut std_materials,
-            layered: &mut env_materials,
-            glass:   &mut glass_materials,
-        };
+        // LOD: sledujeme named non-collision uzly → (úroveň, entita)
+        let mut lod_named: Vec<(u8, Entity)> = Vec::new();
 
         for entity in scene_spawner.iter_instance_entities(scene_ready.0) {
             // Look up entity definition by name — optional, unnamed primitives still get materials.
-            let entity_def = names.get(entity).ok()
-                .and_then(|n| manifest.entities.get(n.as_str()));
+            // names.get returns Result; .ok() converts to Option.
+            let entity_name = names.get(entity).ok().map(|n| n.as_str().to_owned());
+            let entity_def = entity_name.as_deref()
+                .and_then(|n| manifest.entities.get(n));
 
             // COLLISION: hide + store physics metadata, then skip mesh processing.
             if let Some(EntityDef::COLLISION {
@@ -278,6 +293,19 @@ pub fn hook_drawable_scenes(
                 continue;
             }
 
+            // LOD: sleduj pojmenované uzly (ne COL_) — jejich viditelnost řídí subtree
+            if let Some(ref name) = entity_name {
+                if !name.starts_with("COL_") {
+                    let level = parse_lod_level(name);
+                    lod_named.push((level, entity));
+                    commands.entity(entity).insert(LodLevel(level));
+                    // Skryj LOD > 0 ihned — LOD0 je výchozí viditelný stav
+                    if level > 0 {
+                        commands.entity(entity).insert(Visibility::Hidden);
+                    }
+                }
+            }
+
             // MESH: apply material to every entity that owns a Mesh3d.
             // Handles both single-primitive (entity IS the named node) and
             // multi-primitive (unnamed primitive children of the named node).
@@ -286,25 +314,70 @@ pub fn hook_drawable_scenes(
                     Some(EntityDef::MESH { cast_shadows }) => *cast_shadows,
                     _ => true,
                 };
-                let log_name = names.get(entity)
-                    .map(|n| n.as_str().to_owned())
-                    .unwrap_or_default();
+                let log_name = entity_name.as_deref().unwrap_or_default();
+
+                // Build local MaterialStores with split borrows from the SystemParam bundle.
+                // Different fields of mat → Rust allows simultaneous borrows.
+                let mut stores = MaterialStores {
+                    std_pbr: &mut *mat.std_pbr,
+                    layered:  &mut *mat.layered,
+                    glass:    &mut *mat.glass,
+                };
                 process_mesh_node(
                     entity,
-                    &log_name,
+                    log_name,
                     cast_shadows,
                     manifest,
                     &embedded_images,
-                    &fallback,
+                    &mat.fallback,
                     &mut commands,
                     &mat_names,
                     &node_query,
                     &mut meshes,
                     &mut stores,
-                    &mut texture_reg,
-                    &asset_server,
+                    &mut *mat.texture_reg,
+                    &mat.asset_server,
                 );
             }
+        }
+
+        // LOD: postav LodGroup pokud existují uzly s LOD > 0 nebo je nastaven cull
+        let max_level = lod_named.iter().map(|&(l, _)| l).max().unwrap_or(0);
+        let needs_lod_group = max_level > 0
+            || (manifest.lod.cull_beyond_last && !manifest.lod.distances.is_empty());
+
+        if needs_lod_group {
+            // Seskup entity podle LOD úrovně
+            let mut lod_map: std::collections::HashMap<u8, Vec<Entity>> =
+                std::collections::HashMap::new();
+            for (level, entity) in lod_named {
+                lod_map.entry(level).or_default().push(entity);
+            }
+
+            let top = max_level;
+            let lod_entities: Vec<Vec<Entity>> = (0u8..=top)
+                .map(|l| lod_map.remove(&l).unwrap_or_default())
+                .collect();
+
+            // Vzdálenosti: manifest má přednost, jinak engine default
+            let distances: Vec<f32> = if manifest.lod.distances.is_empty() {
+                mat.default_lod.0.clone()
+            } else {
+                manifest.lod.distances.clone()
+            };
+            let lod_dist_sq: Vec<f32> = distances.iter().map(|d| d * d).collect();
+
+            commands.entity(root_entity).insert(LodGroup {
+                lod_dist_sq,
+                cull_beyond_last: manifest.lod.cull_beyond_last,
+                active_lod: u8::MAX, // uninitialized → první frame vždy aktualizuje
+                lod_entities,
+            });
+
+            info!(
+                "[drawable] '{}': LOD group {} úrovní, vzdálenosti {:?}",
+                model_name.0, top + 1, distances
+            );
         }
 
         commands.entity(root_entity).insert(DrawableHooked);
