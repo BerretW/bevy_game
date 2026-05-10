@@ -1,6 +1,7 @@
 """Import .adm binárního formátu zpět do Blenderu."""
 
 import os
+import re
 import struct
 import tempfile
 import bpy
@@ -248,6 +249,63 @@ def _assign_textures_to_material(mat, loaded_images):
                     pass
 
 
+_SPLIT_RE = re.compile(r'^(.+)\.(\d+)$')
+
+
+def _merge_material_splits(objects):
+    """
+    Sloučí sub-objekty vzniklé multi-material exportem (např. 'kostka.1', 'kostka.2')
+    zpět do jejich base objektu ('kostka') pomocí Blender join operátoru.
+    Base objekt dostane všechny material sloty; sub-objekty jsou odstraněny.
+    """
+    # Zachytit všechna jména PŘED jakýmikoliv mutacemi — po join() jsou stare
+    # bpy reference na smazané objekty neplatné (StructRNA has been removed).
+    all_names_ordered = [obj.name for obj in objects]
+    mesh_by_name = {obj.name: obj for obj in objects if obj.type == 'MESH'}
+
+    # Skupiny: base_name → seřazený list (index, sub_obj)
+    groups = {}
+    for obj in objects:
+        if obj.type != 'MESH':
+            continue
+        m = _SPLIT_RE.match(obj.name)
+        if not m:
+            continue
+        base = m.group(1)
+        if base not in mesh_by_name:
+            continue
+        groups.setdefault(base, []).append((int(m.group(2)), obj))
+
+    if not groups:
+        return objects
+
+    merged_names = set()
+    for base_name, sub_list in groups.items():
+        base_obj = mesh_by_name[base_name]
+        sub_list.sort(key=lambda x: x[0])
+        sub_objs = [o for _, o in sub_list]
+        sub_names = {o.name for o in sub_objs}  # uložit před join
+
+        all_objs = [base_obj] + sub_objs
+        try:
+            with bpy.context.temp_override(
+                active_object=base_obj,
+                selected_objects=all_objs,
+                selected_editable_objects=all_objs,
+            ):
+                bpy.ops.object.join()
+            merged_names.update(sub_names)
+        except Exception as exc:
+            print(f"[adm_import] merge '{base_name}' failed: {exc}")
+
+    # Lookup přes bpy.data.objects — nevyužívá stale Python reference na smazané objekty
+    return [
+        bpy.data.objects[name]
+        for name in all_names_ordered
+        if name not in merged_names and name in bpy.data.objects
+    ]
+
+
 def import_adm(filepath):
     """
     Importuje .adm soubor do aktuální Blender scény.
@@ -352,5 +410,8 @@ def import_adm(filepath):
     for obj in created:
         if obj.type == 'MESH' and obj.data:
             fix_imported_vertex_attributes(obj.data)
+
+    # Spoj sub-objekty vzniklé multi-material exportem zpět do jednoho objektu
+    created = _merge_material_splits(created)
 
     return created
