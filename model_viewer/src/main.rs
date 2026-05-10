@@ -14,6 +14,8 @@
 //!   F                     → fit model do pohledu
 //!   T                     → přepnout prohlížeč textur
 //!   E                     → exportovat textury na disk
+//!   W                     → cyklovat weather presety (clean → dirty → wet → snowy)
+//!   V                     → cyklovat vertex color debug kanály (off → RGB → R → G → B → A)
 
 use std::path::PathBuf;
 
@@ -26,11 +28,13 @@ use core_drawable::{
     AdmScene, AdmSceneRoot,
     DrawableManifest, DrawableManifestRegistry, DrawablePlugin, EntityDef,
     GltfHandleCache, TextureSource,
+    StandardPbrMaterial, LayeredEnvMaterial,
 };
 use core_resources::{ModelName, ModelRegistry};
 
 mod camera;
 mod textures;
+mod vertex_painter;
 
 // ─── Spuštění ─────────────────────────────────────────────────────────────────
 
@@ -52,6 +56,7 @@ fn main() {
     };
 
     App::new()
+        .init_resource::<WeatherState>()
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
@@ -71,6 +76,7 @@ fn main() {
                 }),
         )
         .add_plugins(DrawablePlugin)
+        .add_plugins(vertex_painter::VertexPainterPlugin)
         .init_resource::<ModelRegistry>()
         .init_resource::<camera::OrbitState>()
         .init_resource::<textures::TextureBrowser>()
@@ -82,6 +88,7 @@ fn main() {
             (
                 camera::orbit_camera,
                 handle_keyboard,
+                handle_material_debug,
                 draw_grid,
                 update_info_overlay,
                 textures::init_texture_browser,
@@ -108,6 +115,32 @@ impl Default for ViewerState {
     fn default() -> Self {
         Self { grid_visible: true, overlay_visible: true }
     }
+}
+
+/// Presety pro weather efekty (snow, dirt, wetness, porosity).
+const WEATHER_PRESETS: &[(f32, f32, f32, f32, &str)] = &[
+    (0.0, 0.0, 0.0, 0.0, "clean"),
+    (0.0, 1.0, 0.0, 0.5, "dirty"),
+    (0.0, 0.0, 1.0, 0.8, "wet"),
+    (0.6, 0.0, 0.0, 0.0, "snowy"),
+    (0.2, 0.6, 0.3, 0.5, "combined"),
+];
+
+/// Debug kanály pro vertex color visualizaci (tiling.y kódování pro shader).
+/// 0.0 = normální render; záporné hodnoty → debug mode.
+const VCOL_DEBUG_MODES: &[(f32, &str)] = &[
+    ( 1.0, "normal"),
+    (-1.0, "vcol RGB"),
+    (-2.0, "vcol R (normal suppress)"),
+    (-3.0, "vcol G (dirt)"),
+    (-4.0, "vcol B (wet)"),
+    (-5.0, "vcol A (palette)"),
+];
+
+#[derive(Resource, Default)]
+struct WeatherState {
+    preset_idx: usize,
+    vcol_idx:   usize,
 }
 
 // ─── Asset root ───────────────────────────────────────────────────────────────
@@ -146,20 +179,40 @@ fn setup_scene(mut commands: Commands) {
         camera::OrbitCamera,
     ));
 
-    // Sluneční světlo
+    // Hlavní světlo (key light — zleva shora)
     commands.spawn((
         DirectionalLight {
-            illuminance: 12_000.0,
+            illuminance: 10_000.0,
             shadows_enabled: true,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, 0.5, 0.0)),
     ));
 
+    // Fill light (zprava zdola, bez stínů — eliminuje černé stěny)
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 3_500.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, 0.5, 0.5 + std::f32::consts::PI, 0.0)),
+    ));
+
+    // Rim light (zezadu shora — oddělí model od pozadí)
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 1_500.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.4, 0.5 + std::f32::consts::PI * 0.5, 0.0)),
+    ));
+
     // Ambientní složka — v Bevy 0.18 je Component, ne Resource
     commands.spawn(AmbientLight {
         color: Color::WHITE,
-        brightness: 300.0,
+        brightness: 600.0,
         ..default()
     });
 
@@ -167,7 +220,8 @@ fn setup_scene(mut commands: Commands) {
     commands.spawn((
         Text::new(
             "Pravé drag: orbit  |  Střední drag: pan  |  Kolečko: zoom  \
-             |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export",
+             |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export\n\
+             W: weather preset  |  V: vertex color debug  |  P: vertex paint",
         ),
         TextFont { font_size: 13.0, ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
@@ -192,12 +246,31 @@ fn setup_scene(mut commands: Commands) {
         },
         InfoOverlay,
     ));
+
+    // Debug status (nahoře vpravo) — weather preset + vcol debug
+    let (_, _, _, _, w_name) = WEATHER_PRESETS[0];
+    let (_, v_name)          = VCOL_DEBUG_MODES[0];
+    commands.spawn((
+        Text::new(format!("Weather: {}  |  VCol: {}", w_name, v_name)),
+        TextFont { font_size: 13.0, ..default() },
+        TextColor(Color::srgba(1.0, 1.0, 0.6, 0.80)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(8.0),
+            right: Val::Px(8.0),
+            ..default()
+        },
+        DebugStatus,
+    ));
 }
 
 // ─── Markery ──────────────────────────────────────────────────────────────────
 
 #[derive(Component)]
 struct InfoOverlay;
+
+#[derive(Component)]
+struct DebugStatus;
 
 // ─── Model loading ────────────────────────────────────────────────────────────
 
@@ -472,5 +545,43 @@ fn handle_keyboard(
         cam.distance = 2.5;
         cam.yaw      = -0.5;
         cam.pitch    = 0.35;
+    }
+}
+
+/// W = weather presety, V = vertex color debug kanály.
+fn handle_material_debug(
+    keys:          Res<ButtonInput<KeyCode>>,
+    mut weather:   ResMut<WeatherState>,
+    mut std_mats:  ResMut<Assets<StandardPbrMaterial>>,
+    mut env_mats:  ResMut<Assets<LayeredEnvMaterial>>,
+    mut status:    Query<&mut Text, With<DebugStatus>>,
+) {
+    let w_pressed = keys.just_pressed(KeyCode::KeyW);
+    let v_pressed = keys.just_pressed(KeyCode::KeyV);
+    if !w_pressed && !v_pressed {
+        return;
+    }
+
+    if w_pressed {
+        weather.preset_idx = (weather.preset_idx + 1) % WEATHER_PRESETS.len();
+    }
+    if v_pressed {
+        weather.vcol_idx = (weather.vcol_idx + 1) % VCOL_DEBUG_MODES.len();
+    }
+
+    let (snow, dirt, wet, por, weather_name) = WEATHER_PRESETS[weather.preset_idx];
+    let (tiling_y, vcol_name)               = VCOL_DEBUG_MODES[weather.vcol_idx];
+    let weather_vec = Vec4::new(snow, dirt, wet, por);
+
+    for (_, mat) in std_mats.iter_mut() {
+        mat.extension.params.weather  = weather_vec;
+        mat.extension.params.tiling.y = tiling_y;
+    }
+    for (_, mat) in env_mats.iter_mut() {
+        mat.extension.params.weather  = weather_vec;
+    }
+
+    if let Ok(mut txt) = status.single_mut() {
+        txt.0 = format!("Weather: {}  |  VCol: {}", weather_name, vcol_name);
     }
 }

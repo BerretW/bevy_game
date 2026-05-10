@@ -5,6 +5,7 @@ from .material import on_template_changed, _on_texture_update, _on_param_update,
 class BevyObjectProps(bpy.types.PropertyGroup):
     is_col:      bpy.props.BoolProperty(name="Is Collision", default=False)
     cast_shadows: bpy.props.BoolProperty(name="Cast Shadows", default=True)
+    export_name: bpy.props.StringProperty(name="Export Name", default="")
     col_shape:   bpy.props.EnumProperty(
         name="Shape",
         items=[

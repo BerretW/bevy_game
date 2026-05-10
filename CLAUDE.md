@@ -273,6 +273,8 @@ files {
   - [X] Material swap: GLTF `StandardMaterial` → `DrawableMaterial` podle `[entities]`/`[materials]` v manifestu
   - [X] COL_ uzly: Schování (`Visibility::Hidden`) — Phase 5 přidá Avian colliders
   - [X] `NativeAssetsPlugin` rozšířen o scan `assets/models/*.drawable`
+  - [X] Add-on je přejmenovaný na `Appartu Drawable Toolkit` v Blender UI; export ADS používá `Object.bevy_toolkit_obj.export_name` nebo název aktivního mesh objektu jako `asset_name` pro `.drawable` a `.adm` místo názvu scény / .blend souboru
+  - [X] Objektový panel v Blenderu teď obsahuje exportní blok a `Export Name`; exportní název se automaticky předvyplní z názvu objektu při konverzi/vytvoření
 
 ---
 

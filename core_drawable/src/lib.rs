@@ -7,8 +7,9 @@ mod registry;
 
 pub use adm::{AdmLoader, AdmScene, AdmSceneRoot, AdmSceneSpawned, AdmNode, AdmNodeType};
 pub use hook::{
-    DrawableHooked, DrawableSpawnIntent,
+    DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
+    setup_fallback_textures,
 };
 pub use loader::DrawableManifestLoader;
 pub use manifest::{
@@ -72,6 +73,7 @@ impl Plugin for DrawablePlugin {
             .init_resource::<GltfHandleCache>()
             .init_resource::<TextureRegistry>()
             .add_observer(observe_scene_ready)
+            .add_systems(Startup, setup_fallback_textures)
             .add_systems(
                 Update,
                 (

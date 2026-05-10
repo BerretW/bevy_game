@@ -57,7 +57,7 @@ def _draw_bevy_material_props(layout, mat):
 
 
 class BEVY_PT_MaterialPanel(bpy.types.Panel):
-    bl_label      = "Bevy ADS"
+    bl_label      = "Appartu Drawable Toolkit"
     bl_idname     = "MATERIAL_PT_bevy_ads"
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
@@ -74,12 +74,53 @@ class BEVY_PT_MaterialPanel(bpy.types.Panel):
         _draw_bevy_material_props(self.layout, context.active_object.active_material)
 
 
+class BEVY_PT_ObjectPanel(bpy.types.Panel):
+    bl_label      = "Appartu Drawable Toolkit"
+    bl_idname     = "OBJECT_PT_bevy_ads"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context    = 'object'
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and context.active_object.type == "MESH"
+
+    def draw(self, context):
+        layout  = self.layout
+        obj     = context.active_object
+        settings = context.scene.bevy_toolkit_export
+
+        entity_box = layout.box()
+        entity_box.label(text="Entity", icon="PHYSICS")
+        entity_box.prop(obj.bevy_toolkit_obj, "export_name")
+        entity_box.prop(obj.bevy_toolkit_obj, "is_col")
+        if is_collision_object(obj):
+            entity_box.prop(obj.bevy_toolkit_obj, "col_shape")
+            entity_box.prop(obj.bevy_toolkit_obj, "mass")
+            entity_box.prop(obj.bevy_toolkit_obj, "is_static")
+            entity_box.prop(obj.bevy_toolkit_obj, "friction")
+            entity_box.prop(obj.bevy_toolkit_obj, "restitution")
+            entity_box.prop(obj.bevy_toolkit_obj, "tags_csv")
+        else:
+            entity_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
+            entity_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
+
+        export_box = layout.box()
+        export_box.label(text="Import / Export", icon="EXPORT")
+        export_box.operator("bevy.import_drawable", text="Import Drawable", icon="IMPORT")
+        export_box.separator(factor=0.5)
+        export_box.prop(settings, "export_scope")
+        export_box.prop(settings, "apply_modifiers")
+        export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
+        export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")
+
+
 class BEVY_PT_Panel(bpy.types.Panel):
-    bl_label      = "Bevy ADS Toolkit"
+    bl_label      = "Appartu Drawable Toolkit"
     bl_idname     = "BEVY_PT_main"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category   = "Bevy"
+    bl_category   = "Appartu"
 
     def draw(self, context):
         layout   = self.layout
@@ -126,6 +167,7 @@ class BEVY_PT_Panel(bpy.types.Panel):
         if obj.type == "MESH":
             physics_box = layout.box()
             physics_box.label(text="Entity", icon="PHYSICS")
+            physics_box.prop(obj.bevy_toolkit_obj, "export_name")
             physics_box.prop(obj.bevy_toolkit_obj, "is_col")
             if is_collision_object(obj):
                 physics_box.prop(obj.bevy_toolkit_obj, "col_shape")
@@ -149,6 +191,14 @@ class BEVY_PT_Panel(bpy.types.Panel):
             row.operator("bevy.set_paint", text="Dirt (G)").mode    = "DIRT"
             row.operator("bevy.set_paint", text="Wet (B)").mode     = "WET"
             row.operator("bevy.set_paint", text="Erase").mode       = "ERASE"
+
+            paint_box.separator(factor=0.4)
+            paint_box.label(text="Presets (fill all vertices):")
+            row = paint_box.row(align=True)
+            row.operator("bevy.apply_vertex_preset", text="Standard").preset = "standard"
+            row.operator("bevy.apply_vertex_preset", text="Metal").preset    = "metal"
+            row.operator("bevy.apply_vertex_preset", text="Wood").preset     = "wood"
+            row.operator("bevy.apply_vertex_preset", text="Brick").preset    = "brick"
             row = paint_box.row(align=True)
             row.prop(settings, "alpha_fill_value")
             row.operator("bevy.fill_alpha_mask", text="Fill A (palette)")

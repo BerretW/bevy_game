@@ -1,4 +1,19 @@
 ATTR_NAME = "bevy_masks"
+
+# Vertex preset RGBA values for bevy_masks (R=layer/NormSupp, G=dirt, B=wet, A=palette)
+VERTEX_PRESETS = {
+    "standard": (0.00, 0.00, 0.00, 0.00),  # clean default, no effects
+    "metal":    (0.00, 0.05, 0.60, 0.00),  # barely dirty, high wet/reflective
+    "wood":     (0.00, 0.35, 0.05, 0.50),  # moderate dirt, dry, mid-palette
+    "brick":    (0.20, 0.20, 0.10, 0.35),  # layer blend, dirty, slightly wet
+}
+
+VERTEX_PRESET_LABELS = {
+    "standard": "Standard",
+    "metal":    "Metal",
+    "wood":     "Wood",
+    "brick":    "Brick",
+}
 ATTR_NAME2 = "bevy_masks2"
 UV_MASKS2_NAME = "_ads_masks2_uv"
 ADS_VERSION = "1.1"

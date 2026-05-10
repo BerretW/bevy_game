@@ -5,6 +5,8 @@ use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use bevy::prelude::On;
+use bevy::asset::RenderAssetUsages;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 
 use core_resources::ModelName;
@@ -17,6 +19,33 @@ use crate::material::{
     VehicleGlassExtension, VehicleGlassMaterial,
 };
 use crate::registry::{DrawableManifestRegistry, GltfHandleCache, TextureRegistry};
+
+// ---------------------------------------------------------------------------
+// Fallback textury
+// ---------------------------------------------------------------------------
+
+/// Bílá 1×1 px textura, používaná jako neutrální fallback pro volitelné
+/// texture sloty (palette, snow, mb) — garantuje deterministické sampling chování.
+#[derive(Resource)]
+pub struct DrawableFallbackTextures {
+    pub white_1px: Handle<Image>,
+}
+
+pub fn setup_fallback_textures(
+    mut commands: Commands,
+    mut images:   ResMut<Assets<Image>>,
+) {
+    let white = Image::new_fill(
+        Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[255, 255, 255, 255],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    commands.insert_resource(DrawableFallbackTextures {
+        white_1px: images.add(white),
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Komponenty
@@ -144,6 +173,7 @@ pub fn hook_drawable_scenes(
     manifests: Res<Assets<DrawableManifest>>,
     gltf_cache: Res<GltfHandleCache>,
     gltfs: Res<Assets<Gltf>>,
+    fallback: Res<DrawableFallbackTextures>,
     pending: Query<
         (Entity, &SceneReadyId, &DrawableSpawnIntent, &ModelName),
         Without<DrawableHooked>,
@@ -190,6 +220,7 @@ pub fn hook_drawable_scenes(
                         *cast_shadows,
                         manifest,
                         &embedded_images,
+                        &fallback,
                         &mut commands,
                         &mat_names,
                         &mesh_handles,
@@ -221,6 +252,7 @@ fn process_mesh_node(
     cast_shadows: bool,
     manifest: &DrawableManifest,
     embedded_images: &HashMap<String, Handle<Image>>,
+    fallback: &DrawableFallbackTextures,
     commands: &mut Commands,
     mat_names: &Query<&GltfMaterialName>,
     mesh_handles: &Query<&Mesh3d>,
@@ -262,7 +294,7 @@ fn process_mesh_node(
 
     let applied = match mat_def.template.as_str() {
         "standard_pbr" => {
-            let mat = build_standard_pbr(mat_def, embedded_images, texture_reg, asset_server);
+            let mat = build_standard_pbr(mat_def, embedded_images, fallback, texture_reg, asset_server);
             let handle = stores.std_pbr.add(mat);
             commands
                 .entity(entity)
@@ -271,7 +303,7 @@ fn process_mesh_node(
             true
         }
         "layered_env" => {
-            let mat = build_layered_env(mat_def, embedded_images, texture_reg, asset_server);
+            let mat = build_layered_env(mat_def, embedded_images, fallback, texture_reg, asset_server);
             let handle = stores.layered.add(mat);
             commands
                 .entity(entity)
@@ -280,7 +312,7 @@ fn process_mesh_node(
             true
         }
         "vehicle_glass" => {
-            let mat = build_vehicle_glass(mat_def, embedded_images, texture_reg, asset_server);
+            let mat = build_vehicle_glass(mat_def, embedded_images, fallback, texture_reg, asset_server);
             let handle = stores.glass.add(mat);
             commands
                 .entity(entity)
@@ -339,6 +371,7 @@ pub(crate) fn resolve_alpha_mode(opacity_mode: &str, threshold: f32, has_mb: boo
 pub(crate) fn build_standard_pbr(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
+    fallback: &DrawableFallbackTextures,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) -> StandardPbrMaterial {
@@ -361,6 +394,7 @@ pub(crate) fn build_standard_pbr(
         perceptual_roughness: 0.5,
         metallic: 0.0,
         alpha_mode,
+
         uv_transform: Affine2::from_scale(Vec2::splat(tiling)),
         ..default()
     };
@@ -374,12 +408,13 @@ pub(crate) fn build_standard_pbr(
         base.base_color = Color::srgba(t[0], t[1], t[2], t[3]);
     }
 
+    let white = || fallback.white_1px.clone();
     StandardPbrMaterial {
         base,
         extension: StandardPbrExtension {
-            palette: palette.unwrap_or_default(),
-            snow:    snow.unwrap_or_default(),
-            mb:      mb.unwrap_or_default(),
+            palette: palette.unwrap_or_else(white),
+            snow:    snow.unwrap_or_else(white),
+            mb:      mb.unwrap_or_else(white),
             params:  build_params(p, mb_threshold),
         },
     }
@@ -388,6 +423,7 @@ pub(crate) fn build_standard_pbr(
 pub(crate) fn build_layered_env(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
+    fallback: &DrawableFallbackTextures,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) -> LayeredEnvMaterial {
@@ -410,6 +446,7 @@ pub(crate) fn build_layered_env(
         perceptual_roughness: 0.5,
         metallic: 0.0,
         alpha_mode,
+
         uv_transform: Affine2::from_scale(Vec2::splat(l0_tiling)),
         ..default()
     };
@@ -423,12 +460,13 @@ pub(crate) fn build_layered_env(
         base.base_color = Color::srgba(t[0], t[1], t[2], t[3]);
     }
 
+    let white = || fallback.white_1px.clone();
     LayeredEnvMaterial {
         base,
         extension: LayeredEnvExtension {
-            layer1_albedo: layer1_albedo.unwrap_or_default(),
-            layer1_normal: layer1_normal.unwrap_or_default(),
-            mb:            mb.unwrap_or_default(),
+            layer1_albedo: layer1_albedo.unwrap_or_else(white),
+            layer1_normal: layer1_normal.unwrap_or_else(white),
+            mb:            mb.unwrap_or_else(white),
             params:        build_params(p, mb_threshold),
         },
     }
@@ -437,6 +475,7 @@ pub(crate) fn build_layered_env(
 pub(crate) fn build_vehicle_glass(
     def: &MaterialDef,
     embedded_images: &HashMap<String, Handle<Image>>,
+    _fallback: &DrawableFallbackTextures,
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) -> VehicleGlassMaterial {
@@ -457,6 +496,7 @@ pub(crate) fn build_vehicle_glass(
         metallic: 0.0,
         double_sided: true,
         cull_mode: None,
+
         base_color: glass_tint,
         uv_transform: Affine2::from_scale(Vec2::splat(glass_tiling)),
         ..default()

@@ -5,6 +5,7 @@ import os
 import bpy
 import bmesh
 import mathutils
+from .constants import ATTR_NAME, ATTR_NAME2
 
 # Koordinátová transformace Blender (Z-up) → Bevy (Y-up)
 _C = mathutils.Matrix([
@@ -69,11 +70,23 @@ def _collect_mesh_data(obj):
     col_attrs = getattr(mesh, 'color_attributes', [])
     masks0_attr = None
     masks1_attr = None
+    # Hledáme nejdřív podle kanonického jména (bevy_masks / bevy_masks2)
     for ca in col_attrs:
-        if masks0_attr is None:
+        if ca.name == ATTR_NAME:
             masks0_attr = ca
-        elif masks1_attr is None:
+        elif ca.name == ATTR_NAME2:
             masks1_attr = ca
+    # Fallback: vezmi první dvě atributy pokud kanonické nebyly nalezeny
+    if masks0_attr is None:
+        for ca in col_attrs:
+            if ca is not masks1_attr:
+                masks0_attr = ca
+                break
+    if masks1_attr is None:
+        for ca in col_attrs:
+            if ca is not masks0_attr:
+                masks1_attr = ca
+                break
 
     positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices = [], [], [], [], [], [], [], []
     vert_map = {}

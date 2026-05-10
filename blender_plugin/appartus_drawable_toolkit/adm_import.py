@@ -6,6 +6,8 @@ import tempfile
 import bpy
 import mathutils
 
+from .constants import ATTR_NAME, ATTR_NAME2
+
 _C = mathutils.Matrix([
     [1,  0,  0, 0],
     [0,  0,  1, 0],
@@ -189,6 +191,31 @@ def _load_image_from_bytes(img_name, is_srgb, ext, data):
     return img
 
 
+def _load_drawable_templates(adm_path):
+    """Parsuje template per-materiál z .drawable TOML manifestu vedle .adm souboru."""
+    drawable_path = os.path.splitext(adm_path)[0] + '.drawable'
+    if not os.path.isfile(drawable_path):
+        return {}
+    try:
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import tomli as tomllib  # pip-installed fallback
+            except ImportError:
+                return {}
+        with open(drawable_path, 'rb') as f:
+            data = tomllib.load(f)
+        templates = {}
+        for mat_name, mat_data in data.get('materials', {}).items():
+            if isinstance(mat_data, dict) and 'template' in mat_data:
+                templates[mat_name] = mat_data['template']
+        return templates
+    except Exception as e:
+        print(f"[adm_import] Warning: nelze načíst .drawable manifest: {e}")
+        return {}
+
+
 def _guess_slot(img_name):
     """Odhadne slot z názvu textury pomocí TEXTURE_KEYWORDS."""
     from .constants import TEXTURE_KEYWORDS
@@ -301,5 +328,29 @@ def import_adm(filepath):
             mat = bpy.data.materials.get(mat_name)
             if mat:
                 _assign_textures_to_material(mat, loaded_images)
+
+    # Načti šablony z .drawable (stejné jméno vedle .adm)
+    drawable_templates = _load_drawable_templates(filepath)
+
+    # Vytvoř shader node preview pro každý nově importovaný materiál
+    from .material import create_bevy_node_tree
+    for mat_name in imported_mats:
+        mat = bpy.data.materials.get(mat_name)
+        if not mat:
+            continue
+        props = getattr(mat, 'bevy_toolkit', None)
+        if props is not None:
+            template = drawable_templates.get(mat_name, 'standard_pbr')
+            try:
+                props.template = template
+            except Exception:
+                pass
+        create_bevy_node_tree(mat)
+
+    # Oprav vertex atributy na importovaných meshích (přejmenuj COLOR_0 → bevy_masks atd.)
+    from .mesh import fix_imported_vertex_attributes
+    for obj in created:
+        if obj.type == 'MESH' and obj.data:
+            fix_imported_vertex_attributes(obj.data)
 
     return created

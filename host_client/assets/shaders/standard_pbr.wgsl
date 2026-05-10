@@ -39,6 +39,24 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     let masks = in.color;   // R=normal_suppress, G=dirt, B=wet, A=palette
+    // Debug mode: params.tiling.y < 0 → zobrazit vertex color kanály jako albedo (viewer only)
+    if params.tiling.y < 0.0 {
+        var dbg: FragmentOutput;
+        let ch = abs(params.tiling.y);
+        // -1=RGB, -2=R (normal_suppress), -3=G (dirt), -4=B (wet), -5=A (palette)
+        if ch < 1.5 {
+            dbg.color = vec4<f32>(masks.rgb, 1.0);
+        } else if ch < 2.5 {
+            dbg.color = vec4<f32>(masks.r, masks.r, masks.r, 1.0);
+        } else if ch < 3.5 {
+            dbg.color = vec4<f32>(masks.g, masks.g, masks.g, 1.0);
+        } else if ch < 4.5 {
+            dbg.color = vec4<f32>(masks.b, masks.b, masks.b, 1.0);
+        } else {
+            dbg.color = vec4<f32>(masks.a, masks.a, masks.a, 1.0);
+        }
+        return dbg;
+    }
     var pbr_in = in;
     pbr_in.color = vec4<f32>(1.0);
 

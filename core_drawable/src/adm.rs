@@ -395,6 +395,7 @@ pub fn spawn_adm_scenes(
     adm_assets: Res<Assets<AdmScene>>,
     drawable_reg: Res<DrawableManifestRegistry>,
     manifests: Res<Assets<DrawableManifest>>,
+    fallback: Res<crate::hook::DrawableFallbackTextures>,
     mut std_mats: ResMut<Assets<StandardPbrMaterial>>,
     mut env_mats: ResMut<Assets<LayeredEnvMaterial>>,
     mut glass_mats: ResMut<Assets<VehicleGlassMaterial>>,
@@ -444,19 +445,19 @@ pub fn spawn_adm_scenes(
                                 if let Some(mat_def) = manifest.materials.get(&node.material_name) {
                                     match mat_def.template.as_str() {
                                         "standard_pbr" => {
-                                            let mat = build_standard_pbr(mat_def, embedded, &mut tex_reg, &asset_server);
+                                            let mat = build_standard_pbr(mat_def, embedded, &fallback, &mut tex_reg, &asset_server);
                                             let handle = std_mats.add(mat);
                                             entity_cmd.insert(MeshMaterial3d(handle));
                                             true
                                         }
                                         "layered_env" => {
-                                            let mat = build_layered_env(mat_def, embedded, &mut tex_reg, &asset_server);
+                                            let mat = build_layered_env(mat_def, embedded, &fallback, &mut tex_reg, &asset_server);
                                             let handle = env_mats.add(mat);
                                             entity_cmd.insert(MeshMaterial3d(handle));
                                             true
                                         }
                                         "vehicle_glass" => {
-                                            let mat = build_vehicle_glass(mat_def, embedded, &mut tex_reg, &asset_server);
+                                            let mat = build_vehicle_glass(mat_def, embedded, &fallback, &mut tex_reg, &asset_server);
                                             let handle = glass_mats.add(mat);
                                             entity_cmd.insert(MeshMaterial3d(handle));
                                             true

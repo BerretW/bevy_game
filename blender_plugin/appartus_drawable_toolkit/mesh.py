@@ -114,6 +114,15 @@ def fill_alpha_channel(mesh: bpy.types.Mesh, alpha_value: float):
     color_attributes.active_color = layer
 
 
+def fill_vertex_preset(mesh: bpy.types.Mesh, rgba: tuple):
+    """Fill all corners of bevy_masks with a preset RGBA value."""
+    ensure_mask_attribute(mesh)
+    layer = mesh.color_attributes[ATTR_NAME]
+    r, g, b, a = (max(0.0, min(1.0, float(v))) for v in rgba)
+    for item in layer.data:
+        item.color = (r, g, b, a)
+
+
 def duplicate_collision_proxy(
     src_obj: bpy.types.Object, collection: bpy.types.Collection
 ):

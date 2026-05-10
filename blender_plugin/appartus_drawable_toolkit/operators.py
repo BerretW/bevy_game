@@ -5,7 +5,7 @@ from mathutils import Vector
 from .constants import UV_MASKS2_NAME
 from .mesh import (
     ensure_mask_attribute, ensure_masks2_attribute,
-    fill_alpha_channel, duplicate_collision_proxy,
+    fill_alpha_channel, fill_vertex_preset, duplicate_collision_proxy,
     is_collision_object, encode_masks2_to_uv, remove_temp_uv,
     fix_imported_vertex_attributes,
 )
@@ -14,6 +14,37 @@ from .material import (
     set_material_texture_source, clear_embedded_images, _sync_texture_node,
 )
 from .export import gather_target_meshes, validate_export_consistency, build_drawable_toml, save_companion_textures
+
+
+def _resolve_export_asset_name(context, objects):
+    candidates = []
+    active_object = context.active_object if context else None
+    if active_object and active_object.type == 'MESH':
+        candidates.append(active_object)
+    candidates.extend(obj for obj in objects if obj and obj.type == 'MESH')
+
+    for obj in candidates:
+        props = getattr(obj, "bevy_toolkit_obj", None)
+        if props is not None:
+            export_name = props.export_name.strip()
+            if export_name:
+                return bpy.path.clean_name(export_name)
+        if obj.name:
+            return bpy.path.clean_name(obj.name)
+
+    if context and context.scene:
+        return bpy.path.clean_name(context.scene.name)
+    return "Drawable"
+
+
+def _prefill_export_name(obj):
+    if not obj or obj.type != "MESH":
+        return
+    props = getattr(obj, "bevy_toolkit_obj", None)
+    if props is None:
+        return
+    if not props.export_name.strip():
+        props.export_name = bpy.path.clean_name(obj.name)
 
 
 class BEVY_OT_InitProject(bpy.types.Operator):
@@ -67,8 +98,8 @@ class BEVY_OT_SetPaint(bpy.types.Operator):
 
         if self.mode in ("INIT2", "AO", "EMISSIVE", "ERASE2"):
             ensure_masks2_attribute(obj.data)
-            if context.object.mode != "PAINT_VERTEX":
-                bpy.ops.object.mode_set(mode="PAINT_VERTEX")
+            if context.object.mode != "VERTEX_PAINT":
+                bpy.ops.object.mode_set(mode="VERTEX_PAINT")
             if self.mode == "AO":
                 brush.color = (1.0, 0.0, 0.0)
             elif self.mode == "EMISSIVE":
@@ -78,8 +109,8 @@ class BEVY_OT_SetPaint(bpy.types.Operator):
             return {"FINISHED"}
 
         ensure_mask_attribute(obj.data)
-        if context.object.mode != "PAINT_VERTEX":
-            bpy.ops.object.mode_set(mode="PAINT_VERTEX")
+        if context.object.mode != "VERTEX_PAINT":
+            bpy.ops.object.mode_set(mode="VERTEX_PAINT")
 
         if self.mode == "NORMAL_SUPP":
             brush.color = (1.0, 0.0, 0.0)
@@ -115,6 +146,31 @@ class BEVY_OT_FillAlphaMask(bpy.types.Operator):
         for obj in targets:
             fill_alpha_channel(obj.data, settings.alpha_fill_value)
         self.report({"INFO"}, f"Filled alpha for {len(targets)} mesh object(s)")
+        return {"FINISHED"}
+
+
+class BEVY_OT_ApplyVertexPreset(bpy.types.Operator):
+    bl_idname     = "bevy.apply_vertex_preset"
+    bl_label      = "Apply Vertex Preset"
+    bl_description = "Fill bevy_masks on selected meshes with preset RGBA values (R=layer, G=dirt, B=wet, A=palette)"
+
+    preset: bpy.props.StringProperty()
+
+    def execute(self, context):
+        from .constants import VERTEX_PRESETS
+        if self.preset not in VERTEX_PRESETS:
+            self.report({"WARNING"}, f"Unknown preset: {self.preset}")
+            return {"CANCELLED"}
+        targets = [obj for obj in context.selected_objects if obj.type == "MESH"]
+        if not targets and context.active_object and context.active_object.type == "MESH":
+            targets = [context.active_object]
+        if not targets:
+            self.report({"WARNING"}, "No mesh object selected")
+            return {"CANCELLED"}
+        rgba = VERTEX_PRESETS[self.preset]
+        for obj in targets:
+            fill_vertex_preset(obj.data, rgba)
+        self.report({"INFO"}, f"Applied '{self.preset}' preset to {len(targets)} mesh object(s)")
         return {"FINISHED"}
 
 
@@ -177,6 +233,9 @@ class BEVY_OT_ConvertToDrawableModel(bpy.types.Operator):
             model_obj.location = active.location.copy()
 
         for obj in targets:
+            _prefill_export_name(obj)
+
+        for obj in targets:
             world_matrix = obj.matrix_world.copy()
             obj.parent   = model_obj
             obj.matrix_world = world_matrix
@@ -205,6 +264,7 @@ class BEVY_OT_ConvertToDrawable(bpy.types.Operator):
                 obj.bevy_toolkit_obj.is_col = True
             else:
                 obj.bevy_toolkit_obj.is_col = False
+                _prefill_export_name(obj)
                 ensure_mask_attribute(obj.data)
                 ensure_masks2_attribute(obj.data)
                 if settings.auto_embed_collision:
@@ -220,6 +280,7 @@ class BEVY_OT_ConvertToDrawable(bpy.types.Operator):
             proxy_obj = bpy.data.objects.get(proxy_name)
             if proxy_obj:
                 proxy_obj.bevy_toolkit_obj.is_col = True
+                _prefill_export_name(proxy_obj)
 
         self.report(
             {"INFO"},
@@ -389,16 +450,17 @@ class BEVY_OT_Export(bpy.types.Operator):
             self.report({"WARNING"}, "Save .blend file first")
             return {"CANCELLED"}
 
-        base_path  = bpy.data.filepath.replace(".blend", "")
-        glb_path   = base_path + ".glb"
-        toml_path  = base_path + ".drawable"
-        asset_name = os.path.basename(base_path)
         settings   = context.scene.bevy_toolkit_export
 
         target_meshes = gather_target_meshes(context, settings)
         if not target_meshes:
             self.report({"WARNING"}, "No mesh objects match selected export scope")
             return {"CANCELLED"}
+
+        asset_name = _resolve_export_asset_name(context, target_meshes)
+        export_dir = os.path.dirname(bpy.data.filepath)
+        glb_path   = os.path.join(export_dir, f"{asset_name}.glb")
+        toml_path  = os.path.join(export_dir, f"{asset_name}.drawable")
 
         warnings = validate_export_consistency(target_meshes)
         for warning_text in warnings[:8]:
@@ -728,9 +790,9 @@ class ADS_OT_export_adm(bpy.types.Operator):
             self.report({'WARNING'}, "Žádné mesh objekty k exportu")
             return {'CANCELLED'}
 
-        scene_name = bpy.path.clean_name(context.scene.name)
-        adm_path      = os.path.join(self.directory, f"{scene_name}.adm")
-        drawable_path = os.path.join(self.directory, f"{scene_name}.drawable")
+        export_name  = _resolve_export_asset_name(context, objects)
+        adm_path      = os.path.join(self.directory, f"{export_name}.adm")
+        drawable_path = os.path.join(self.directory, f"{export_name}.drawable")
 
         # Export geometrie + embedded DDS textur
         try:
@@ -751,7 +813,7 @@ class ADS_OT_export_adm(bpy.types.Operator):
 
         # Generuj .drawable TOML
         try:
-            lines = build_drawable_toml(scene_name, objects, used_materials)
+            lines = build_drawable_toml(export_name, objects, used_materials)
             with open(drawable_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(lines) + '\n')
         except Exception as e:
