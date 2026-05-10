@@ -3,7 +3,7 @@
 //! Phase 3.7: `RaycastBridge` se aktualizuje kazdy frame z pozice mysi.
 //! Lua sandbox cte pres `Raycast.GetGroundPosition()`.
 
-use bevy::math::primitives::{Capsule3d, Cuboid, Plane3d};
+use bevy::math::primitives::{Cuboid, Plane3d};
 use bevy::input::mouse::MouseMotion;
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
@@ -34,7 +34,7 @@ use crate::AppState;
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
 const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
-const PLAYER_MODEL_ASSET_PATH: &str = "models/player.glb#Scene0";
+const PLAYER_MODEL_ASSET_PATH: &str = "models/player.adm";
 const MAX_PITCH_RAD: f32 = 1.25;
 const MOUSE_SENS_SCALE: f32 = 0.0025;
 const POSITION_SMOOTHING_RATE: f32 = 14.0;
@@ -44,7 +44,7 @@ const ROTATION_SMOOTHING_RATE: f32 = 18.0;
 pub struct LocalClientId(pub u64);
 
 #[derive(Resource, Clone)]
-struct PlayerModelHandle(Handle<Scene>);
+struct PlayerModelHandle(Handle<crate::drawable::AdmScene>);
 
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 enum CameraMode {
@@ -228,7 +228,7 @@ fn setup_scene_and_camera(
         Transform::from_xyz(0.0, 0.15, 0.0),
     ));
 
-    commands.insert_resource(PlayerModelHandle(asset_server.load(PLAYER_MODEL_ASSET_PATH)));
+    commands.insert_resource(PlayerModelHandle(asset_server.load::<crate::drawable::AdmScene>(PLAYER_MODEL_ASSET_PATH)));
 
     info!(
         "[gameplay/client] 3D scene ready (camera toggle: F6, player model: {})",
@@ -326,8 +326,6 @@ fn apply_cursor_mode(
 fn attach_player_model_to_new_players(
     mut commands: Commands,
     model: Res<PlayerModelHandle>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     predicted_players: Query<&PlayerMarker, With<Predicted>>,
     new_players: Query<
         (Entity, &PlayerMarker, Option<&Predicted>),
@@ -346,9 +344,6 @@ fn attach_player_model_to_new_players(
             continue;
         }
 
-        let hue = (marker.client_id as f32 * 47.0).rem_euclid(360.0);
-        let color = Color::hsl(hue, 0.7, 0.6);
-
         commands
             .entity(entity)
             .insert((
@@ -361,23 +356,18 @@ fn attach_player_model_to_new_players(
             ))
             .with_children(|p| {
                 p.spawn((
-                    SceneRoot(model.0.clone()),
+                    AdmSceneRoot(model.0.clone()),
+                    ModelName("player".to_string()),
                     Transform::from_xyz(0.0, 0.0, 0.0),
-                ));
-
-                // Fallback mesh viditelny i kdyz model neni dostupny.
-                p.spawn((
-                    Mesh3d(meshes.add(Capsule3d::new(0.35, 1.0))),
-                    MeshMaterial3d(materials.add(StandardMaterial {
-                        base_color: color,
-                        ..default()
-                    })),
-                    Transform::from_xyz(0.0, 1.0, 0.0),
+                    GlobalTransform::default(),
+                    Visibility::default(),
+                    InheritedVisibility::default(),
+                    ViewVisibility::default(),
                 ));
             });
 
         info!(
-            "[gameplay/client] model attached to player {:?} (client_id={})",
+            "[gameplay/client] ADM model attached to player {:?} (client_id={})",
             entity, marker.client_id
         );
     }
