@@ -25,6 +25,7 @@ publish = false
 # --- Engine ---
 bevy = { version = "0.18", default-features = false }
 bevy_gltf = { version = "0.18" }
+avian3d = { version = "0.6.1" }
 
 # --- Networking (lightyear: prediction, rollback, replication) ---
 # 0.26 ladí s Bevy 0.18. Pro Phase 2 stačí `messaging` (channels) —

@@ -9,6 +9,8 @@ use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
 use bevy::transform::components::TransformTreeChanged;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use avian3d::prelude::*;
+use avian3d::math::Dir;
 use core_net::{ClientHandshakeState, HandshakeStatus};
 use bevy::asset::AssetPath;
 use std::collections::HashSet;
@@ -29,7 +31,6 @@ use lightyear::prelude::Predicted;
 use crate::config::ClientConfigResource;
 use crate::native_assets::AdmHandleCache;
 use crate::drawable::AdmSceneRoot;
-use crate::physics::CollisionWorld;
 use crate::AppState;
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
@@ -498,7 +499,7 @@ fn collect_and_send_input(
     mouse: Res<ButtonInput<MouseButton>>,
     fixed_time: Res<Time<Fixed>>,
     local_client_id: Option<Res<LocalClientId>>,
-    collision_world: Res<CollisionWorld>,
+    spatial_query: SpatialQuery,
     predicted_players: Query<(&PlayerMarker, &NetTransform), With<Predicted>>,
     look: Res<CameraLookState>,
     mut senders: Query<&mut MessageSender<PlayerInput>>,
@@ -537,10 +538,7 @@ fn collect_and_send_input(
     let mut clamped_move_x = world_move_x;
     let mut clamped_move_z = world_move_z;
 
-    if (world_move_x != 0.0 || world_move_z != 0.0)
-        && local_client_id.is_some()
-        && !collision_world.colliders.is_empty()
-    {
+    if (world_move_x != 0.0 || world_move_z != 0.0) && local_client_id.is_some() {
         let crouching = keys.pressed(bindings.crouch);
         let sprinting = keys.pressed(bindings.sprint) && !crouching;
 
@@ -560,12 +558,17 @@ fn collect_and_send_input(
 
             if let Some(player_pos) = player_pos {
                 let move_dir = Vec3::new(world_move_x, 0.0, world_move_z);
-                let move_delta = move_dir * move_speed * fixed_time.delta_secs();
-                let next_pos = player_pos + move_delta;
+                let max_move_distance = move_speed * fixed_time.delta_secs();
+                let desired_move_delta = move_dir * max_move_distance;
+                let resolved_move_delta = resolve_movement_with_colliders(
+                    player_pos,
+                    desired_move_delta,
+                    &spatial_query,
+                );
 
-                if intersects_static_collider(next_pos, &collision_world) {
-                    clamped_move_x = 0.0;
-                    clamped_move_z = 0.0;
+                if max_move_distance > 0.00001 {
+                    clamped_move_x = (resolved_move_delta.x / max_move_distance).clamp(-1.0, 1.0);
+                    clamped_move_z = (resolved_move_delta.z / max_move_distance).clamp(-1.0, 1.0);
                 }
             }
         }
@@ -596,34 +599,78 @@ fn collect_and_send_input(
     }
 }
 
-fn intersects_static_collider(next_player_pos: Vec3, world: &CollisionWorld) -> bool {
-    // Hráč aproximován capsule → AABB obálka pro rychlé broad-phase blokování pohybu.
-    let player_half = Vec3::new(0.35, 0.9, 0.35);
-    let player_min = Vec3::new(
-        next_player_pos.x - player_half.x,
-        next_player_pos.y,
-        next_player_pos.z - player_half.z,
-    );
-    let player_max = Vec3::new(
-        next_player_pos.x + player_half.x,
-        next_player_pos.y + player_half.y * 2.0,
-        next_player_pos.z + player_half.z,
+fn resolve_movement_with_colliders(
+    player_pos: Vec3,
+    desired_move_delta: Vec3,
+    spatial_query: &SpatialQuery,
+) -> Vec3 {
+    const SKIN_WIDTH: f32 = 0.02;
+
+    if desired_move_delta.length_squared() <= 0.0000001 {
+        return Vec3::ZERO;
+    }
+
+    // Hráč aproximován kapslí: síťová pozice je u nohou, proto offset středu nahoru.
+    let player_shape = Collider::capsule(0.35, 1.1);
+    let shape_origin = Vec3::new(player_pos.x, player_pos.y + 0.9, player_pos.z);
+
+    let Some((move_dir, move_distance)) = Dir::new_and_length(desired_move_delta).ok() else {
+        return Vec3::ZERO;
+    };
+
+    let cast_cfg = ShapeCastConfig::from_max_distance(move_distance);
+    let cast_filter = SpatialQueryFilter::default();
+
+    let first_hit = spatial_query.cast_shape_predicate(
+        &player_shape,
+        shape_origin,
+        Quat::IDENTITY,
+        move_dir,
+        &cast_cfg,
+        &cast_filter,
+        &|_| true,
     );
 
-    world.colliders.iter().filter(|c| c.is_static).any(|c| {
-        let col_min = c.center - c.half_extents;
-        let col_max = c.center + c.half_extents;
-        aabb_intersects(player_min, player_max, col_min, col_max)
-    })
-}
+    let Some(hit) = first_hit else {
+        return desired_move_delta;
+    };
 
-fn aabb_intersects(a_min: Vec3, a_max: Vec3, b_min: Vec3, b_max: Vec3) -> bool {
-    a_min.x <= b_max.x
-        && a_max.x >= b_min.x
-        && a_min.y <= b_max.y
-        && a_max.y >= b_min.y
-        && a_min.z <= b_max.z
-        && a_max.z >= b_min.z
+    let first_move = move_dir.as_vec3() * (hit.distance - SKIN_WIDTH).max(0.0);
+    let remaining = desired_move_delta - first_move;
+    if remaining.length_squared() <= 0.0000001 {
+        return first_move;
+    }
+
+    // Jednoduchy wall-slide: odstran komponentu smerem do kolizni normaly.
+    let wall_normal = Vec3::new(hit.normal1.x, 0.0, hit.normal1.z).normalize_or_zero();
+    if wall_normal.length_squared() <= 0.0000001 {
+        return first_move;
+    }
+
+    let slide_delta = remaining - wall_normal * remaining.dot(wall_normal);
+    let Some((slide_dir, slide_distance)) = Dir::new_and_length(slide_delta).ok() else {
+        return first_move;
+    };
+
+    let slide_origin = shape_origin + first_move;
+    let slide_cfg = ShapeCastConfig::from_max_distance(slide_distance);
+    let slide_hit = spatial_query.cast_shape_predicate(
+        &player_shape,
+        slide_origin,
+        Quat::IDENTITY,
+        slide_dir,
+        &slide_cfg,
+        &cast_filter,
+        &|_| true,
+    );
+
+    let slide_move = if let Some(hit) = slide_hit {
+        slide_dir.as_vec3() * (hit.distance - SKIN_WIDTH).max(0.0)
+    } else {
+        slide_delta
+    };
+
+    first_move + slide_move
 }
 
 /// Publikuje stav inputu do Lua local event busu jako `input:state`.

@@ -1,75 +1,122 @@
+use avian3d::debug_render::PhysicsDebugPlugin;
+use avian3d::prelude::*;
 use bevy::prelude::*;
-use core_drawable::{CollisionMaterial, CollisionShape, DrawableCollision};
+use core_drawable::{CollisionShape, DrawableCollision};
 
 pub struct ClientPhysicsPlugin;
 
 impl Plugin for ClientPhysicsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<CollisionWorld>();
-        app.add_systems(Update, rebuild_collision_world);
+        app.add_plugins(PhysicsPlugins::default());
+        app.add_plugins(PhysicsDebugPlugin::default());
+        // Vizualizace colliderů je při startu vypnutá — F3 ji přepíná.
+        app.add_systems(Startup, disable_physics_debug_on_start);
+        app.add_systems(Update, (attach_or_update_drawable_colliders, toggle_physics_debug));
     }
 }
 
-#[derive(Resource, Default, Debug)]
-pub struct CollisionWorld {
-    pub colliders: Vec<WorldCollider>,
+fn disable_physics_debug_on_start(mut store: ResMut<GizmoConfigStore>) {
+    let (config, _) = store.config_mut::<PhysicsGizmos>();
+    config.enabled = false;
 }
 
-#[derive(Debug, Clone)]
-pub struct WorldCollider {
-    pub entity: Entity,
-    pub is_static: bool,
-    pub climbable: bool,
-    pub ladder: bool,
-    pub material: CollisionMaterial,
-    pub friction: f32,
-    pub restitution: f32,
-    pub center: Vec3,
-    pub half_extents: Vec3,
-    pub shape: CollisionShape,
-}
-
-fn rebuild_collision_world(
-    mut world: ResMut<CollisionWorld>,
-    q: Query<(Entity, &DrawableCollision, &GlobalTransform)>,
+fn toggle_physics_debug(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut store: ResMut<GizmoConfigStore>,
 ) {
-    world.colliders.clear();
-    world.colliders.reserve(q.iter().len());
-
-    for (entity, dc, gt) in &q {
-        world.colliders.push(WorldCollider {
-            entity,
-            is_static: dc.is_static,
-            climbable: dc.climbable,
-            ladder: dc.ladder,
-            material: dc.material.clone(),
-            friction: dc.friction,
-            restitution: dc.restitution,
-            center: gt.translation(),
-            half_extents: half_extents_from_drawable(dc),
-            shape: dc.shape.clone(),
-        });
+    if keys.just_pressed(KeyCode::F3) {
+        let (config, _) = store.config_mut::<PhysicsGizmos>();
+        config.enabled = !config.enabled;
+        if config.enabled {
+            info!("[physics] Collider debug: ON (F3 pro vypnutí)");
+        } else {
+            info!("[physics] Collider debug: OFF");
+        }
     }
 }
 
-fn half_extents_from_drawable(dc: &DrawableCollision) -> Vec3 {
-    // Foundation step: use AABB envelopes for broad-phase until a physics backend is plugged in.
+#[derive(Component, Debug)]
+pub struct StaticWorldCollider;
+
+fn attach_or_update_drawable_colliders(
+    mut commands: Commands,
+    q: Query<(Entity, &DrawableCollision, Option<&Mesh3d>), Or<(Added<DrawableCollision>, Changed<DrawableCollision>)>>,
+) {
+    for (entity, dc, mesh) in &q {
+        let mut ecmd = commands.entity(entity);
+        match collider_spec_from_drawable(dc, mesh.is_some()) {
+            ColliderSpec::Direct(collider) => {
+                ecmd.insert(collider);
+                ecmd.remove::<ColliderConstructor>();
+            }
+            ColliderSpec::Construct(constructor) => {
+                ecmd.insert(constructor);
+                ecmd.remove::<Collider>();
+            }
+        }
+
+        if dc.is_static {
+            ecmd.insert((RigidBody::Static, StaticWorldCollider));
+        } else {
+            ecmd.insert(RigidBody::Dynamic);
+            ecmd.remove::<StaticWorldCollider>();
+        }
+
+        if dc.friction > 0.0 {
+            ecmd.insert(Friction::new(dc.friction));
+        }
+        if dc.restitution > 0.0 {
+            ecmd.insert(Restitution::new(dc.restitution));
+        }
+    }
+}
+
+enum ColliderSpec {
+    Direct(Collider),
+    Construct(ColliderConstructor),
+}
+
+fn collider_spec_from_drawable(dc: &DrawableCollision, has_mesh: bool) -> ColliderSpec {
     match dc.shape {
-        CollisionShape::Box => dc.half_extents.unwrap_or(Vec3::splat(0.5)),
+        CollisionShape::Box => {
+            let half = dc.half_extents.unwrap_or(Vec3::splat(0.5));
+            ColliderSpec::Direct(Collider::cuboid(half.x * 2.0, half.y * 2.0, half.z * 2.0))
+        }
         CollisionShape::Sphere => {
-            let r = dc.radius.unwrap_or(0.5).max(0.0001);
-            Vec3::splat(r)
+            ColliderSpec::Direct(Collider::sphere(dc.radius.unwrap_or(0.5).max(0.0001)))
         }
         CollisionShape::Capsule => {
             let radius = dc.radius.unwrap_or(0.5).max(0.0001);
             let full_h = dc.height.unwrap_or(radius * 2.0).max(radius * 2.0);
-            Vec3::new(radius, full_h * 0.5, radius)
+            let body_length = (full_h - radius * 2.0).max(0.0001);
+            ColliderSpec::Direct(Collider::capsule(radius, body_length))
         }
         CollisionShape::Cylinder => {
             let radius = dc.radius.unwrap_or(0.5).max(0.0001);
-            let half_h = dc.height.map(|v| v * 0.5).unwrap_or(0.5).max(0.0001);
-            Vec3::new(radius, half_h, radius)
+            let height = dc.height.unwrap_or(1.0).max(0.0001);
+            ColliderSpec::Direct(Collider::cylinder(radius, height))
         }
-        CollisionShape::Convex | CollisionShape::Mesh => dc.half_extents.unwrap_or(Vec3::splat(0.5)),
+        CollisionShape::Convex => {
+            if has_mesh {
+                ColliderSpec::Construct(ColliderConstructor::ConvexHullFromMesh)
+            } else {
+                let half = dc.half_extents.unwrap_or(Vec3::splat(0.5));
+                ColliderSpec::Direct(Collider::cuboid(half.x * 2.0, half.y * 2.0, half.z * 2.0))
+            }
+        }
+        CollisionShape::Mesh => {
+            if has_mesh {
+                if dc.is_static {
+                    // Trimesh = pouze pro statická tělesa (Avian/Rapier omezení)
+                    ColliderSpec::Construct(ColliderConstructor::TrimeshFromMesh)
+                } else {
+                    // Dynamická tělesa — konvexní obal (trimesh pro dynamic Avian odmítne)
+                    ColliderSpec::Construct(ColliderConstructor::ConvexHullFromMesh)
+                }
+            } else {
+                let half = dc.half_extents.unwrap_or(Vec3::splat(0.5));
+                ColliderSpec::Direct(Collider::cuboid(half.x * 2.0, half.y * 2.0, half.z * 2.0))
+            }
+        }
     }
 }

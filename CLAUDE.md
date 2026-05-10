@@ -307,12 +307,12 @@ files {
 
 - [X] Blender ADS export COLLISION entit rozšířen o primitive dimensions (`half_extents`, `radius`, `height`)
 - [X] `core_drawable` ingestuje COLLISION metadata do runtime komponenty `DrawableCollision`
-- [X] `host_client::physics::ClientPhysicsPlugin` buduje engine-native `CollisionWorld` cache (`WorldCollider`) z `DrawableCollision` + `GlobalTransform` každý frame
+- [X] `host_client::physics::ClientPhysicsPlugin` používá Avian 0.6 (`PhysicsPlugins`) a mapuje `DrawableCollision` na runtime `Collider` / `ColliderConstructor` (`TrimeshFromMesh`, `ConvexHullFromMesh`)
 - [X] COLLISION metadata obsahují movement flagy `climbable`, `ladder` pro budoucí traversal systém (ledge/ladder logic)
 - [X] COLLISION metadata obsahují `material` enum (20 typů) pro `core/audio` a dopadové VFX routing (footsteps, bullet impacts, debris)
 - [X] `CollisionMaterial` má helper routing API (`footstep_profile`, `impact_profile`) pro rychlé napojení sound/fx resources
-- [X] Klientský movement gate: `collect_and_send_input` blokuje pohyb do statických `CollisionWorld` colliderů přes AABB broad-phase test (okamžité zastavení o objekty)
-- [ ] Narrow-phase solver a rigid-body backend (dočasně bez externí crate kvůli Bevy 0.18 kompatibilitě)
+- [X] Klientský movement gate: `collect_and_send_input` používá Avian `SpatialQuery::cast_shape_predicate` (capsule sweep) proti solid colliderům + základní wall-slide (projected remaining delta)
+- [X] Narrow-phase solver a rigid-body backend (Avian 0.6, Bevy 0.18 kompatibilní)
 
 `material` enum (aktuální kontrakt): `CONCRETE`, `STONE`, `BRICK`, `WOOD`, `METAL`, `GLASS`, `DIRT`, `GRASS`, `SAND`, `GRAVEL`, `MUD`, `SNOW`, `ICE`, `WATER`, `RUBBER`, `PLASTIC`, `CERAMIC`, `CARPET`, `ASPHALT`, `LADDER_METAL`.
 
@@ -881,8 +881,8 @@ Rust poskytuje jen časovač a eventy; herní logika je v Lua.
   src/gameplay.rs                  ClientGameplayPlugin, update_raycast_bridge, collect_and_send_input,
                                      publish_input_state_to_lua (`input:state` local bus event),
                                      3D player visual attach + 1st/3rd person camera follow
-  src/physics.rs                   ClientPhysicsPlugin, CollisionWorld cache, WorldCollider AABB envelopes z `DrawableCollision`
-                                     (incl. `climbable`, `ladder`, `material` pro traversal/audio/fx)
+  src/physics.rs                   ClientPhysicsPlugin + Avian (`PhysicsPlugins`), mapping `DrawableCollision`
+                                     na `Collider`/`ColliderConstructor` (incl. `TrimeshFromMesh`) + `StaticWorldCollider`
   src/native_assets.rs             NativeAssetsPlugin — scan assets/fonts/*.{ttf,otf}, assets/models/*.{glb,gltf,drawable}
   src/drawable/mod.rs              Tenký re-export wrapper: `pub use core_drawable::*`
   assets/shaders/                  Sdílené WGSL shadery (standard_pbr, layered_env, vehicle_glass,
