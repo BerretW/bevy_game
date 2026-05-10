@@ -1,0 +1,12 @@
+Přidat porpodru LOD do enginu a bledner pluginu, aby bylo možné načítat a spravovat více verzí modelů s různou úrovní detailů (Level of Detail) pro optimalizaci výkonu. Systém LOD by měl automaticky přepínat mezi verzemi modelů na základě vzdálenosti od kamery nebo jiných kritérií, což umožní zlepšit výkon bez výrazného snížení vizuální kvality.
+
+Požadavek: Implementace Skeletálního a Animačního Systému (ADS Animation & Socketing)
+Potřebuji do enginu (v rámci Bevy a Apparatus Drawable System) přidat podporu pro načítání a ovládání animovaných modelů s kostrou. Systém musí zavést striktní, univerzální názvosloví kostí inspirované AAA enginy (jako RAGE/RDR2) pro snadnou modulárnost a interakci mezi entitami.
+Klíčové vlastnosti návrhu:
+Prefixový systém kostí: Kosti v GLTF modelech budou rozděleny prefixy na deformační (DEF_), inverzní kinematiku (IK_), mechanické části (MEC_) a připojovací body neboli sockety (SOC_).
+Univerzální kostra charakterů: Zavedení standardizovaných jmen jako DEF_Head, DEF_Spine, DEF_R_Hand pro všechny humanoidy, což umožní sdílení animací (tzv. retargeting).
+Podpora IK: Zvláštní uzly IK_ (např. IK_L_Hand, IK_L_Foot), které animační systém enginu využije jako cíle pro procedurální usazování nohou na terén nebo přikládání rukou na zbraně.
+Socket-to-Socket Attachment: Usnadnění propojování předmětů s charaktery. Například zbraň bude mít SOC_Grip_Main a hráč SOC_R_Hand_Weapon. Skriptovací API pak umožní jednoduše zavolat World.Attach(weapon_handle, "SOC_Grip_Main", player_handle, "SOC_R_Hand_Weapon"), čímž se automaticky spočítají relativní transformace tak, aby madlo přesně padlo do dlaně.
+Dostupnost v Lua: Zpřístupnit tyto funkce do existujícího Lua API (přidat do Command Queue příkazy pro attachování a čtení pozic specifických kostí/socketů).
+
+

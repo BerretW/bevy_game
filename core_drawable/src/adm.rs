@@ -515,7 +515,15 @@ pub fn spawn_adm_scenes(
                 AdmNodeType::Collision => {
                     entity_cmd.insert(Visibility::Hidden);
 
-                    // Build DrawableCollision from manifest entity def + mesh AABB.
+                    // PŘIDÁNO: Pokud má collider z Blenderu exportovanou geometrii, 
+                    // připojíme mu Handle<Mesh>. Fyzikální systém si ho pak přečte.
+                    if let Some(mesh_idx) = node.mesh_index {
+                        if let Some(mesh_handle) = scene.meshes.get(mesh_idx) {
+                            entity_cmd.insert(Mesh3d(mesh_handle.clone()));
+                        }
+                    }
+
+                    // Build DrawableCollision from manifest...
                     let col = if let Some(manifest) = manifest {
                         if let Some(crate::manifest::EntityDef::COLLISION {
                             shape,

@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use bevy::asset::UnapprovedPathMode;
 use bevy::gltf::{Gltf, GltfLoaderSettings};
 use bevy::prelude::*;
+use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::window::WindowResolution;
 
 use core_drawable::{
@@ -617,17 +618,24 @@ fn sync_mesh_visibility_for_collider_mode(
 fn draw_colliders(
     mut gizmos: Gizmos,
     state: Res<ViewerState>,
-    query: Query<(&DrawableCollision, &GlobalTransform)>,
+    query: Query<(&DrawableCollision, &GlobalTransform, Option<&Mesh3d>)>,
+    mesh_assets: Res<Assets<Mesh>>,
 ) {
     if !state.colliders_visible { return; }
-    for (dc, gt) in &query {
+    for (dc, gt, mesh3d) in &query {
         let (scale, rot, center) = gt.to_scale_rotation_translation();
         let color = collider_color(dc);
         match &dc.shape {
-            CollisionShape::Box | CollisionShape::Convex | CollisionShape::Mesh => {
-                // half_extents are in entity-local space; multiply by GT scale for world size.
+            CollisionShape::Box => {
                 let he = dc.half_extents.unwrap_or(Vec3::splat(0.5)) * scale;
                 draw_box_gizmo(&mut gizmos, center, rot, he, color);
+            }
+            CollisionShape::Mesh | CollisionShape::Convex => {
+                if !draw_mesh_wireframe(&mut gizmos, mesh3d, &mesh_assets, gt, color) {
+                    // Fallback to AABB box if mesh data not available
+                    let he = dc.half_extents.unwrap_or(Vec3::splat(0.5)) * scale;
+                    draw_box_gizmo(&mut gizmos, center, rot, he, color);
+                }
             }
             CollisionShape::Sphere => {
                 let r = dc.radius.unwrap_or(0.5) * scale.max_element();
@@ -649,6 +657,44 @@ fn draw_colliders(
             }
         }
     }
+}
+
+/// Draws the actual mesh geometry as wireframe. Returns false if mesh data is unavailable.
+fn draw_mesh_wireframe(
+    gizmos: &mut Gizmos,
+    mesh3d: Option<&Mesh3d>,
+    mesh_assets: &Assets<Mesh>,
+    gt: &GlobalTransform,
+    color: Color,
+) -> bool {
+    let Some(mesh_h) = mesh3d else { return false };
+    let Some(mesh) = mesh_assets.get(mesh_h.id()) else { return false };
+
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return false };
+
+    let indices: Vec<u32> = match mesh.indices() {
+        Some(Indices::U32(idx)) => idx.clone(),
+        Some(Indices::U16(idx)) => idx.iter().map(|&i| i as u32).collect(),
+        None => return false,
+    };
+
+    use std::collections::HashSet;
+    let mut drawn: HashSet<(u32, u32)> = HashSet::new();
+
+    for tri in indices.chunks_exact(3) {
+        let [a, b, c] = [tri[0], tri[1], tri[2]];
+        for &(i, j) in &[(a, b), (b, c), (c, a)] {
+            let edge = if i < j { (i, j) } else { (j, i) };
+            if drawn.insert(edge) {
+                let pa = gt.transform_point(Vec3::from(positions[i as usize]));
+                let pb = gt.transform_point(Vec3::from(positions[j as usize]));
+                gizmos.line(pa, pb, color);
+            }
+        }
+    }
+
+    !drawn.is_empty()
 }
 
 fn collider_color(dc: &DrawableCollision) -> Color {

@@ -643,15 +643,50 @@ def _apply_material_from_drawable(mat, mat_data, search_dir=None):
 def _apply_entity_from_drawable(obj, ent_data):
     obj_props = obj.bevy_toolkit_obj
     if ent_data.get("type") == "COLLISION":
+        shape = ent_data.get("shape", "CONVEX")
         obj_props.is_col      = True
-        obj_props.col_shape   = ent_data.get("shape",       "CONVEX")
+        obj_props.col_shape   = shape
         obj_props.mass        = float(ent_data.get("mass",        1.0))
         obj_props.is_static   = bool(ent_data.get("is_static",   False))
+        obj_props.col_climbable = bool(ent_data.get("climbable", False))
+        obj_props.col_ladder    = bool(ent_data.get("ladder",    False))
+        if "material" in ent_data:
+            obj_props.col_material = ent_data["material"]
         obj_props.friction    = float(ent_data.get("friction",    0.6))
         obj_props.restitution = float(ent_data.get("restitution", 0.2))
-        obj_props.tags_csv    = ",".join(ent_data.get("tags", []))
+        obj_props.tags_csv    = ",".join(ent_data.get("tags",[]))
+        
+        # Aby collider v Blenderu neblokoval výhled, nastavíme zobrazení na 'WIRE'
         obj.display_type      = "WIRE"
         obj.hide_render       = True
+
+        # Vygenerujeme vizuální "proxy" mesh pro primitiva, co z ADM přišla prázdná
+        if obj.type == 'MESH' and obj.data and len(obj.data.vertices) == 0:
+            import bmesh
+            bm = bmesh.new()
+            
+            hx, hy, hz = 0.5, 0.5, 0.5
+            if "half_extents" in ent_data:
+                he = ent_data["half_extents"]
+                hx, hy, hz = he[0], he[1], he[2]
+                
+            radius = float(ent_data.get("radius", 0.5))
+            height = float(ent_data.get("height", 2.0))
+            
+            if shape in ("BOX", "CONVEX", "MESH"):
+                bmesh.ops.create_cube(bm, size=2.0)
+                for v in bm.verts:
+                    # Převod rozměrů Bevy souřadnic (Y-up) zpět na Blender rozměry (Z-up)
+                    v.co.x *= hx
+                    v.co.y *= hz  
+                    v.co.z *= hy  
+            elif shape == "SPHERE":
+                bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=radius)
+            elif shape in ("CYLINDER", "CAPSULE"):
+                bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=16, radius1=radius, radius2=radius, depth=height)
+                
+            bm.to_mesh(obj.data)
+            bm.free()
     else:
         obj_props.is_col       = False
         obj_props.cast_shadows = bool(ent_data.get("cast_shadows", True))

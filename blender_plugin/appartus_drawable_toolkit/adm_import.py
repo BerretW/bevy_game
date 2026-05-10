@@ -355,7 +355,14 @@ def import_adm(filepath):
             obj = bpy.data.objects.new(nname, bl_meshes[mesh_idx])
         elif ntype == 1:
             col_name = nname if nname.upper().startswith('COL') else f"COL_{nname}"
-            obj = bpy.data.objects.new(col_name, None)
+            # Pokud collider obsahuje vlastní mesh geometrii, použijeme ji.
+            if 0 <= mesh_idx < len(bl_meshes):
+                obj = bpy.data.objects.new(col_name, bl_meshes[mesh_idx])
+            else:
+                # Pokud mesh nemá, vytvoříme zatím prázdný "MESH" (ne Empty!),
+                # do kterého v operators.py za chvíli vygenerujeme náhradní tvar.
+                dummy_mesh = bpy.data.meshes.new(col_name + "_mesh")
+                obj = bpy.data.objects.new(col_name, dummy_mesh)
             obj.bevy_toolkit_obj.is_col = True
         else:
             obj = bpy.data.objects.new(nname, None)

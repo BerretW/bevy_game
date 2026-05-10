@@ -320,7 +320,17 @@ def export_adm(filepath, objects=None, export_textures=True):
             mat_name = obj.active_material.name if obj.active_material else ''
 
             mesh_idx = -1
-            if node_type == 0:
+            
+            # Zjistíme, zda potřebujeme exportovat reálnou 3D geometrii
+            needs_mesh = False
+            if node_type == 0: # Vizuální mesh
+                needs_mesh = True
+            elif node_type == 1: # Kolizní mesh
+                shape = obj.bevy_toolkit_obj.col_shape
+                if shape in ("MESH", "CONVEX"):
+                    needs_mesh = True
+
+            if needs_mesh:
                 key = obj.data.name if obj.data else obj.name
                 if key not in mesh_index_map:
                     mesh_index_map[key] = len(mesh_data_list)
