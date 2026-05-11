@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use bevy::asset::UnapprovedPathMode;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::gltf::{Gltf, GltfLoaderSettings};
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::window::WindowResolution;
@@ -1029,11 +1030,13 @@ fn sync_mesh_visibility_for_collider_mode(
 fn draw_colliders(
     mut gizmos: Gizmos,
     state: Res<ViewerState>,
-    query: Query<(&DrawableCollision, &GlobalTransform, Option<&Mesh3d>)>,
+    query: Query<(&DrawableCollision, &GlobalTransform, Option<&Mesh3d>, Option<&SkinnedMesh>)>,
+    joint_globals: Query<&GlobalTransform>,
     mesh_assets: Res<Assets<Mesh>>,
+    inverse_bindposes_assets: Res<Assets<SkinnedMeshInverseBindposes>>,
 ) {
     if !state.colliders_visible { return; }
-    for (dc, gt, mesh3d) in &query {
+    for (dc, gt, mesh3d, skinned) in &query {
         let (scale, rot, center) = gt.to_scale_rotation_translation();
         let color = collider_color(dc);
         match &dc.shape {
@@ -1042,14 +1045,32 @@ fn draw_colliders(
                 draw_box_gizmo(&mut gizmos, center, rot, he, color);
             }
             CollisionShape::Mesh | CollisionShape::Convex => {
-                if !draw_mesh_wireframe(&mut gizmos, mesh3d, &mesh_assets, gt, color) {
+                if !draw_mesh_wireframe(
+                    &mut gizmos,
+                    mesh3d,
+                    skinned,
+                    &mesh_assets,
+                    &inverse_bindposes_assets,
+                    &joint_globals,
+                    gt,
+                    color,
+                ) {
                     // Fallback to AABB box if mesh data not available
                     let he = dc.half_extents.unwrap_or(Vec3::splat(0.5)) * scale;
                     draw_box_gizmo(&mut gizmos, center, rot, he, color);
                 }
             }
             CollisionShape::Navmesh => {
-                if !draw_mesh_wireframe(&mut gizmos, mesh3d, &mesh_assets, gt, Color::srgb(0.95, 0.15, 0.8)) {
+                if !draw_mesh_wireframe(
+                    &mut gizmos,
+                    mesh3d,
+                    skinned,
+                    &mesh_assets,
+                    &inverse_bindposes_assets,
+                    &joint_globals,
+                    gt,
+                    Color::srgb(0.95, 0.15, 0.8),
+                ) {
                     let he = dc.half_extents.unwrap_or(Vec3::splat(0.5)) * scale;
                     draw_box_gizmo(&mut gizmos, center, rot, he, Color::srgb(0.95, 0.15, 0.8));
                 }
@@ -1080,7 +1101,10 @@ fn draw_colliders(
 fn draw_mesh_wireframe(
     gizmos: &mut Gizmos,
     mesh3d: Option<&Mesh3d>,
+    skinned: Option<&SkinnedMesh>,
     mesh_assets: &Assets<Mesh>,
+    inverse_bindposes_assets: &Assets<SkinnedMeshInverseBindposes>,
+    joint_globals: &Query<&GlobalTransform>,
     gt: &GlobalTransform,
     color: Color,
 ) -> bool {
@@ -1096,6 +1120,60 @@ fn draw_mesh_wireframe(
         None => return false,
     };
 
+    let skinned_world_positions = if let Some(skin) = skinned {
+        let joint_indices = match mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX) {
+            Some(VertexAttributeValues::Uint16x4(values)) => {
+                Some(values.iter().map(|joint| [joint[0] as usize, joint[1] as usize, joint[2] as usize, joint[3] as usize]).collect::<Vec<_>>())
+            }
+            Some(VertexAttributeValues::Uint32x4(values)) => {
+                Some(values.iter().map(|joint| [joint[0] as usize, joint[1] as usize, joint[2] as usize, joint[3] as usize]).collect::<Vec<_>>())
+            }
+            _ => None,
+        };
+        let joint_weights = match mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT) {
+            Some(VertexAttributeValues::Float32x4(values)) => Some(values),
+            _ => None,
+        };
+        let inverse_bindposes = inverse_bindposes_assets.get(&skin.inverse_bindposes);
+
+        match (joint_indices, joint_weights, inverse_bindposes) {
+            (Some(joint_indices), Some(joint_weights), Some(inverse_bindposes)) => {
+                let mut out = Vec::with_capacity(positions.len());
+                for (index, pos) in positions.iter().enumerate() {
+                    let local = Vec4::new(pos[0], pos[1], pos[2], 1.0);
+                    let mut world = Vec3::ZERO;
+                    let mut total_weight = 0.0f32;
+                    let joints = joint_indices.get(index).copied().unwrap_or([0, 0, 0, 0]);
+                    let weights = joint_weights.get(index).copied().unwrap_or([0.0, 0.0, 0.0, 0.0]);
+
+                    for i in 0..4 {
+                        let weight = weights[i];
+                        if weight <= 0.0 {
+                            continue;
+                        }
+                        let joint_idx = joints[i];
+                        let Some(&joint_entity) = skin.joints.get(joint_idx) else { continue };
+                        let Some(inverse_bind) = inverse_bindposes.get(joint_idx) else { continue };
+                        let Ok(joint_gt) = joint_globals.get(joint_entity) else { continue };
+                        let skinned_point = (joint_gt.to_matrix() * *inverse_bind) * local;
+                        world += skinned_point.truncate() * weight;
+                        total_weight += weight;
+                    }
+
+                    if total_weight > 0.0 {
+                        out.push(world);
+                    } else {
+                        out.push(gt.transform_point(Vec3::from(*pos)));
+                    }
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     use std::collections::HashSet;
     let mut drawn: HashSet<(u32, u32)> = HashSet::new();
 
@@ -1104,8 +1182,16 @@ fn draw_mesh_wireframe(
         for &(i, j) in &[(a, b), (b, c), (c, a)] {
             let edge = if i < j { (i, j) } else { (j, i) };
             if drawn.insert(edge) {
-                let pa = gt.transform_point(Vec3::from(positions[i as usize]));
-                let pb = gt.transform_point(Vec3::from(positions[j as usize]));
+                let pa = if let Some(skinned_positions) = &skinned_world_positions {
+                    skinned_positions[i as usize]
+                } else {
+                    gt.transform_point(Vec3::from(positions[i as usize]))
+                };
+                let pb = if let Some(skinned_positions) = &skinned_world_positions {
+                    skinned_positions[j as usize]
+                } else {
+                    gt.transform_point(Vec3::from(positions[j as usize]))
+                };
                 gizmos.line(pa, pb, color);
             }
         }

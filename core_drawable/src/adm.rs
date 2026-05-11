@@ -788,7 +788,7 @@ pub fn spawn_adm_scenes(
 
             for (node_index, node) in scene.nodes.iter().enumerate() {
                 let Some(mesh_index) = node.mesh_index else { continue };
-                if node.node_type != AdmNodeType::Mesh {
+                if node.node_type != AdmNodeType::Mesh && node.node_type != AdmNodeType::Collision {
                     continue;
                 }
                 let Some(mesh_handle) = scene.meshes.get(mesh_index) else { continue };

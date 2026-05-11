@@ -763,6 +763,9 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
 
     node_list = []  # list of (name, type_byte, mesh_idx, parent_idx, mat_name, transform16)
     obj_to_node = {}  # object → node_index
+    original_local_by_obj = {}
+    exported_local_by_obj = {}
+    pending_bone_parents = []  # list of (node_idx, bone_name)
 
     for obj in objects:
         # Detekce node type
@@ -774,14 +777,35 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
         else:
             node_type = 0  # MESH
 
+        original_local = obj.matrix_local.copy()
+        adjusted_local = original_local.copy()
+        is_bone_parent = (
+            armature_object is not None
+            and obj.parent == armature_object
+            and getattr(obj, 'parent_type', '') == 'BONE'
+            and bool(getattr(obj, 'parent_bone', ''))
+        )
+        bone_parent_name = getattr(obj, 'parent_bone', '') if is_bone_parent else ''
+
+        if is_bone_parent:
+            bone = armature_object.data.bones.get(bone_parent_name)
+            if bone is not None:
+                # Object parented to a bone uses rest-bone space as local parent space.
+                adjusted_local = bone.matrix_local.inverted() @ original_local
+        elif obj.parent and obj.parent in exported_local_by_obj:
+            parent_original = original_local_by_obj[obj.parent]
+            parent_exported = exported_local_by_obj[obj.parent]
+            adjusted_local = parent_exported.inverted() @ parent_original @ original_local
+
         # Parent node index
         parent_idx = -1
         if obj.parent and obj.parent in obj_to_node:
             parent_idx = obj_to_node[obj.parent]
 
         skinned_mesh = node_type == 0 and _object_uses_armature(obj, armature_object)
-        bind_matrix = obj.matrix_local.copy() if skinned_mesh else None
-        mat_bevy = _to_bevy_mat4(mathutils.Matrix.Identity(4) if skinned_mesh else obj.matrix_local)
+        bind_matrix = adjusted_local.copy() if skinned_mesh else None
+        exported_local = mathutils.Matrix.Identity(4) if skinned_mesh else adjusted_local
+        mat_bevy = _to_bevy_mat4(exported_local)
 
         if node_type == 0 and len(obj.material_slots) > 1:
             # Multi-material mesh: jeden node per material slot.
@@ -817,9 +841,13 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
                 if first_node_idx is None:
                     first_node_idx = node_idx
                 node_list.append((sub_name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
+                if is_bone_parent and bone_parent_name:
+                    pending_bone_parents.append((node_idx, bone_parent_name))
 
             if first_node_idx is not None:
                 obj_to_node[obj] = first_node_idx
+                original_local_by_obj[obj] = original_local
+                exported_local_by_obj[obj] = exported_local
         else:
             # Single material nebo COLLISION
             mat_name = obj.active_material.name if obj.active_material else ''
@@ -851,6 +879,10 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
             node_idx = len(node_list)
             obj_to_node[obj] = node_idx
             node_list.append((obj.name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
+            if is_bone_parent and bone_parent_name:
+                pending_bone_parents.append((node_idx, bone_parent_name))
+            original_local_by_obj[obj] = original_local
+            exported_local_by_obj[obj] = exported_local
 
     bone_index_map = {}
     if armature_object is not None and armature_object.type == 'ARMATURE':
@@ -863,6 +895,12 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
                 bone_idx = len(node_list)
                 node_list.append((bone.name, 3, -1, parent_idx, '', _to_bevy_mat4(_bone_rest_local_matrix(bone))))
                 bone_index_map[bone.name] = bone_idx
+
+            # Rebind objects parented to bones from armature root to concrete bone nodes.
+            for node_idx, bone_name in pending_bone_parents:
+                resolved_parent = bone_index_map.get(bone_name, armature_node_idx)
+                name, type_b, mesh_idx, _, mat_name, mat16 = node_list[node_idx]
+                node_list[node_idx] = (name, type_b, mesh_idx, resolved_parent, mat_name, mat16)
 
     # Sbíráme embedded textury (ze všech materiálů s bevy_toolkit props)
     # V ADM se balí VŠECHNY přiřazené textury bez ohledu na _embedded flag
