@@ -90,6 +90,14 @@ pub enum LuaCommand {
     StopAnimation {
         handle: u64,
     },
+    /// Phase 4 — Spustí blend space (míchání více klipů podle 2D vektoru pohybu).
+    PlayBlendSpace {
+        handle: u64,
+        blend_space_name: String,
+        position: [f32; 2],  // 2D vektor (x, y) nebo 1D (x, 0)
+        speed: f32,
+        flags: u32,
+    },
     /// Připojí child entitu k parent entitě přes dvojici socketů.
     Attach {
         child_handle: u64,
@@ -282,6 +290,17 @@ impl Default for AnimationState {
     fn default() -> Self {
         Self { current: None, speed: 1.0, looping: true, paused: false, blend_time: 0.0, flags: 1 }
     }
+}
+
+/// Runtime stav blend space — aktivní klípy a jejich váhy.
+#[derive(Component, Debug, Clone)]
+pub struct BlendSpaceState {
+    pub blend_space_name: String,
+    pub position: Vec2,  // 2D vektor (x, y) pro evaluaci
+    /// Aktivní klípy a jejich váhy: (clip_name, weight)
+    pub active_clips: Vec<(String, f32)>,
+    pub speed: f32,
+    pub flags: u32,
 }
 
 /// Message emitovaná při zpracování `World.ApplyDamage`.
@@ -634,6 +653,22 @@ pub fn process_lua_commands(
                     });
                 } else {
                     warn!("[cmd_queue] StopAnimation: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::PlayBlendSpace { handle, blend_space_name, position, speed, flags } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    commands.entity(entity).insert(BlendSpaceState {
+                        blend_space_name,
+                        position: Vec2::new(position[0], position[1]),
+                        active_clips: Vec::new(),  // Vyplní se v apply_adm_animations
+                        speed,
+                        flags,
+                    });
+                    // Také odstraníme AnimationState, pokud byl přítomen
+                    commands.entity(entity).remove::<AnimationState>();
+                } else {
+                    warn!("[cmd_queue] PlayBlendSpace: unknown handle {}", handle);
                 }
             }
 

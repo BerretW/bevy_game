@@ -1,54 +1,42 @@
-Tento aktualizovaný požadavek reflektuje přechod na **ADM (Apparatus Drawable Mesh)** a klade důraz na využití již hotového LOD systému v `core_drawable`. Cílem je transformovat engine z prostředí pro statické modely na plnohodnotný animační systém AAA standardu.
-
----
-
-# Požadavek na vývoj: ADS Skeletální Systém, Socketing a Animační LOD
+# Požadavek na vývoj: ADS Animační Systém v2 (AAA Polishing, Blending a IK)
 
 ## 1. Cíl úkolu
-Implementovat do **Apparatus Drawable System (ADS)** podporu pro kostry (skinning), animační retargeting pomocí striktního názvosloví kostí a pokročilý systém socketů pro dynamické připojování předmětů. Systém musí plně integrovat stávající LOD logiku pro optimalizaci CPU zátěže kostry.
+Posunout stávající Apparatus Drawable System (ADS), který již spolehlivě zvládá základní přehrávání, maskování částí těla (track_flags) a LOD pruning, na plnohodnotnou AAA úroveň. Cílem je implementovat plynulé přechody (crossfading), směrové míchání pohybu (blend spaces), synchronizaci s herní logikou (notifies) a procedurální úpravy postojů pomocí inverzní kinematiky (IK).
 
 ## 2. Technická specifikace & Architektura
 
-### A. Rozšíření binárního formátu ADM (verze 1.2)
-*   **Vertex Data:** Přidat export a import `JointIndices` (u16[4]) a `JointWeights` (f32[4]) pro každý vertex.
-*   **Skeleton Data:** Do ADM přidat sekci definující hierarchii kostí (jméno, parent_index) a `Inverse Bind Matrices`.
-*   **Metadata Uzlů:** Každý uzel v ADM musí mít flag určující jeho sémantiku (Standard, Bone, Socket, IK_Target).
+### A. Crossfading (Plynulé přechody v ADM)
+*   **Stav komponenty:** Rozšířit `AdmAnimationPlayback` o `previous_clip`, `previous_time`, `blend_timer` a `total_blend_time`.
+*   **Zpracování:** V `core_drawable/src/adm.rs` (`apply_adm_animations`) při změně `active_clip` neukončit okamžitě starý klip, ale plynule blendovat pozici/scale (`lerp`) a rotaci (`slerp`) mezi starým a novým klipem na základě ubíhajícího času (`blend_timer`).
+*   **Aktivace:** Reálné využití argumentu `blend_time` z příkazu Lua API `World.PlayAnimation`.
 
-### B. Standardizace kostry (AAA Prefix Systém)
-V rámci exportu z Blenderu a loadingu v Rustu striktně rozlišovat kosti podle prefixů:
-1.  **`DEF_` (Deformation):** Standardní kosti ovlivňující mesh. Povinný retargeting (např. `DEF_Spine` musí mít u všech humanoidů stejný význam).
-2.  **`IK_` (Inverse Kinematics):** Uzly sloužící jako cíle pro IK solvery (nohy na terénu, ruce na zbrani).
-3.  **`SOC_` (Socket):** Speciální body pro attachmenty (např. `SOC_R_Hand_Weapon`, `SOC_Holster_Back`).
-4.  **`MEC_` (Mechanical):** Animované uzly bez vlivu na skinning (závěr zbraně, víko kufru).
+### B. Blend Spaces (Vícerozměrné míchání pohybu)
+*   **Logika pohybu:** Nahradit diskrétní přehrávání jednoho klipu pro chůzi systémem vah, který reaguje na vektor pohybu.
+*   **Evaluace:** Umožnit přehrávání více klipů současně (např. `run_fwd`, `run_left`) s dynamicky vypočítanou váhou na základě 2D vektoru (`PlayerInput.move_dir`).
+*   **Kombinace s maskami:** Ujistit se, že Blend Space korektně respektuje `track_flags` (např. spodek těla plynule míchá pohybový vektor, zatímco vršek těla má absolutní override klipem střelby zbraně).
 
-### C. Kontrola a vylepšení stávajícího LOD systému
-*   **Provázání s `core_drawable/src/lod.rs`:** Stávající systém přepíná vizuální meshe. Nově musí systém při přepnutí na nižší LOD (např. LOD2 a dál) **deaktivovat aktualizaci kostry (Skeletal Pruning)**.
-*   **Bone Skipping:** Pro vzdálené LODy (LOD2+) úplně despawnovat entity prstů a obličejových kostí, ponechat jen hlavní páteř a končetiny.
-*   **Static Fallback:** Pro nejnižší LOD u statických objektů převést model na statický mesh bez kostry.
+### C. Animační události (Animation Notifies)
+*   **Rozšíření ADM formátu:** Přidat do animační sekce pole událostí – `Vec<(f32, String)>` (čas a název události pro daný klip).
+*   **Runtime Emise:** V `apply_adm_animations` detekovat průchod časem (mezi `previous_time` a `current_time`) a emitovat z Rustu Bevy Event, který se skrze Local Event Bus propíše do Lua.
+*   **Využití:** Přesná synchronizace audia (footsteps), uvolnění zásobníku (`reload_mag_out`) nebo aplikování hitu při melee útocích nezávisle na frame-rate.
 
-## 3. Socket-to-Socket Attachment
-Implementovat logiku pro propojování dvou entit přes jejich sockety:
-*   **Princip:** Při volání `Attach(child, child_soc, parent, parent_soc)` musí engine spočítat relativní transformaci tak, aby `child_soc` přesně lícoval s `parent_soc`.
-*   **Komponenta `AdsSocket`:** Nová komponenta držící metadata o dostupných socketech na entitě pro rychlý lookup.
+### D. Runtime Inverse Kinematics (IK)
+*   **Zavedení Solveru:** Integrovat do enginu jednoduchý Two-Bone IK solver pro úpravu finálních transformací kostí.
+*   **Foot IK (Adaptace na terén):** Využít stávající uzly `IK_foot_*`. Provádět raycast (`SpatialQuery` z Avian) dolů z kyčlí na fyzikální kolize. Přesunout chodidlo na bod dotyku a nechat IK upravit rotace kostí stehna a lýtka (`DEF_thigh` a `DEF_calf`), aby nohy nestály ve vzduchu na svazích.
+*   **Weapon IK:** Procedurální přichycení levé ruky (`IK_hand_l`) na příslušný socket zbraně (`SOC_L_Hand`), aby animace automaticky lícovaly u různých modelů zbraní.
 
-## 4. Integrace do Lua API (Command Queue)
-Rozšířit `core_resources/src/cmd_queue.rs` o následující příkazy:
-*   **`PlayAnimation(entity, anim_name, blend_time)`:** Spustí animaci (využít Bevy `AnimationPlayer`).
-*   **`Attach(child_handle, child_socket, parent_handle, parent_socket)`:** Logika socket-to-socket popsaná výše.
-*   **`Detach(child_handle)`:** Odpojení předmětu a návrat do world-space.
-*   **`GetSocketTransform(entity, socket_name)`:** Synchronní čtení pozice socketu z `EntityStateCache`.
+### E. Fyzika a Root Motion
+*   **Pohyb řízený animací:** Zásadní pro akce jako vaulting (překonávání překážek), kde musí pohyb v prostoru přesně kopírovat animaci.
+*   **Extrakce delty:** Načítat pohyb kořenové kosti (`DEF_Root` nebo `Hips`) a neaplikovat ho vizuálně, ale izolovat ho a odeslat jako deltu pro `LinearVelocity` / `Transform` v `host_client/src/gameplay.rs` (`apply_player_movement`).
 
-## 5. Blender Plugin (Toolkit) Update
-*   **LOD Auto-Packer:** Automaticky detekovat objekty se suffixem `_LODn` a exportovat je jako jediné ADM s více mesh sloty.
-*   **Prefix Validator:** Přidat tlačítko "Validate Skeleton", které zkontroluje, zda kosti odpovídají standardizovanému názvosloví.
-*   **Socket Gizmo:** Vytvořit speciální zobrazení pro `SOC_` uzly v Blenderu pro snazší vizuální orientaci designerů.
+## 3. Rozšíření Lua API (Command Queue)
+*   **`World.PlayBlendSpace(...)`:** Nastavení směrových klipů a vektoru pro 1D/2D pohyb (nebo přetížení `PlayAnimation`).
+*   **Event `onAnimNotify`:** Přijímající payload ve formátu `{ handle, clip_name, notify_name }`.
 
-## 6. Výkonnostní limity
-*   **Skeletal Parallelism:** Využít multithreading v Bevy pro výpočet transformací kostí.
-*   **Throttling:** Aktualizace kostry pro LOD1+ entity nemusí běžet každý frame (např. 30Hz místo 60Hz).
-*   **Zero-Copy Loading:** ADM loader musí načítat joint data přímo do GPU bufferů bez zbytečných mezikroků v CPU paměti.
+## 4. Blender Plugin (Toolkit) Update
+*   **Export Notifies:** Přidat možnost vkládat k Action/NLA trackům textové markery a zapsat je do hlavičky ADM jako události.
+*   **Root Motion Toggle:** Speciální checkbox u exportu, který oddělí translaci kořenové kosti do samostatného datového bloku.
 
----
-
-### Poznámka pro vývojáře:
-*Při implementaci nahlédněte do `core_drawable/src/hook.rs`. Zpracování animací a kostry by mělo probíhat ve fázi `Phase 3: Aplikace definic` během processingu scény. Použijte stávající `DrawableManifest` pro definici vazeb mezi modely a jejich ped_physics profily.*
+## 5. Výkonnostní limity
+*   **Pruning Ochrana:** IK solvery a výpočet Blend Spaces se musí nadále striktně řídit systémem *Skeletal Pruning* (`core_drawable/src/lod.rs`). Nespouštět foot IK nebo komplikované blendy u entit na vzdálenostech LOD2+.
+*   **Paralelizace:** Míchání 3–4 klipů u Blend Space pro desítky entit musí být asynchronní (využít Bevy Task Pool nebo Query iteraci plně bez side-efektů).

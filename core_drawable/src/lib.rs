@@ -9,7 +9,8 @@ mod registry;
 mod ped;
 
 pub use adm::{
-    AdmAnimationClip, AdmAnimationPlayback, AdmAnimationTrack, AdmKeyframe,
+    AdmAnimNotifyEvent, AdmAnimationClip, AdmAnimationNotify, AdmAnimationPlayback, AdmAnimationTrack, AdmKeyframe,
+    AdmBlendSpace, AdmBlendSpaceClip, AdmBlendSpaceKind,
     AdmLoader, AdmNode, AdmNodeEntityMap, AdmNodeType, AdmScene, AdmSceneRoot, AdmSceneSpawned,
 };
 pub use ped::{PedPhysicsDef, PedPhysicsLoader, PedPhysicsRegistry,
@@ -75,6 +76,7 @@ impl Plugin for DrawablePlugin {
             .register_type::<Name>();
 
         app.init_asset::<AdmScene>()
+            .add_message::<adm::AdmAnimNotifyEvent>()
             .register_asset_loader(AdmLoader)
             .init_asset::<DrawableManifest>()
             .register_asset_loader(DrawableManifestLoader)
@@ -101,6 +103,7 @@ impl Plugin for DrawablePlugin {
                     hook_drawable_scenes.after(attach_drawable_intent),
                     adm::spawn_adm_scenes.after(hook_drawable_scenes),
                     adm::apply_adm_animations.after(adm::spawn_adm_scenes),
+                    adm::forward_adm_anim_notifies_to_local_bus.after(adm::apply_adm_animations),
                     update_lod_visibility.after(hook_drawable_scenes),
                     apply_skeletal_pruning.after(update_lod_visibility),
                     apply_material_overrides,

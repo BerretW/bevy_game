@@ -21,5 +21,6 @@ bevy = { workspace = true, default-features = false, features = [
 bevy_gltf = { workspace = true }
 core_resources = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }

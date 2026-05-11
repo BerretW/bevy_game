@@ -399,7 +399,7 @@ def _write_node(buf, name, node_type_byte, mesh_index, parent_index, material_na
 
 
 def _write_animations(buf, clips):
-    """Zapíše animační sekci ADM v3.
+    """Zapíše animační sekci ADM v4.
 
     Formát:
       u32 clip_count
@@ -416,6 +416,10 @@ def _write_animations(buf, clips):
             vec3 pos
             quat rot_xyzw
             vec3 scale
+                u32 notify_count
+                for notify:
+                    f32 time
+                    str name
     """
     buf += struct.pack('<I', len(clips))
     for clip in clips:
@@ -440,6 +444,11 @@ def _write_animations(buf, clips):
                     r[0], r[1], r[2], r[3],
                     s[0], s[1], s[2],
                 )
+        notifies = clip.get('notifies', [])
+        buf += struct.pack('<I', len(notifies))
+        for notify in notifies:
+            buf += struct.pack('<f', float(notify['time']))
+            buf += _pack_str(str(notify['name']))
     return buf
 
 
@@ -556,6 +565,25 @@ def _build_armature_clip_specs(scene, armature_obj):
     return clip_specs
 
 
+def _collect_action_notifies(action, frame_start, frame_end, fps):
+    notifies = []
+    if action is None:
+        return notifies
+
+    for marker in getattr(action, 'pose_markers', []):
+        marker_frame = float(getattr(marker, 'frame', 0.0))
+        if marker_frame < frame_start or marker_frame > frame_end:
+            continue
+        time_sec = max(0.0, (marker_frame - frame_start) / max(1e-6, fps))
+        name = getattr(marker, 'name', '').strip()
+        if not name:
+            continue
+        notifies.append({'time': float(time_sec), 'name': name})
+
+    notifies.sort(key=lambda item: item['time'])
+    return notifies
+
+
 def _collect_armature_animation(armature_obj):
     scene = bpy.context.scene
     fps = scene.render.fps / max(1.0, float(scene.render.fps_base))
@@ -588,6 +616,7 @@ def _collect_armature_animation(armature_obj):
             start_frame = int(math.floor(frame_start))
             end_frame = max(start_frame + 1, int(math.ceil(frame_end)))
             tracks = []
+            notifies = _collect_action_notifies(action, frame_start, frame_end, fps)
 
             for bone in bones:
                 pose_bone = armature_obj.pose.bones.get(bone.name)
@@ -628,6 +657,7 @@ def _collect_armature_animation(armature_obj):
                     'name': clip_name,
                     'duration': float(duration),
                     'tracks': tracks,
+                    'notifies': notifies,
                 })
     finally:
         scene.frame_set(old_frame)
@@ -703,6 +733,7 @@ def _collect_scene_animation(objects):
         'name': 'scene',
         'duration': float(duration),
         'tracks': tracks,
+        'notifies': [],
     }]
 
 
@@ -952,7 +983,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
 
     # Header
     buf += b'ADM\x00'
-    buf += struct.pack('<I', 3)   # version
+    buf += struct.pack('<I', 4)   # version
     buf += struct.pack('<I', len(mesh_data_list))
     buf += struct.pack('<I', len(node_list))
     buf += struct.pack('<I', 1 if embedded_textures else 0)
@@ -975,7 +1006,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
             buf += struct.pack('<I', len(data))
             buf += data
 
-    # Animation sekce (v3)
+    # Animation sekce (v4)
     buf = _write_animations(buf, clips)
 
     with open(filepath, 'wb') as f:

@@ -2474,6 +2474,7 @@ dependencies = [
  "bevy_gltf",
  "core_resources",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml",
 ]

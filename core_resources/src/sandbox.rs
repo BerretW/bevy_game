@@ -1466,6 +1466,66 @@ fn install_runtime_api_inner(
         Ok(())
     })?)?;
 
+    // World.PlayBlendSpace(handle, blend_space_name, move_x, move_y, speed?, flags?)
+    // Přehraje blend space (míchání více klipů podle 2D vektoru pohybu).
+    let cq = cmd_queue.clone();
+    world.set("PlayBlendSpace", lua.create_function(
+        move |_, args: MultiValue| {
+            if args.len() < 4 {
+                return Err(mlua::Error::RuntimeError(
+                    "World.PlayBlendSpace(handle, blend_space_name, move_x, move_y, ...) requires at least 4 arguments".into(),
+                ));
+            }
+
+            let handle = match &args[0] {
+                mlua::Value::Integer(v) if *v >= 0 => *v as u64,
+                mlua::Value::Number(v) if *v >= 0.0 => *v as u64,
+                _ => return Err(mlua::Error::RuntimeError("PlayBlendSpace: invalid handle".into())),
+            };
+            let blend_space_name = match &args[1] {
+                mlua::Value::String(s) => s.to_str()?.to_string(),
+                _ => return Err(mlua::Error::RuntimeError("PlayBlendSpace: invalid blend_space_name".into())),
+            };
+            let move_x = match &args[2] {
+                mlua::Value::Integer(v) => *v as f32,
+                mlua::Value::Number(v) => *v as f32,
+                _ => return Err(mlua::Error::RuntimeError("PlayBlendSpace: invalid move_x".into())),
+            };
+            let move_y = match &args[3] {
+                mlua::Value::Integer(v) => *v as f32,
+                mlua::Value::Number(v) => *v as f32,
+                _ => return Err(mlua::Error::RuntimeError("PlayBlendSpace: invalid move_y".into())),
+            };
+
+            let mut speed = 1.0_f32;
+            let mut flags = 1_u32;
+
+            if args.len() >= 5 {
+                match &args[4] {
+                    mlua::Value::Integer(v) => speed = *v as f32,
+                    mlua::Value::Number(v) => speed = *v as f32,
+                    _ => {}
+                }
+            }
+            if args.len() >= 6 {
+                match &args[5] {
+                    mlua::Value::Integer(v) if *v >= 0 => flags = *v as u32,
+                    mlua::Value::Number(v) if *v >= 0.0 => flags = *v as u32,
+                    _ => {}
+                }
+            }
+
+            cq.push(LuaCommand::PlayBlendSpace {
+                handle,
+                blend_space_name,
+                position: [move_x, move_y],
+                speed,
+                flags,
+            });
+            Ok(())
+        },
+    )?)?;
+
     // -- Phase 5 extensions ---------------------------------------------------
 
     // World.GetDistance(handle1, handle2) → number|nil

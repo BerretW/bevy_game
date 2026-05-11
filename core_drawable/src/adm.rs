@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 
-use core_resources::{AdsSocketMap, AnimationState, ModelName};
+use core_resources::{AdsSocketMap, AnimationState, EntityHandle, LocalEventBus, ModelName};
 
 use crate::manifest::DrawableManifest;
 use crate::material::{LayeredEnvMaterial, StandardPbrMaterial, VehicleGlassMaterial};
@@ -36,6 +36,7 @@ const MAGIC: [u8; 4] = *b"ADM\0";
 const VERSION_V1: u32 = 1;
 const VERSION_V2: u32 = 2;
 const VERSION_V3: u32 = 3;
+const VERSION_V4: u32 = 4;
 
 const ATTR_POS:    u32 = 1 << 0;
 const ATTR_NRM:    u32 = 1 << 1;
@@ -86,6 +87,7 @@ pub struct AdmScene {
     pub mesh_aabbs:  Vec<Option<(Vec3, Vec3)>>,
     pub nodes:       Vec<AdmNode>,
     pub animations:  Vec<AdmAnimationClip>,
+    pub blend_spaces: Vec<AdmBlendSpace>,
     pub embedded:    HashMap<String, Handle<Image>>,
     pub source_path: String,
 }
@@ -95,6 +97,33 @@ pub struct AdmAnimationClip {
     pub name: String,
     pub duration: f32,
     pub tracks: Vec<AdmAnimationTrack>,
+    pub notifies: Vec<AdmAnimationNotify>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdmAnimationNotify {
+    pub time: f32,
+    pub name: String,
+}
+
+/// Blend Space — míchání více klipů podle 2D/1D vektoru pohybu.
+#[derive(Debug, Clone)]
+pub struct AdmBlendSpace {
+    pub name: String,
+    pub kind: AdmBlendSpaceKind,
+    pub clips: Vec<AdmBlendSpaceClip>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmBlendSpaceKind {
+    OneD,
+    TwoD,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdmBlendSpaceClip {
+    pub name: String,
+    pub position: Vec2,  // 1D: (x, _), 2D: (x, y)
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +175,18 @@ pub struct AdmNodeEntityMap(pub HashMap<String, Entity>);
 pub struct AdmAnimationPlayback {
     pub active_clip: Option<String>,
     pub time: f32,
+    pub previous_clip: Option<String>,
+    pub previous_time: f32,
+    pub blend_timer: f32,
+    pub total_blend_time: f32,
+}
+
+#[derive(Message, Debug, Clone)]
+pub struct AdmAnimNotifyEvent {
+    pub root_entity: Entity,
+    pub handle: u64,
+    pub clip_name: String,
+    pub notify_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +252,7 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
     }
 
     let version      = read_u32(&mut cur)?;
-    if version != VERSION_V1 && version != VERSION_V2 && version != VERSION_V3 {
+    if version != VERSION_V1 && version != VERSION_V2 && version != VERSION_V3 && version != VERSION_V4 {
         return Err(AdmError::BadVersion(version));
     }
 
@@ -284,6 +325,7 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
         mesh_aabbs,
         nodes,
         animations,
+        blend_spaces: Vec::new(),  // TODO: implementovat blend space parsing
         embedded,
         source_path,
     })
@@ -316,7 +358,26 @@ fn parse_animations(cur: &mut Cursor<&[u8]>, version: u32) -> Result<Vec<AdmAnim
             tracks.push(AdmAnimationTrack { node_name, flags, keys });
         }
 
-        clips.push(AdmAnimationClip { name, duration, tracks });
+        let mut notifies = Vec::new();
+        if version >= VERSION_V4 {
+            let notify_count = read_u32(cur)? as usize;
+            notifies.reserve(notify_count);
+            for _ in 0..notify_count {
+                let notify_time = read_f32(cur)?;
+                let notify_name = read_string(cur)?;
+                notifies.push(AdmAnimationNotify {
+                    time: notify_time,
+                    name: notify_name,
+                });
+            }
+        }
+
+        clips.push(AdmAnimationClip {
+            name,
+            duration,
+            tracks,
+            notifies,
+        });
     }
 
     Ok(clips)
@@ -826,15 +887,18 @@ pub fn spawn_adm_scenes(
 pub fn apply_adm_animations(
     time: Res<Time>,
     mut roots: Query<(
+        Entity,
         &AdmSceneRoot,
+        Option<&EntityHandle>,
         &AnimationState,
         &AdmNodeEntityMap,
         &mut AdmAnimationPlayback,
     ), With<AdmSceneSpawned>>,
     adm_assets: Res<Assets<AdmScene>>,
+    mut notify_events: MessageWriter<AdmAnimNotifyEvent>,
     mut transforms: Query<&mut Transform>,
 ) {
-    for (scene_root, anim_state, node_map, mut playback) in &mut roots {
+    for (root_entity, scene_root, entity_handle, anim_state, node_map, mut playback) in &mut roots {
         let Some(clip_name) = anim_state.current.as_ref() else { continue };
         let Some(scene) = adm_assets.get(&scene_root.0) else { continue };
         if scene.animations.is_empty() { continue; }
@@ -843,9 +907,22 @@ pub fn apply_adm_animations(
         let Some(clip_idx) = clip_idx else { continue };
         let clip = &scene.animations[clip_idx];
 
+        let clip_prev_time = if playback.active_clip.as_deref() == Some(&clip.name) {
+            playback.time
+        } else {
+            0.0
+        };
+
         if playback.active_clip.as_deref() != Some(&clip.name) {
+            playback.previous_clip = playback.active_clip.clone();
+            playback.previous_time = playback.time;
             playback.active_clip = Some(clip.name.clone());
             playback.time = 0.0;
+            playback.blend_timer = 0.0;
+            playback.total_blend_time = anim_state.blend_time.max(0.0);
+            if playback.total_blend_time <= 0.0 {
+                playback.previous_clip = None;
+            }
         }
 
         if !anim_state.paused {
@@ -857,20 +934,158 @@ pub fn apply_adm_animations(
                     playback.time = playback.time.min(clip.duration);
                 }
             }
+
+            if playback.previous_clip.is_some() && playback.total_blend_time > 0.0 {
+                playback.blend_timer += time.delta_secs();
+                if let Some(prev_name) = playback.previous_clip.as_deref() {
+                    if let Some(prev_idx) = resolve_clip_index(scene, prev_name) {
+                        let prev_clip = &scene.animations[prev_idx];
+                        playback.previous_time += time.delta_secs() * anim_state.speed.max(0.0);
+                        if prev_clip.duration > 0.0 {
+                            if anim_state.looping {
+                                playback.previous_time = playback.previous_time.rem_euclid(prev_clip.duration);
+                            } else {
+                                playback.previous_time = playback.previous_time.min(prev_clip.duration);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(handle) = entity_handle.map(|h| h.0) {
+                emit_animation_notifies(
+                    &mut notify_events,
+                    root_entity,
+                    handle,
+                    clip,
+                    clip_prev_time,
+                    playback.time,
+                    anim_state.looping,
+                );
+            }
         }
 
-        let t = playback.time;
+        let blend_alpha = if playback.previous_clip.is_some() && playback.total_blend_time > 0.0 {
+            (playback.blend_timer / playback.total_blend_time).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        let mut current_tracks: HashMap<&str, &AdmAnimationTrack> = HashMap::new();
         for track in &clip.tracks {
-            if !animation_track_matches_flags(track.flags, anim_state.flags) {
-                continue;
+            if animation_track_matches_flags(track.flags, anim_state.flags) {
+                current_tracks.insert(track.node_name.as_str(), track);
             }
-            let Some(entity) = node_map.0.get(&track.node_name).copied() else { continue };
-            let Some(sampled) = sample_track(track, t) else { continue };
-            if let Ok(mut tf) = transforms.get_mut(entity) {
+        }
+
+        let previous_tracks = if blend_alpha < 1.0 {
+            playback
+                .previous_clip
+                .as_deref()
+                .and_then(|prev_name| resolve_clip_index(scene, prev_name))
+                .map(|prev_idx| {
+                    let mut map: HashMap<&str, &AdmAnimationTrack> = HashMap::new();
+                    for track in &scene.animations[prev_idx].tracks {
+                        if animation_track_matches_flags(track.flags, anim_state.flags) {
+                            map.insert(track.node_name.as_str(), track);
+                        }
+                    }
+                    map
+                })
+        } else {
+            None
+        };
+
+        for (node_name, entity) in &node_map.0 {
+            let current_sample = current_tracks
+                .get(node_name.as_str())
+                .and_then(|track| sample_track(track, playback.time));
+
+            let previous_sample = previous_tracks
+                .as_ref()
+                .and_then(|tracks| tracks.get(node_name.as_str()))
+                .and_then(|track| sample_track(track, playback.previous_time));
+
+            let sampled = match (current_sample, previous_sample) {
+                (Some(current), Some(previous)) if blend_alpha < 1.0 => AdmKeyframe {
+                    time: playback.time,
+                    pos: previous.pos.lerp(current.pos, blend_alpha),
+                    rot: previous.rot.slerp(current.rot, blend_alpha),
+                    scale: previous.scale.lerp(current.scale, blend_alpha),
+                },
+                (Some(current), _) => current,
+                (None, Some(previous)) if blend_alpha < 1.0 => previous,
+                _ => continue,
+            };
+
+            if let Ok(mut tf) = transforms.get_mut(*entity) {
                 tf.translation = sampled.pos;
                 tf.rotation = sampled.rot;
                 tf.scale = sampled.scale;
             }
+        }
+
+        if blend_alpha >= 1.0 {
+            playback.previous_clip = None;
+            playback.blend_timer = 0.0;
+            playback.total_blend_time = 0.0;
+        }
+    }
+}
+
+pub fn forward_adm_anim_notifies_to_local_bus(
+    mut notify_events: MessageReader<AdmAnimNotifyEvent>,
+    local_bus: Option<Res<LocalEventBus>>,
+) {
+    let Some(local_bus) = local_bus else { return };
+    for evt in notify_events.read() {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "handle": evt.handle,
+            "clip_name": evt.clip_name,
+            "notify_name": evt.notify_name,
+        }))
+        .unwrap_or_default();
+        local_bus.push("onAnimNotify".to_string(), payload);
+    }
+}
+
+fn emit_animation_notifies(
+    notify_events: &mut MessageWriter<AdmAnimNotifyEvent>,
+    root_entity: Entity,
+    handle: u64,
+    clip: &AdmAnimationClip,
+    previous_time: f32,
+    current_time: f32,
+    looping: bool,
+) {
+    if clip.notifies.is_empty() {
+        return;
+    }
+    if !looping && current_time <= previous_time {
+        return;
+    }
+
+    let loop_wrapped = looping && clip.duration > 0.0 && current_time < previous_time;
+
+    for notify in &clip.notifies {
+        let should_fire = if loop_wrapped {
+            // Loop wrap: frame přešel přes clip.duration → rem_euclid → 0.
+            // Notifies s time > previous_time (tj. v části [previous_time, clip.duration])
+            // nebo s time <= current_time (tj. v části [0, current_time]).
+            // Notifies umístěné na nebo za clip.duration (>= duration) se vždy odpalují při wrapping.
+            let at_or_beyond_end = clip.duration > 0.0 && notify.time >= clip.duration;
+            at_or_beyond_end || notify.time > previous_time || notify.time <= current_time
+        } else {
+            notify.time > previous_time && notify.time <= current_time
+        };
+
+        if should_fire {
+            notify_events.write(AdmAnimNotifyEvent {
+                root_entity,
+                handle,
+                clip_name: clip.name.clone(),
+                notify_name: notify.name.clone(),
+            });
         }
     }
 }

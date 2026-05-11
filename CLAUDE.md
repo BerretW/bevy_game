@@ -87,8 +87,43 @@ files { 'assets/ui_icons.png' }
 - [ ] YMAP JSON loader, Mapper tool (Lua in-game editor), AABB streaming, GPU Instancing, server culling
 
 **Phase 4 zbývá:**
+- [X] ADM runtime crossfade: `apply_adm_animations` respektuje `AnimationState.blend_time` a plynule blenduje předchozí/aktuální klip (`lerp` pozice/scale, `slerp` rotace)
+- [X] ADM v4 animation notifies: loader/export/import podporuje `notify_count`, runtime emituje `onAnimNotify { handle, clip_name, notify_name }` přes `LocalEventBus`
+- [ ] Blend Spaces infrastruktura: `BlendSpaceState` komponenta, `PlayBlendSpace` command, Lua API, ale runtime evaluace vah zatím není (TODO pro Phase 4.x)
 - [ ] Integrovat `sqlx` (stub `Database.*` API přítomen)
 - [ ] Vlastní WGSL shadery z Lua resources
+
+---
+
+### Phase 4.1 — Blend Spaces (Infrastruktura) [✅ Hotovo]
+
+Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, `BlendSpaceState` komponenta v cmd_queue, `LuaCommand::PlayBlendSpace`, Lua API `World.PlayBlendSpace(handle, blend_space_name, move_x, move_y, speed?, flags?)`, handler v cmd_queue, test resource `resources/example/blend_space_test/` s rotačním move vektorem.
+
+**Zbývá:** Runtime evaluace vah (nový systém `evaluate_blend_spaces`), ADM v5 parser pro blend space definice, aplikace více klipů v `apply_adm_animations`.
+
+---
+
+### Phase 4.2 — Runtime IK (Infrastruktura) [⏳ Začato]
+
+Implementováno: Test resource `resources/example/ik_test/`.
+
+**Zbývá:** `IkTarget` komponenta, `IkChain` definice, Two-Bone IK solver, `evaluate_ik_chains` systém, Foot IK raycast,  Lua API.
+
+---
+
+### Phase 4.3 — Root Motion (Infrastruktura) [⏳ Začato]
+
+Implementováno: Test resource `resources/example/root_motion_test/` s monitoringem pohybu.
+
+**Zbývá:** `RootMotionExtractor`, extrakce delty z animace, `RootMotionDelta` aplikace na `Transform`/`LinearVelocity`, Lua API.
+
+---
+
+### Phase 4.1 — Blend Spaces (Infrastruktura) [✅ Hotovo]
+
+Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, `BlendSpaceState` komponenta v cmd_queue, `LuaCommand::PlayBlendSpace`, Lua API `World.PlayBlendSpace(handle, blend_space_name, move_x, move_y, speed?, flags?)`, handler v cmd_queue, test resource `resources/example/blend_space_test/` s rotačním move vektorem.
+
+**Zbývá:** Runtime evaluace vah (nový systém `evaluate_blend_spaces`), ADM v5 parser pro blend space definice, aplikace více klipů v `apply_adm_animations`.
 
 ---
 
@@ -340,6 +375,10 @@ Hitbox.Register('player_default', {
 /resources/
   core/init/                     bootstrap resource
   example/hello/                 demo resource
+  example/anim_notify_test/      test onAnimNotify + crossfade pipeline
+  example/blend_space_test/      test PlayBlendSpace (Lua API + infrastruktura)
+  example/ik_test/               test IK solver (infrastruktura)
+  example/root_motion_test/      test root motion — extrakce delty z animací
   example/moving_square/         demo pohybu + input.lua
 ```
 

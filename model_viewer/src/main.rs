@@ -184,6 +184,8 @@ struct AdmAnimationBrowser {
     speed: f32,
     looping: bool,
     paused: bool,
+    /// Notifies aktuálně vybraného klipu: (čas_sec, název)
+    notifies: Vec<(f32, String)>,
 }
 
 impl Default for ViewerState {
@@ -875,6 +877,17 @@ fn sync_adm_animation_browser(
                         browser.selected_idx = 0;
                     }
                 }
+                // Sync notifies aktuálně vybraného klipu.
+                browser.notifies = scene
+                    .animations
+                    .get(browser.selected_idx)
+                    .map(|clip| {
+                        clip.notifies
+                            .iter()
+                            .map(|n| (n.time, n.name.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
             }
         }
     }
@@ -918,11 +931,30 @@ fn update_animation_overlay(
         "Space pause | N/→ next | B/← prev".to_string(),
     ];
 
+    // Notifies aktuálního klipu
+    if browser.notifies.is_empty() {
+        lines.push("Notifies: žádné (ADM v3 nebo žádné pose markery)".to_string());
+    } else {
+        lines.push(format!("Notifies: {}x", browser.notifies.len()));
+        for (t, name) in &browser.notifies {
+            lines.push(format!("  {:.3}s  {}", t, name));
+        }
+    }
+
     if browser.clips.len() > 1 {
         lines.push("Clipy:".to_string());
         for (idx, name) in browser.clips.iter().enumerate() {
+            let notify_badge = {
+                // Počet notifies pro tento clip načteme přímo z browseru jen pro vybraný.
+                // Pro ostatní clipy chybí data — zobrazíme jen počet u vybraného.
+                if idx == browser.selected_idx && !browser.notifies.is_empty() {
+                    format!(" [{}✱]", browser.notifies.len())
+                } else {
+                    String::new()
+                }
+            };
             let marker = if idx == browser.selected_idx { ">" } else { " " };
-            lines.push(format!("{} {}", marker, name));
+            lines.push(format!("{} {}{}", marker, name, notify_badge));
         }
     }
 

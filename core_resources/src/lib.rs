@@ -22,7 +22,7 @@ mod vfs;
 mod watcher;
 
 pub use cmd_queue::{
-    AdsSocketMap, AnimationState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
+    AdsSocketMap, AnimationState, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
     EntityStateCache, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, PendingDamageEvent,
     PlayerEntityMap, PlayerStatsCache, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,

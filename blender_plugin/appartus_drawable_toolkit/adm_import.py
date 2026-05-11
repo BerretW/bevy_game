@@ -207,7 +207,7 @@ def _parse_textures(f):
 
 
 def _parse_animations_v2(f, version=2):
-    """Parsuje (a zatím ignoruje) animační sekci ADM v2/v3."""
+    """Parsuje (a zatím ignoruje) animační sekci ADM v2/v3/v4."""
     clips = []
     clip_count = _u32(f)
     for _ in range(clip_count):
@@ -227,6 +227,11 @@ def _parse_animations_v2(f, version=2):
                 scale = (_f32(f), _f32(f), _f32(f))
                 keys.append((t, pos, rot, scale))
             tracks.append((node, flags, keys))
+        if version >= 4:
+            notify_count = _u32(f)
+            for _ in range(notify_count):
+                _ = _f32(f)
+                _ = _str(f)
         clips.append((name, duration, tracks))
     return clips
 
@@ -793,7 +798,7 @@ def import_adm(filepath, merge_material_splits=False):
             raise ValueError("Neplatný soubor: špatné magic bytes (očekáváno ADM\\0)")
 
         version = _u32(f)
-        if version not in (1, 2, 3):
+        if version not in (1, 2, 3, 4):
             raise ValueError(f"Nepodporovaná verze ADM: {version}")
 
         mesh_count   = _u32(f)
