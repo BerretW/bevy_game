@@ -7,7 +7,7 @@ import tempfile
 import bpy
 import mathutils
 
-from .constants import ATTR_NAME, ATTR_NAME2
+from .constants import ATTR_NAME, ATTR_NAME2, UV_MASKS2_NAME
 
 _C = mathutils.Matrix([
     [1,  0,  0, 0],
@@ -134,14 +134,18 @@ def _build_blender_mesh(name, positions, normals, uv0s, uv1s, masks0s, masks1s, 
     mesh.from_pydata(positions, [], faces)
     mesh.update()
 
-    # Per-loop custom normals
+    # Per-loop custom normals (Blender 4.1+ odstranilo use_auto_smooth, ale
+    # normals_split_custom_set stále funguje; starší verze mohou vyžadovat jiný setup)
     if normals:
         loop_nrm = []
         for poly in mesh.polygons:
             for li in poly.loop_indices:
                 vi = mesh.loops[li].vertex_index
                 loop_nrm.append(normals[vi])
-        mesh.normals_split_custom_set(loop_nrm)
+        try:
+            mesh.normals_split_custom_set(loop_nrm)
+        except Exception as _e:
+            print(f"[adm_import] Warning: nelze nastavit custom normals ({_e}); použijí se auto-normals")
 
     # UV0
     if uv0s:
@@ -150,31 +154,39 @@ def _build_blender_mesh(name, positions, normals, uv0s, uv1s, masks0s, masks1s, 
             for li in poly.loop_indices:
                 ul.data[li].uv = uv0s[mesh.loops[li].vertex_index]
 
-    # UV1
+    # UV1 = TEXCOORD_1 = encoded bevy_masks2 (AO=U, emissive=V).
+    # Name it _ads_masks2_uv so decode_masks2_from_uv (called by
+    # fix_imported_vertex_attributes) will decode it into a proper
+    # BYTE_COLOR/CORNER attribute and remove this UV layer.
     if uv1s:
-        ul1 = mesh.uv_layers.new(name="UVMap.001")
+        ul1 = mesh.uv_layers.new(name=UV_MASKS2_NAME)
         for poly in mesh.polygons:
             for li in poly.loop_indices:
                 ul1.data[li].uv = uv1s[mesh.loops[li].vertex_index]
 
-    # bevy_masks (první sada vertex colors)
+    # bevy_masks — BYTE_COLOR/CORNER (matches ensure_mask_attribute in mesh.py)
     if masks0s:
-        ca = mesh.color_attributes.new(name="bevy_masks", type='FLOAT_COLOR', domain='POINT')
-        for vi, c in enumerate(masks0s):
-            ca.data[vi].color = c
+        ca = mesh.color_attributes.new(name=ATTR_NAME, type='BYTE_COLOR', domain='CORNER')
+        flat = []
+        for poly in mesh.polygons:
+            for li in poly.loop_indices:
+                vi = mesh.loops[li].vertex_index
+                c = masks0s[vi] if vi < len(masks0s) else (0.0, 0.0, 0.0, 1.0)
+                flat.extend(c)
+        ca.data.foreach_set('color', flat)
 
-    # bevy_masks2 (druhá sada vertex colors)
-    # Importer ji vytváří vždy, aby downstream tooling mělo konzistentní datový model.
-    # Fallback pořadí: explicitní MASKS1 -> UV1 (AO=U, Emissive=V) -> default AO=1, Emissive=0.
-    if not masks1s:
-        if uv1s:
-            masks1s = [(uv[0], uv[1], 0.0, 1.0) for uv in uv1s]
-        else:
-            masks1s = [(1.0, 0.0, 0.0, 1.0)] * len(positions)
-
-    ca2 = mesh.color_attributes.new(name="bevy_masks2", type='FLOAT_COLOR', domain='POINT')
-    for vi, c in enumerate(masks1s):
-        ca2.data[vi].color = c
+    # bevy_masks2 — BYTE_COLOR/CORNER, only when ATTR_MASKS1 is explicitly present.
+    # If absent but UV1 was present (renamed _ads_masks2_uv above), the decode
+    # path in fix_imported_vertex_attributes handles creation automatically.
+    if masks1s:
+        ca2 = mesh.color_attributes.new(name=ATTR_NAME2, type='BYTE_COLOR', domain='CORNER')
+        flat2 = []
+        for poly in mesh.polygons:
+            for li in poly.loop_indices:
+                vi = mesh.loops[li].vertex_index
+                c = masks1s[vi] if vi < len(masks1s) else (1.0, 0.0, 0.0, 1.0)
+                flat2.extend(c)
+        ca2.data.foreach_set('color', flat2)
 
     return mesh
 
@@ -219,6 +231,89 @@ def _parse_animations_v2(f, version=2):
     return clips
 
 
+def _find_view3d_context():
+    """Return (window, area, region) for a VIEW_3D area, or (None,None,None)."""
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                for region in area.regions:
+                    if region.type == 'WINDOW':
+                        return window, area, region
+    return None, None, None
+
+
+def _enter_edit_mode(arm_obj, view_layer) -> bool:
+    """Switch arm_obj into EDIT mode.  Returns True on success.
+
+    mode_set requires a VIEW_3D context.  When the importer runs from a
+    FILE_BROWSER dialog, bpy.context.area is the file-browser area.
+    We try two approaches in order:
+
+    1. temp_override with a discovered VIEW_3D window/screen/area/region.
+    2. Temporarily patch the *current* area type to VIEW_3D (well-known
+       add-on pattern; Blender restores it after the with-block).
+    """
+    # --- method 1: find an existing VIEW_3D area and override ---
+    window, area, region = _find_view3d_context()
+    if window is not None:
+        override = {
+            'window': window, 'screen': window.screen,
+            'area': area, 'region': region,
+            'scene': bpy.context.scene,
+            'view_layer': view_layer,
+            'active_object': arm_obj,
+        }
+        with bpy.context.temp_override(**override):
+            result = bpy.ops.object.mode_set(mode='EDIT')
+        if 'FINISHED' in result:
+            return True
+
+    # --- method 2: temporarily change the current area type ---
+    ctx_area = bpy.context.area
+    if ctx_area is not None:
+        old_type = ctx_area.type
+        try:
+            ctx_area.type = 'VIEW_3D'
+            result = bpy.ops.object.mode_set(mode='EDIT')
+            return 'FINISHED' in result
+        except Exception:
+            return False
+        finally:
+            ctx_area.type = old_type
+
+    return False
+
+
+def _exit_edit_mode(arm_obj, view_layer):
+    """Switch arm_obj back to OBJECT mode (mirrors _enter_edit_mode)."""
+    window, area, region = _find_view3d_context()
+    if window is not None:
+        override = {
+            'window': window, 'screen': window.screen,
+            'area': area, 'region': region,
+            'scene': bpy.context.scene,
+            'view_layer': view_layer,
+            'active_object': arm_obj,
+        }
+        with bpy.context.temp_override(**override):
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+                return
+            except Exception:
+                pass
+
+    ctx_area = bpy.context.area
+    if ctx_area is not None:
+        old_type = ctx_area.type
+        try:
+            ctx_area.type = 'VIEW_3D'
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except Exception:
+            pass
+        finally:
+            ctx_area.type = old_type
+
+
 def _find_armature_root_index(node_data):
     bone_indices = [i for i, (_, ntype, _, _, _, _) in enumerate(node_data) if ntype == 3]
     if not bone_indices:
@@ -253,10 +348,14 @@ def _build_armature_from_nodes(node_data, collection):
 
     view_layer = bpy.context.view_layer
     prev_active = view_layer.objects.active
-    prev_mode = bpy.context.mode
+    view_layer.objects.active = arm_obj
+
+    entered_edit = False
     try:
-        view_layer.objects.active = arm_obj
-        bpy.ops.object.mode_set(mode='EDIT')
+        entered_edit = _enter_edit_mode(arm_obj, view_layer)
+        if not entered_edit:
+            print("[adm_import] Warning: cannot enter EDIT mode for armature — no 3D viewport found")
+            return arm_obj, [], {}
 
         edit_bones = arm_data.edit_bones
         eb_by_node = {}
@@ -285,16 +384,9 @@ def _build_armature_from_nodes(node_data, collection):
                 eb.parent = eb_by_node[parent_idx]
             eb_by_node[node_idx] = eb
     finally:
-        try:
-            bpy.ops.object.mode_set(mode='OBJECT')
-        except Exception:
-            pass
+        if entered_edit:
+            _exit_edit_mode(arm_obj, view_layer)
         view_layer.objects.active = prev_active
-        if prev_mode != 'OBJECT':
-            try:
-                bpy.ops.object.mode_set(mode=prev_mode)
-            except Exception:
-                pass
 
     joint_bone_names = [node_data[i][0] for i in bone_node_indices]
     bone_by_node_index = {idx: node_data[idx][0] for idx in bone_node_indices}
@@ -458,11 +550,16 @@ def _load_image_from_bytes(img_name, is_srgb, ext, data):
     return img
 
 
-def _load_drawable_templates(adm_path):
-    """Parsuje template per-materiál z .drawable TOML manifestu vedle .adm souboru."""
+def _load_drawable_info(adm_path):
+    """Parsuje .drawable TOML manifest vedle .adm souboru.
+
+    Vrátí (templates, tex_slots_by_mat) kde:
+      templates        = {mat_name: template_str}
+      tex_slots_by_mat = {mat_name: {img_name: slot_name}}
+    """
     drawable_path = os.path.splitext(adm_path)[0] + '.drawable'
     if not os.path.isfile(drawable_path):
-        return {}
+        return {}, {}
     try:
         try:
             import tomllib
@@ -470,17 +567,34 @@ def _load_drawable_templates(adm_path):
             try:
                 import tomli as tomllib  # pip-installed fallback
             except ImportError:
-                return {}
+                return {}, {}
         with open(drawable_path, 'rb') as f:
             data = tomllib.load(f)
         templates = {}
+        tex_slots_by_mat = {}
         for mat_name, mat_data in data.get('materials', {}).items():
-            if isinstance(mat_data, dict) and 'template' in mat_data:
+            if not isinstance(mat_data, dict):
+                continue
+            if 'template' in mat_data:
                 templates[mat_name] = mat_data['template']
-        return templates
+            tex_section = mat_data.get('textures')
+            if isinstance(tex_section, dict):
+                slot_map = {}
+                for slot_name, tex_info in tex_section.items():
+                    if isinstance(tex_info, dict) and 'name' in tex_info:
+                        slot_map[tex_info['name']] = slot_name
+                if slot_map:
+                    tex_slots_by_mat[mat_name] = slot_map
+        return templates, tex_slots_by_mat
     except Exception as e:
         print(f"[adm_import] Warning: nelze načíst .drawable manifest: {e}")
-        return {}
+        return {}, {}
+
+
+def _load_drawable_templates(adm_path):
+    """Zpětně kompatibilní obal — vrátí pouze templates dict."""
+    templates, _ = _load_drawable_info(adm_path)
+    return templates
 
 
 def _guess_slot(img_name):
@@ -494,14 +608,21 @@ def _guess_slot(img_name):
     return None
 
 
-def _assign_textures_to_material(mat, loaded_images):
-    """Přiřadí embedded textury do bevy_toolkit slotů materiálu."""
+def _assign_textures_to_material(mat, loaded_images, tex_slot_map=None):
+    """Přiřadí embedded textury do bevy_toolkit slotů materiálu.
+
+    tex_slot_map: volitelná mapa {img_name: slot_name} čtená z .drawable manifestu.
+    Pokud je zadána, má přednost před keyword-guessing.
+    """
     props = getattr(mat, 'bevy_toolkit', None)
     if props is None:
         return
     from .utils import image_basename
     for img_name, img in loaded_images.items():
-        slot = _guess_slot(img_name)
+        if tex_slot_map:
+            slot = tex_slot_map.get(img_name) or _guess_slot(img_name)
+        else:
+            slot = _guess_slot(img_name)
         if not slot:
             continue
         current = getattr(props, f"{slot}_img", None)
@@ -572,7 +693,25 @@ def _merge_material_splits(objects):
     ]
 
 
-def import_adm(filepath):
+def _set_object_parent_with_local(child, parent, local_matrix):
+    """Set OBJECT parent while preserving exporter-authored local matrix exactly."""
+    child.parent = parent
+    child.parent_type = 'OBJECT'
+    child.parent_bone = ""
+    child.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+    child.matrix_local = local_matrix
+
+
+def _set_bone_parent_with_local(child, arm_obj, bone_name, local_matrix):
+    """Set BONE parent while preserving exporter-authored local matrix exactly."""
+    child.parent = arm_obj
+    child.parent_type = 'BONE'
+    child.parent_bone = bone_name
+    child.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+    child.matrix_local = local_matrix
+
+
+def import_adm(filepath, merge_material_splits=False):
     """
     Importuje .adm soubor do aktuální Blender scény.
     Vrátí seznam nově vytvořených bpy.types.Object.
@@ -623,27 +762,28 @@ def import_adm(filepath):
     imported_mats = set()
     collection = bpy.context.collection
 
+    node_local_mats = []
     for (nname, ntype, mesh_idx, parent_idx, mat_name, mat_floats) in node_data:
+        bl_mat = _bevy_to_bl_mat4(mat_floats)
+
         # Bone nody (type=3) reprezentujeme přes skutečnou Blender armaturu,
         # ne přes pomocné Empty objekty.
         if ntype == 3:
             node_objects.append(None)
+            node_local_mats.append(bl_mat.copy())
             continue
-
-        bl_mat = _bevy_to_bl_mat4(mat_floats)
 
         if ntype == 0 and 0 <= mesh_idx < len(bl_meshes):
             obj = bpy.data.objects.new(nname, bl_meshes[mesh_idx])
         elif ntype == 1:
-            col_name = nname if nname.upper().startswith('COL') else f"COL_{nname}"
             # Pokud collider obsahuje vlastní mesh geometrii, použijeme ji.
             if 0 <= mesh_idx < len(bl_meshes):
-                obj = bpy.data.objects.new(col_name, bl_meshes[mesh_idx])
+                obj = bpy.data.objects.new(nname, bl_meshes[mesh_idx])
             else:
                 # Pokud mesh nemá, vytvoříme zatím prázdný "MESH" (ne Empty!),
                 # do kterého v operators.py za chvíli vygenerujeme náhradní tvar.
-                dummy_mesh = bpy.data.meshes.new(col_name + "_mesh")
-                obj = bpy.data.objects.new(col_name, dummy_mesh)
+                dummy_mesh = bpy.data.meshes.new(nname + "_mesh")
+                obj = bpy.data.objects.new(nname, dummy_mesh)
             obj.bevy_toolkit_obj.is_col = True
         else:
             obj = bpy.data.objects.new(nname, None)
@@ -661,6 +801,7 @@ def import_adm(filepath):
             imported_mats.add(mat_name)
 
         node_objects.append(obj)
+        node_local_mats.append(bl_mat.copy())
         created.append(obj)
 
     # Parent-child vztahy
@@ -671,7 +812,7 @@ def import_adm(filepath):
         if 0 <= parent_idx < len(node_objects):
             parent = node_objects[parent_idx]
             if parent is not None:
-                child.parent = parent
+                _set_object_parent_with_local(child, parent, node_local_mats[i])
 
     # Rekonstrukce armatury + skinningu + animací
     arm_obj, joint_bone_names, bone_by_node_index = _build_armature_from_nodes(node_data, collection)
@@ -682,9 +823,15 @@ def import_adm(filepath):
         if armature_root_idx is not None and 0 <= armature_root_idx < len(node_objects):
             placeholder = node_objects[armature_root_idx]
             if placeholder is not None and placeholder != arm_obj:
-                for child in node_objects:
+                root_parent_idx = node_data[armature_root_idx][3]
+                if 0 <= root_parent_idx < len(node_objects):
+                    root_parent = node_objects[root_parent_idx]
+                    if root_parent is not None:
+                        _set_object_parent_with_local(arm_obj, root_parent, node_local_mats[armature_root_idx])
+
+                for child_idx, child in enumerate(node_objects):
                     if child is not None and child.parent == placeholder:
-                        child.parent = arm_obj
+                        _set_object_parent_with_local(child, arm_obj, node_local_mats[child_idx])
                 if placeholder in created:
                     created.remove(placeholder)
                 try:
@@ -703,23 +850,24 @@ def import_adm(filepath):
             bone_name = bone_by_node_index.get(parent_idx)
             if not bone_name:
                 continue
-            obj.parent = arm_obj
-            obj.parent_type = 'BONE'
-            obj.parent_bone = bone_name
-            obj.matrix_local = _bevy_to_bl_mat4(mat_floats)
+            _set_bone_parent_with_local(obj, arm_obj, bone_name, _bevy_to_bl_mat4(mat_floats))
 
         _bind_meshes_to_armature(mesh_data, node_data, node_objects, arm_obj, joint_bone_names)
         _import_armature_animations(animations, arm_obj)
 
-    # Přiřaď textury do materiálů importovaných z tohoto ADM
+    # Načti info z .drawable (šablony + texture slot mapování)
+    drawable_templates, drawable_tex_slots = _load_drawable_info(filepath)
+
+    # Přiřaď textury do materiálů importovaných z tohoto ADM.
+    # Priorita: .drawable slot mapping → keyword guessing
     if loaded_images:
         for mat_name in imported_mats:
             mat = bpy.data.materials.get(mat_name)
             if mat:
-                _assign_textures_to_material(mat, loaded_images)
-
-    # Načti šablony z .drawable (stejné jméno vedle .adm)
-    drawable_templates = _load_drawable_templates(filepath)
+                _assign_textures_to_material(
+                    mat, loaded_images,
+                    tex_slot_map=drawable_tex_slots.get(mat_name),
+                )
 
     # Vytvoř shader node preview pro každý nově importovaný materiál
     from .material import create_bevy_node_tree
@@ -742,7 +890,9 @@ def import_adm(filepath):
         if obj.type == 'MESH' and obj.data:
             fix_imported_vertex_attributes(obj.data)
 
-    # Spoj sub-objekty vzniklé multi-material exportem zpět do jednoho objektu
-    created = _merge_material_splits(created)
+    # Optional compatibility mode: merge split mesh parts created by multi-material export.
+    # Disabled by default so importer reproduces exported hierarchy 1:1.
+    if merge_material_splits:
+        created = _merge_material_splits(created)
 
     return created

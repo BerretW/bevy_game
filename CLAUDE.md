@@ -285,6 +285,8 @@ Hitbox.Register('player_default', {
 
 **Více materiálů na jednom mesh objektu:** GLTF exporter rozděluje na primitiva, `process_mesh_node` hledá jedno jméno materiálu. Řešení: rozděl mesh na více objektů v Blenderu (jeden materiál = jeden objekt). Fallback: použije první materiál z manifestu + warning.
 
+**ADM import/export hierarchie:** Importér obnovuje parent-child strom 1:1 podle node sekce ADM (včetně bone parentingu) a implicitně neslučuje multi-material split objekty.
+
 ---
 
 ## Project Layout

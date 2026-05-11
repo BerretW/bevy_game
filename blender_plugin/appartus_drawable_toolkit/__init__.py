@@ -1,5 +1,5 @@
 bl_info = {
-    "name": "Appartu Drawable Toolkit",
+    "name": "Appartus Drawable Toolkit",
     "author": "Advanced Game Dev",
     "version": (4, 2),
     "blender": (4, 2, 0),
