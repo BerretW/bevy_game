@@ -1,42 +1,52 @@
-# Požadavek na vývoj: ADS Animační Systém v2 (AAA Polishing, Blending a IK)
+# ADS Animační Systém v2 — Zbývající Úkoly
 
-## 1. Cíl úkolu
-Posunout stávající Apparatus Drawable System (ADS), který již spolehlivě zvládá základní přehrávání, maskování částí těla (track_flags) a LOD pruning, na plnohodnotnou AAA úroveň. Cílem je implementovat plynulé přechody (crossfading), směrové míchání pohybu (blend spaces), synchronizaci s herní logikou (notifies) a procedurální úpravy postojů pomocí inverzní kinematiky (IK).
+## ✅ HOTOVO
+- **Crossfading** — Plynulé přechody s lerp/slerp blendingem
+- **Animation Notifies** — ADM v4 parser, Lua `onAnimNotify` event
+- **Lua API** — `World.PlayBlendSpace()` a event handlers
+- **Blender Export** — Notifies z pose markers do ADM
+- **Test Resources** — blend_space_test, ik_test, root_motion_test créées
 
-## 2. Technická specifikace & Architektura
+---
 
-### A. Crossfading (Plynulé přechody v ADM)
-*   **Stav komponenty:** Rozšířit `AdmAnimationPlayback` o `previous_clip`, `previous_time`, `blend_timer` a `total_blend_time`.
-*   **Zpracování:** V `core_drawable/src/adm.rs` (`apply_adm_animations`) při změně `active_clip` neukončit okamžitě starý klip, ale plynule blendovat pozici/scale (`lerp`) a rotaci (`slerp`) mezi starým a novým klipem na základě ubíhajícího času (`blend_timer`).
-*   **Aktivace:** Reálné využití argumentu `blend_time` z příkazu Lua API `World.PlayAnimation`.
+## ⏳ ZBÝVÁ
 
-### B. Blend Spaces (Vícerozměrné míchání pohybu)
-*   **Logika pohybu:** Nahradit diskrétní přehrávání jednoho klipu pro chůzi systémem vah, který reaguje na vektor pohybu.
-*   **Evaluace:** Umožnit přehrávání více klipů současně (např. `run_fwd`, `run_left`) s dynamicky vypočítanou váhou na základě 2D vektoru (`PlayerInput.move_dir`).
-*   **Kombinace s maskami:** Ujistit se, že Blend Space korektně respektuje `track_flags` (např. spodek těla plynule míchá pohybový vektor, zatímco vršek těla má absolutní override klipem střelby zbraně).
+### 1. Blend Spaces — Runtime Evaluace
+**Co:** Implementovat `evaluate_blend_space_weights()` systém
+- **Algoritmus:** Inverse Distance Weighting (IDW) pro 2D prostor
+- **Výstup:** `active_clips: Vec<(String, f32)>` s jmény klipů a vypočítanými vahami
+- **Integrace:** `apply_adm_animations` musí umět blendovat více klipů najednou
+- **Soubory:** `core_drawable/src/adm.rs`, nový systém v `PostUpdate`
 
-### C. Animační události (Animation Notifies)
-*   **Rozšíření ADM formátu:** Přidat do animační sekce pole událostí – `Vec<(f32, String)>` (čas a název události pro daný klip).
-*   **Runtime Emise:** V `apply_adm_animations` detekovat průchod časem (mezi `previous_time` a `current_time`) a emitovat z Rustu Bevy Event, který se skrze Local Event Bus propíše do Lua.
-*   **Využití:** Přesná synchronizace audia (footsteps), uvolnění zásobníku (`reload_mag_out`) nebo aplikování hitu při melee útocích nezávisle na frame-rate.
+**Test:** `resources/example/blend_space_test/` je připraven, měl by pokazovat plynulé blendování mezi klippy dle move vektoru
 
-### D. Runtime Inverse Kinematics (IK)
-*   **Zavedení Solveru:** Integrovat do enginu jednoduchý Two-Bone IK solver pro úpravu finálních transformací kostí.
-*   **Foot IK (Adaptace na terén):** Využít stávající uzly `IK_foot_*`. Provádět raycast (`SpatialQuery` z Avian) dolů z kyčlí na fyzikální kolize. Přesunout chodidlo na bod dotyku a nechat IK upravit rotace kostí stehna a lýtka (`DEF_thigh` a `DEF_calf`), aby nohy nestály ve vzduchu na svazích.
-*   **Weapon IK:** Procedurální přichycení levé ruky (`IK_hand_l`) na příslušný socket zbraně (`SOC_L_Hand`), aby animace automaticky lícovaly u různých modelů zbraní.
+**ADM Format:** v5 parser pro blend space definice z Blenderu (zatím stub `Vec::new()`)
 
-### E. Fyzika a Root Motion
-*   **Pohyb řízený animací:** Zásadní pro akce jako vaulting (překonávání překážek), kde musí pohyb v prostoru přesně kopírovat animaci.
-*   **Extrakce delty:** Načítat pohyb kořenové kosti (`DEF_Root` nebo `Hips`) a neaplikovat ho vizuálně, ale izolovat ho a odeslat jako deltu pro `LinearVelocity` / `Transform` v `host_client/src/gameplay.rs` (`apply_player_movement`).
+---
 
-## 3. Rozšíření Lua API (Command Queue)
-*   **`World.PlayBlendSpace(...)`:** Nastavení směrových klipů a vektoru pro 1D/2D pohyb (nebo přetížení `PlayAnimation`).
-*   **Event `onAnimNotify`:** Přijímající payload ve formátu `{ handle, clip_name, notify_name }`.
+### 2. Runtime IK — Two-Bone Solver
+**Co:** Procedurální úpravy kostí pomocí IK řetězů
+- **Komponenty:** `IkTarget`, `IkChain { root_bone, tip_bone, target_pos }`
+- **Solver:** Two-Bone IK (FABRIK nebo CCD)
+- **Foot IK:** Raycast z kyčlí dolů → umístit chodidla na terén
+- **Weapon IK:** Připjout levou ruku na zbraňový socket
+- **Soubory:** Nový modul `core_drawable/src/ik.rs`, Lua API `World.AddIkChain()`
 
-## 4. Blender Plugin (Toolkit) Update
-*   **Export Notifies:** Přidat možnost vkládat k Action/NLA trackům textové markery a zapsat je do hlavičky ADM jako události.
-*   **Root Motion Toggle:** Speciální checkbox u exportu, který oddělí translaci kořenové kosti do samostatného datového bloku.
+**Test:** `resources/example/ik_test/` sleduje výšky, jakmile bude solver aktivní
 
-## 5. Výkonnostní limity
-*   **Pruning Ochrana:** IK solvery a výpočet Blend Spaces se musí nadále striktně řídit systémem *Skeletal Pruning* (`core_drawable/src/lod.rs`). Nespouštět foot IK nebo komplikované blendy u entit na vzdálenostech LOD2+.
-*   **Paralelizace:** Míchání 3–4 klipů u Blend Space pro desítky entit musí být asynchronní (využít Bevy Task Pool nebo Query iteraci plně bez side-efektů).
+---
+
+### 3. Root Motion — Extrakce a Aplikace
+**Co:** Oddělení pohybu kořenové kosti od ostatních animací
+- **Extrakce:** `RootMotionExtractor` sleduje `DEF_Root` deltu mezi framy
+- **Aplikace:** Delta se aplikuje jako `Transform` změna (respektuje autoritativitu serveru)
+- **Parametr:** Toggle v Lua API a Blender exportu (`enable_root_motion`)
+- **Soubory:** Integrace do `core_drawable/src/adm.rs` a `host_client/src/gameplay.rs`
+
+**Test:** `resources/example/root_motion_test/` monitoruje pohyb entity, měl by odpovídat animaci
+
+---
+
+## 4. Performance & LOD Pravidla
+- IK a Blend Space výpočty musí respektovat Skeletal Pruning (LOD2+ se nespouští)
+- Paralelizace: Query-based bez side-efektů, Query iterace pro desítky entit
