@@ -2,6 +2,7 @@ use avian3d::debug_render::PhysicsDebugPlugin;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
+use bevy::mesh::skinning::SkinnedMesh;
 use core_drawable::{CollisionShape, DrawableCollision};
 use core_resources::CollisionEnabled;
 
@@ -76,15 +77,29 @@ fn has_rigidbody_ancestor(
     false
 }
 
+fn topmost_ancestor(
+    entity: Entity,
+    child_of_q: &Query<&bevy::ecs::hierarchy::ChildOf>,
+) -> Entity {
+    let mut current = entity;
+    while let Ok(child_of) = child_of_q.get(current) {
+        current = child_of.parent();
+    }
+    current
+}
+
 fn attach_or_update_drawable_colliders(
     mut commands: Commands,
-    q: Query<(Entity, &DrawableCollision, Option<&Mesh3d>), Or<(Added<DrawableCollision>, Changed<DrawableCollision>)>>,
+    q: Query<
+        (Entity, &DrawableCollision, Option<&Mesh3d>, Has<SkinnedMesh>),
+        Or<(Added<DrawableCollision>, Changed<DrawableCollision>)>,
+    >,
     child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
     rb_q: Query<Has<RigidBody>>,
 ) {
-    for (entity, dc, mesh) in &q {
-        let mut ecmd = commands.entity(entity);
+    for (entity, dc, mesh, is_skinned_collider) in &q {
         let Some(spec) = collider_spec_from_drawable(dc, mesh.is_some()) else {
+            let mut ecmd = commands.entity(entity);
             ecmd.remove::<Collider>();
             ecmd.remove::<ColliderConstructor>();
             ecmd.remove::<RigidBody>();
@@ -95,12 +110,12 @@ fn attach_or_update_drawable_colliders(
 
         match spec {
             ColliderSpec::Direct(collider) => {
-                ecmd.insert(collider);
-                ecmd.remove::<ColliderConstructor>();
+                commands.entity(entity).insert(collider);
+                commands.entity(entity).remove::<ColliderConstructor>();
             }
             ColliderSpec::Construct(constructor) => {
-                ecmd.insert(constructor);
-                ecmd.remove::<Collider>();
+                commands.entity(entity).insert(constructor);
+                commands.entity(entity).remove::<Collider>();
             }
         }
 
@@ -108,8 +123,27 @@ fn attach_or_update_drawable_colliders(
         // Přidáme jen Collider (bez vlastního RigidBody) — Avian ho automaticky
         // přiřadí k nejbližšímu RigidBody předkovi.
         let has_rb_ancestor = has_rigidbody_ancestor(entity, &child_of_q, &rb_q);
+        let owns_rigidbody = !has_rb_ancestor && !is_skinned_collider;
 
-        if !has_rb_ancestor {
+        if !has_rb_ancestor && is_skinned_collider {
+            // Skinned collider má být součástí jednoho těla na rootu modelu,
+            // ne samostatné RB na child uzlu (to roztrhne mesh/collider vazbu).
+            let owner = topmost_ancestor(entity, &child_of_q);
+            let mut owner_cmd = commands.entity(owner);
+            if dc.is_static {
+                owner_cmd.insert((RigidBody::Static, StaticWorldCollider));
+            } else {
+                owner_cmd.insert(RigidBody::Dynamic);
+                owner_cmd.remove::<StaticWorldCollider>();
+            }
+            if let Some(locked_axes) = locked_axes_from_drawable(dc) {
+                owner_cmd.insert(locked_axes);
+            }
+        }
+
+        let mut ecmd = commands.entity(entity);
+
+        if owns_rigidbody {
             if dc.is_static {
                 ecmd.insert((RigidBody::Static, StaticWorldCollider));
             } else {
@@ -122,6 +156,10 @@ fn attach_or_update_drawable_colliders(
             } else {
                 ecmd.remove::<LockedAxes>();
             }
+        } else {
+            ecmd.remove::<RigidBody>();
+            ecmd.remove::<StaticWorldCollider>();
+            ecmd.remove::<LockedAxes>();
         }
 
         if dc.friction > 0.0 {

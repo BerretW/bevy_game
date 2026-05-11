@@ -6,4 +6,4 @@ version = "1.1"
 
 [entities]
 "MutantMesh" = { type = "MESH", cast_shadows = true }
-"COL_MutantMesh" = { type = "COLLISION", shape = "CONVEX", half_extents = [69.8289, 40.2015, 77.434], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, false, false] }
+"COL_MutantMesh" = { type = "COLLISION", shape = "MESH", half_extents = [69.8289, 40.2015, 77.434], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, false, false] }
