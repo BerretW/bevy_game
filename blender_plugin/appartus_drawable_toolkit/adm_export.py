@@ -128,7 +128,7 @@ def _build_bone_index_lookup(ordered_bones):
     return lookup
 
 
-def _collect_mesh_data(obj, material_index=None, bone_index_lookup=None, bind_matrix=None):
+def _collect_mesh_data(obj, material_index=None, bone_index_lookup=None, bind_matrix=None, disable_armature_modifiers=False):
     """
     Získá mesh data ze object v object-local space.
     Pokud je zadán material_index, exportuje pouze trojúhelníky s daným material slotem.
@@ -136,6 +136,15 @@ def _collect_mesh_data(obj, material_index=None, bone_index_lookup=None, bind_ma
     Vše v Bevy souřadnicovém systému.
     """
     depsgraph = bpy.context.evaluated_depsgraph_get()
+    mod_restore = []
+    if disable_armature_modifiers:
+        for modifier in getattr(obj, 'modifiers', []):
+            if modifier.type == 'ARMATURE':
+                mod_restore.append((modifier, bool(modifier.show_viewport)))
+                modifier.show_viewport = False
+        if mod_restore:
+            bpy.context.view_layer.update()
+
     obj_eval = obj.evaluated_get(depsgraph)
     mesh = obj_eval.to_mesh()
 
@@ -321,6 +330,12 @@ def _collect_mesh_data(obj, material_index=None, bone_index_lookup=None, bind_ma
             indices.append(vert_map[key])
 
     obj_eval.to_mesh_clear()
+
+    if mod_restore:
+        for modifier, old_show in mod_restore:
+            modifier.show_viewport = old_show
+        bpy.context.view_layer.update()
+
     return positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices
 
 
@@ -787,6 +802,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
                         material_index=mat_idx,
                         bone_index_lookup=bone_weight_index_lookup,
                         bind_matrix=bind_matrix,
+                        disable_armature_modifiers=skinned_mesh,
                     )
                     if not data[0]:  # žádné trojúhelníky nepoužívají tento material slot
                         continue
@@ -827,6 +843,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
                         obj,
                         bone_index_lookup=bone_weight_index_lookup,
                         bind_matrix=bind_matrix,
+                        disable_armature_modifiers=skinned_mesh,
                     )
                     mesh_data_list.append((obj.name, *data))
                 mesh_idx = mesh_index_map[key]
