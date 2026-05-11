@@ -15,7 +15,7 @@
 //! Engine.SetModelAsNoLongerNeeded("prop_barrel") -- sníží ref count
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -165,6 +165,74 @@ impl ModelRegistry {
 
     pub fn count(&self) -> usize {
         self.models.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    /// Snapshot všech registrovaných modelů pro systémy, které potřebují
+    /// iterovat přes model -> path mapu (např. discovery animací).
+    pub fn entries(&self) -> Vec<(String, PathBuf)> {
+        self.models
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.path.clone()))
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ModelAnimationRegistry — clip metadata cache pro Lua Engine API
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelAnimationInfo {
+    pub clip_names: Vec<String>,
+}
+
+impl ModelAnimationInfo {
+    pub fn clip_count(&self) -> usize {
+        self.clip_names.len()
+    }
+}
+
+/// Sdílená cache animačních clip metadat po modelech.
+/// Naplňuje ji klientský runtime (host_client) z ADM/GLTF assetů.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct ModelAnimationRegistry {
+    inner: Arc<Mutex<HashMap<String, ModelAnimationInfo>>>,
+}
+
+impl ModelAnimationRegistry {
+    pub fn set_clip_names(&self, model_name: &str, clip_names: Vec<String>) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(model_name.to_string(), ModelAnimationInfo { clip_names });
+    }
+
+    pub fn get_clip_names(&self, model_name: &str) -> Vec<String> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(model_name)
+            .map(|m| m.clip_names.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn get_clip_count(&self, model_name: &str) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(model_name)
+            .map(|m| m.clip_count())
+            .unwrap_or(0)
+    }
+
+    /// Zahodí metadata pro modely, které už nejsou v registru.
+    pub fn retain_models(&self, keep: &HashSet<String>) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|name, _| keep.contains(name));
     }
 }
 

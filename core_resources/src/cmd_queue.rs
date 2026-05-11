@@ -344,6 +344,22 @@ impl EntityStateCache {
     pub fn is_valid(&self, handle: u64) -> bool {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).contains_key(&handle)
     }
+
+    /// Vrátí všechny handles entit, které aktuálně používají daný model.
+    pub fn handles_by_model(&self, model_name: &str) -> Vec<u64> {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter_map(|(handle, snapshot)| {
+                if snapshot.model.as_deref() == Some(model_name) {
+                    Some(*handle)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------

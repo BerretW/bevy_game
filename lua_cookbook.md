@@ -382,11 +382,18 @@ end)
 ### `Engine.RequestModel(name)`
 ### `Engine.HasModelLoaded(name)` → `bool`
 ### `Engine.SetModelAsNoLongerNeeded(name)`
+### `Engine.GetModelClipCount(name)` → `number`
+### `Engine.GetModelClipNames(name)` → `table<string>`
 
 Ref-counted registry modelů. Nativní modely z `assets/models/` jsou dostupné pod jménem souboru bez přípony (např. `"player"` pro `player.glb`).
 
 ```lua
 Engine.RequestModel('player')
+local clip_count = Engine.GetModelClipCount('player')
+local clip_names = Engine.GetModelClipNames('player')
+for i = 1, clip_count do
+    print('clip', i, clip_names[i])
+end
 Engine.SetModelAsNoLongerNeeded('player')
 ```
 

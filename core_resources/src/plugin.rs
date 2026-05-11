@@ -11,7 +11,10 @@ use crate::cmd_queue::{
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
-use crate::model_registry::{process_model_commands, refresh_model_load_states, ModelCommandQueue, ModelRegistry};
+use crate::model_registry::{
+    process_model_commands, refresh_model_load_states,
+    ModelAnimationRegistry, ModelCommandQueue, ModelRegistry,
+};
 use crate::resolver::resolve_load_order;
 use crate::gui::{FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
 use crate::sandbox::{GameBridges, LocalEventBus, LuaSandbox};
@@ -24,6 +27,7 @@ struct RebuildParams<'w> {
     cmd_queue:     Res<'w, CommandQueue>,
     local_bus:     Res<'w, LocalEventBus>,
     model_cmds:    Res<'w, ModelCommandQueue>,
+    model_anims:   Res<'w, ModelAnimationRegistry>,
     stats_cache:   Res<'w, PlayerStatsCache>,
     entity_cache:  Res<'w, EntityStateCache>,
     db_bridge_res: Res<'w, DatabaseBridgeResource>,
@@ -99,6 +103,7 @@ impl Plugin for ResourcesPlugin {
         // Phase 3.4 - Model Registry
         app.init_resource::<ModelRegistry>();
         app.init_resource::<ModelCommandQueue>();
+        app.init_resource::<ModelAnimationRegistry>();
         app.add_systems(PostUpdate, (process_model_commands, refresh_model_load_states).chain());
 
         // Phase 3.8 - Cross-sandbox local event bus
@@ -171,6 +176,7 @@ fn initial_load(
         &mut vfs, side.0, &mut registry,
         p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
         &mut model_registry,
+        p.model_anims.clone(),
         p.bridges.clone(),
         p.stats_cache.clone(), p.entity_cache.clone(),
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
@@ -199,6 +205,7 @@ fn hot_reload_on_dirty(
         &mut vfs, side.0, &mut registry,
         p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
         &mut model_registry,
+        p.model_anims.clone(),
         p.bridges.clone(),
         p.stats_cache.clone(), p.entity_cache.clone(),
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
@@ -215,6 +222,7 @@ fn rebuild(
     local_bus: LocalEventBus,
     model_cmds: ModelCommandQueue,
     model_registry: &mut ModelRegistry,
+    model_anims: ModelAnimationRegistry,
     bridges: GameBridges,
     stats_cache: PlayerStatsCache,
     entity_cache: EntityStateCache,
@@ -316,6 +324,7 @@ fn rebuild(
             local_bus.clone(),
             model_cmds.clone(),
             model_registry.clone(),
+            model_anims.clone(),
             bridges.raycast.clone(),
             bridges.engine.clone(),
             bridges.input.clone(),

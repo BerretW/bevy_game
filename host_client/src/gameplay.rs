@@ -23,7 +23,7 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{AnimationState, CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
+use core_resources::{AnimationState, CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
@@ -32,7 +32,7 @@ use crate::config::ClientConfigResource;
 use crate::native_assets::AdmHandleCache;
 use crate::drawable::AdmSceneRoot;
 use crate::AppState;
-use crate::drawable::{PedPhysicsDef, PedPhysicsRegistry};
+use crate::drawable::{GltfHandleCache, PedPhysicsDef, PedPhysicsRegistry};
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
 const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
@@ -80,6 +80,12 @@ struct LuaAnimationGraphCache {
     map: HashMap<(String, u32), (Handle<AnimationGraph>, AnimationNodeIndex)>,
 }
 
+#[derive(Resource, Default)]
+struct ModelAnimationDiscoveryCache {
+    adm: HashMap<String, Handle<crate::drawable::AdmScene>>,
+    gltf: HashMap<String, Handle<bevy::gltf::Gltf>>,
+}
+
 pub struct ClientGameplayPlugin;
 
 impl Plugin for ClientGameplayPlugin {
@@ -108,6 +114,7 @@ impl Plugin for ClientGameplayPlugin {
 
         app.init_resource::<CameraLookState>();
         app.init_resource::<LuaAnimationGraphCache>();
+        app.init_resource::<ModelAnimationDiscoveryCache>();
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
         app.add_systems(OnExit(AppState::InGame), reset_connection_bridge);
@@ -128,6 +135,7 @@ impl Plugin for ClientGameplayPlugin {
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 attach_mesh_to_local_objects,
+                update_model_animation_registry,
                 apply_lua_animation_state,
                 handle_engine_cmds,
             )
@@ -1024,6 +1032,89 @@ fn parse_animation_index(selector: &str) -> Option<u32> {
     }
 
     None
+}
+
+fn extract_gltf_clip_names(gltf: &bevy::gltf::Gltf) -> Vec<String> {
+    let Some(source) = gltf.source.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut names = Vec::new();
+    for anim in source.animations() {
+        if let Some(name) = anim.name() {
+            names.push(name.to_string());
+        } else {
+            names.push(format!("clip:{}", anim.index()));
+        }
+    }
+
+    names
+}
+
+fn update_model_animation_registry(
+    model_registry: Res<ModelRegistry>,
+    anim_registry: Res<ModelAnimationRegistry>,
+    asset_server: Res<AssetServer>,
+    adm_cache: Res<AdmHandleCache>,
+    gltf_cache: Res<GltfHandleCache>,
+    adm_assets: Res<Assets<crate::drawable::AdmScene>>,
+    gltf_assets: Res<Assets<bevy::gltf::Gltf>>,
+    mut discovery_cache: ResMut<ModelAnimationDiscoveryCache>,
+) {
+    let mut keep = HashSet::new();
+
+    for (model_name, model_path) in model_registry.entries() {
+        keep.insert(model_name.clone());
+        let ext = model_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+
+        if ext == "adm" {
+            let handle = if let Some(h) = adm_cache.0.get(&model_name) {
+                h.clone()
+            } else if let Some(h) = discovery_cache.adm.get(&model_name) {
+                h.clone()
+            } else {
+                let bevy_path = model_path.to_string_lossy().replace('\\', "/");
+                let h: Handle<crate::drawable::AdmScene> = asset_server.load(bevy_path);
+                discovery_cache.adm.insert(model_name.clone(), h.clone());
+                h
+            };
+
+            if let Some(scene) = adm_assets.get(&handle) {
+                let clip_names = scene.animations.iter().map(|c| c.name.clone()).collect();
+                anim_registry.set_clip_names(&model_name, clip_names);
+            }
+            continue;
+        }
+
+        if ext == "glb" || ext == "gltf" {
+            let handle = if let Some((h, _)) = gltf_cache.0.get(&model_name) {
+                h.clone()
+            } else if let Some(h) = discovery_cache.gltf.get(&model_name) {
+                h.clone()
+            } else {
+                let bevy_path = model_path.to_string_lossy().replace('\\', "/");
+                let h: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
+                    bevy_path,
+                    |settings: &mut bevy::gltf::GltfLoaderSettings| {
+                        settings.include_source = true;
+                    },
+                );
+                discovery_cache.gltf.insert(model_name.clone(), h.clone());
+                h
+            };
+
+            if let Some(gltf) = gltf_assets.get(&handle) {
+                anim_registry.set_clip_names(&model_name, extract_gltf_clip_names(gltf));
+            }
+        }
+    }
+
+    discovery_cache.adm.retain(|name, _| keep.contains(name));
+    discovery_cache.gltf.retain(|name, _| keep.contains(name));
+    anim_registry.retain_models(&keep);
 }
 
 fn resolve_animation_graph(

@@ -26,7 +26,10 @@ use crate::ace::AceRegistry;
 use crate::cmd_queue::{CommandQueue, EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache};
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
-use crate::model_registry::{ModelCommand, ModelCommandQueue, ModelRegistry};
+use crate::model_registry::{
+    ModelAnimationRegistry,
+    ModelCommand, ModelCommandQueue, ModelRegistry,
+};
 use crate::types::{ResourceId, Side};
 
 // ---------------------------------------------------------------------------
@@ -609,6 +612,7 @@ impl LuaSandbox {
         local_bus: LocalEventBus,
         model_cmds: ModelCommandQueue,
         model_registry: ModelRegistry,
+        model_anims: ModelAnimationRegistry,
         raycast: RaycastBridge,
         engine_state: EngineStateBridge,
         input_bridge: InputBridge,
@@ -650,6 +654,7 @@ impl LuaSandbox {
             &local_bus,
             &model_cmds,
             &model_registry,
+            &model_anims,
             &raycast,
             &engine_state,
             &input_bridge,
@@ -954,6 +959,7 @@ fn install_runtime_api(
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
     model_registry: &ModelRegistry,
+    model_anims: &ModelAnimationRegistry,
     raycast: &RaycastBridge,
     engine_state: &EngineStateBridge,
     input_bridge: &InputBridge,
@@ -971,7 +977,7 @@ fn install_runtime_api(
     crosshair: &CrosshairBridge,
     camera_bridge: &CameraBridge,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -987,6 +993,7 @@ fn install_runtime_api_inner(
     local_bus: &LocalEventBus,
     model_cmds: &ModelCommandQueue,
     model_registry: &ModelRegistry,
+    model_anims: &ModelAnimationRegistry,
     raycast: &RaycastBridge,
     engine_state: &EngineStateBridge,
     input_bridge: &InputBridge,
@@ -1201,6 +1208,16 @@ fn install_runtime_api_inner(
             Some(m) => mlua::Value::String(lua.create_string(m)?),
             None => mlua::Value::Nil,
         })
+    })?)?;
+
+    let ec = entity_cache.clone();
+    world.set("GetHandlesByModel", lua.create_function(move |lua, model: String| -> mlua::Result<mlua::Table> {
+        let handles = ec.handles_by_model(&model);
+        let out = lua.create_table()?;
+        for (idx, handle) in handles.iter().enumerate() {
+            out.set(idx + 1, *handle)?;
+        }
+        Ok(out)
     })?)?;
 
     let ec = entity_cache.clone();
@@ -1543,6 +1560,21 @@ fn install_runtime_api_inner(
     let mr = model_registry.clone();
     engine.set("HasModelLoaded", lua.create_function(move |_, name: String| -> mlua::Result<bool> {
         Ok(mr.has_loaded(&name))
+    })?)?;
+
+    let ma = model_anims.clone();
+    engine.set("GetModelClipCount", lua.create_function(move |_, name: String| -> mlua::Result<u32> {
+        Ok(ma.get_clip_count(&name) as u32)
+    })?)?;
+
+    let ma = model_anims.clone();
+    engine.set("GetModelClipNames", lua.create_function(move |lua, name: String| -> mlua::Result<mlua::Table> {
+        let names = ma.get_clip_names(&name);
+        let out = lua.create_table()?;
+        for (idx, clip_name) in names.iter().enumerate() {
+            out.set(idx + 1, clip_name.clone())?;
+        }
+        Ok(out)
     })?)?;
 
     let mc = model_cmds.clone();

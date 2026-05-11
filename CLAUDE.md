@@ -75,7 +75,7 @@ files { 'assets/ui_icons.png' }
 | **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing |
 | **Phase 3.2** — Lua Bridge | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate) |
 | **Phase 3.3** — Combat | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped` |
-| **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded` |
+| **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`) |
 | **Phase 3.5** — World Objects | `SpawnNetworkedObject`, `NetworkedObjectMarker`, lightyear replication observer |
 | **Phase 3.7** — Raycast API | `RaycastBridge`, `Raycast.GetGroundPosition()`, yaw v `PlayerInput.look[0]` |
 | **Phase 3.8** — Event Bus | `LocalEventBus`, `TriggerEvent`, JSON payloads, `input:state` bridge, `sq:ready` init pattern, Lua-safe string player IDs |
@@ -370,6 +370,7 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `World.GetPosition/Rotation/Quaternion/Scale/Transform/Animation/AnimationSpeed` | both | Gettery |
 | `World.ApplyDamage(target, amount, source?)` | server | Damage intent |
 | `Engine.RequestModel/HasModelLoaded/SetModelAsNoLongerNeeded` | both | Model ref-counting |
+| `Engine.GetModelClipCount/GetModelClipNames` | both | Počet a názvy animačních clipů modelu |
 | `Raycast.GetGroundPosition()` | client | World-pos kurzoru (Y=0 rovina) |
 | `Gui.DrawRect/Text/Line/Circle/Disc/RoundedRect/Border/Shadow/Sprite` | client | Immediate-mode GUI (0–1 souřadnice) |
 | `Gui.GetCursorPos/IsMouseOver/IsMouseDown/IsMouseClicked` | client | GUI input |
