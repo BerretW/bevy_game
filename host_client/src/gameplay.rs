@@ -120,6 +120,7 @@ struct AutoPlayerAnimMemory {
     was_grounded: bool,
     land_until: f32,
     airborne_since: Option<f32>,
+    move_intent_until: f32,
     filtered_horiz_speed: f32,
     locomotion: LocomotionState,
     anim_state: PlayerAnimState,
@@ -584,6 +585,8 @@ fn attach_player_model_to_new_players(
 
 fn update_player_state_driven_animations(
     time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    cfg: Res<ClientConfigResource>,
     ped_reg: Res<PedPhysicsRegistry>,
     ped_assets: Res<Assets<PedPhysicsDef>>,
     adm_assets: Res<Assets<crate::drawable::AdmScene>>,
@@ -610,6 +613,12 @@ fn update_player_state_driven_animations(
 ) {
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
+    let bindings = &cfg.0.input.keys;
+    let has_move_input =
+        keys.pressed(bindings.move_forward)
+            || keys.pressed(bindings.move_backward)
+            || keys.pressed(bindings.move_left)
+            || keys.pressed(bindings.move_right);
 
     for (model_entity, adm_root, model_name, child_of, anim_state) in &mut model_roots {
         let parent = child_of.parent();
@@ -650,6 +659,17 @@ fn update_player_state_driven_animations(
         let walk_threshold = (ped.movement.run_speed * 0.60).max(idle_threshold + 0.05);
         let sprint_threshold = (ped.movement.run_speed + ped.movement.sprint_speed) * 0.5;
 
+        // Pokud lokální hráč drží movement input, krátce podrž locomotion stav,
+        // i když fyzická rychlost spadne při drhnutí o collider.
+        let is_local_player = local_client_id
+            .as_ref()
+            .map(|id| id.0 == marker.client_id)
+            .unwrap_or(false);
+        if is_local_player && has_move_input {
+            memory.move_intent_until = now + 0.22;
+        }
+        let movement_intent_active = is_local_player && now < memory.move_intent_until;
+
         // Hysteréze: oddělené entry/exit prahy, aby Idle byl dosažitelný i při low-speed jitteru.
         let idle_exit = idle_threshold + 0.06;
         let walk_up = walk_threshold + 0.16;
@@ -659,14 +679,14 @@ fn update_player_state_driven_animations(
 
         memory.locomotion = match memory.locomotion {
             LocomotionState::Idle => {
-                if memory.filtered_horiz_speed > idle_exit {
+                if memory.filtered_horiz_speed > idle_exit || (movement_intent_active && grounded) {
                     LocomotionState::Walk
                 } else {
                     LocomotionState::Idle
                 }
             }
             LocomotionState::Walk => {
-                if memory.filtered_horiz_speed <= idle_threshold {
+                if memory.filtered_horiz_speed <= idle_threshold && !movement_intent_active {
                     LocomotionState::Idle
                 } else if memory.filtered_horiz_speed >= walk_up {
                     LocomotionState::Run
@@ -702,6 +722,9 @@ fn update_player_state_driven_animations(
             (&ped.animations.land, false, PlayerAnimState::Land)
         } else {
             match memory.locomotion {
+                LocomotionState::Idle if movement_intent_active => {
+                    (&ped.animations.walk, true, PlayerAnimState::Walk)
+                }
                 LocomotionState::Idle => (&ped.animations.idle, true, PlayerAnimState::Idle),
                 LocomotionState::Walk => (&ped.animations.walk, true, PlayerAnimState::Walk),
                 LocomotionState::Run => (&ped.animations.run, true, PlayerAnimState::Run),
@@ -730,7 +753,8 @@ fn update_player_state_driven_animations(
                 "clip": clip,
                 "grounded": grounded,
                 "speed": memory.filtered_horiz_speed,
-                "is_local": local_client_id.as_ref().map(|id| id.0 == marker.client_id).unwrap_or(false),
+                "is_local": is_local_player,
+                "move_intent": movement_intent_active,
             }))
             .unwrap_or_default();
             local_bus.push("player:anim_state".to_string(), payload);
