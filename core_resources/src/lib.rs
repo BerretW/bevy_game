@@ -22,10 +22,10 @@ mod vfs;
 mod watcher;
 
 pub use cmd_queue::{
-    AnimationState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
+    AdsSocketMap, AnimationState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
     EntityStateCache, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, PendingDamageEvent,
-    PlayerEntityMap, PlayerStatsCache, Stats, StatsSnapshot,
+    PlayerEntityMap, PlayerStatsCache, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
     process_lua_commands, sync_entity_state_cache,
 };
 pub use db_bridge::{

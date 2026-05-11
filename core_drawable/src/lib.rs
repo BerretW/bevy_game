@@ -8,7 +8,10 @@ mod material;
 mod registry;
 mod ped;
 
-pub use adm::{AdmLoader, AdmScene, AdmSceneRoot, AdmSceneSpawned, AdmNode, AdmNodeType};
+pub use adm::{
+    AdmAnimationClip, AdmAnimationPlayback, AdmAnimationTrack, AdmKeyframe,
+    AdmLoader, AdmNode, AdmNodeEntityMap, AdmNodeType, AdmScene, AdmSceneRoot, AdmSceneSpawned,
+};
 pub use ped::{PedPhysicsDef, PedPhysicsLoader, PedPhysicsRegistry,
     PedCapsule, PedMovement, PedStances, StanceDef,
     PedJump, PedVault, PedStep, PedLean, PedStamina, StaminaExhausted,
@@ -16,12 +19,13 @@ pub use ped::{PedPhysicsDef, PedPhysicsLoader, PedPhysicsRegistry,
 };
 pub use hook::{
     DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
-    DrawableCollision, DisableDrawableCollisions, DrawableMaterialsParam,
+    AdsNodeKind, AdsSocket, DrawableCollision, DisableDrawableCollisions, DrawableMaterialsParam,
+    classify_ads_node_name,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
     setup_fallback_textures, auto_hide_col_nodes, apply_material_overrides,
 };
 pub use loader::DrawableManifestLoader;
-pub use lod::{DefaultLodDistances, LodGroup, LodLevel, parse_lod_level, update_lod_visibility};
+pub use lod::{DefaultLodDistances, LodGroup, LodLevel, apply_skeletal_pruning, parse_lod_level, update_lod_visibility};
 pub use map::{MapInstanceDef, MapManifest};
 pub use manifest::{
     CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, LodConfig, MaterialDef,
@@ -96,7 +100,9 @@ impl Plugin for DrawablePlugin {
                     attach_drawable_intent,
                     hook_drawable_scenes.after(attach_drawable_intent),
                     adm::spawn_adm_scenes.after(hook_drawable_scenes),
+                    adm::apply_adm_animations.after(adm::spawn_adm_scenes),
                     update_lod_visibility.after(hook_drawable_scenes),
+                    apply_skeletal_pruning.after(update_lod_visibility),
                     apply_material_overrides,
                 ),
             );

@@ -163,6 +163,31 @@ def _parse_textures(f):
     return textures
 
 
+def _parse_animations_v2(f, version=2):
+    """Parsuje (a zatím ignoruje) animační sekci ADM v2/v3."""
+    clips = []
+    clip_count = _u32(f)
+    for _ in range(clip_count):
+        name = _str(f)
+        duration = _f32(f)
+        track_count = _u32(f)
+        tracks = []
+        for _ in range(track_count):
+            node = _str(f)
+            flags = _u32(f) if version >= 3 else 1
+            key_count = _u32(f)
+            keys = []
+            for _ in range(key_count):
+                t = _f32(f)
+                pos = (_f32(f), _f32(f), _f32(f))
+                rot = (_f32(f), _f32(f), _f32(f), _f32(f))
+                scale = (_f32(f), _f32(f), _f32(f))
+                keys.append((t, pos, rot, scale))
+            tracks.append((node, flags, keys))
+        clips.append((name, duration, tracks))
+    return clips
+
+
 def _load_image_from_bytes(img_name, is_srgb, ext, data):
     """Vytvoří Blender image z raw bytů, zapackuje ji a nastaví color space."""
     existing = bpy.data.images.get(img_name)
@@ -316,7 +341,7 @@ def import_adm(filepath):
             raise ValueError("Neplatný soubor: špatné magic bytes (očekáváno ADM\\0)")
 
         version = _u32(f)
-        if version != 1:
+        if version not in (1, 2, 3):
             raise ValueError(f"Nepodporovaná verze ADM: {version}")
 
         mesh_count   = _u32(f)
@@ -336,6 +361,14 @@ def import_adm(filepath):
                     print(f"[adm_import] textura '{img_name}' ({ext[1:]}, sRGB={is_srgb})")
                 except Exception as e:
                     print(f"[adm_import] nelze načíst texturu '{img_name}': {e}")
+
+        if version >= 2:
+            # Runtime importer zatím klipy jen načte/spotřebuje,
+            # playback řeší engine část v Rustu.
+            try:
+                _ = _parse_animations_v2(f, version=version)
+            except Exception as e:
+                print(f"[adm_import] warning: animační sekce je poškozená: {e}")
 
     # Vytvoř Blender mesh assets
     bl_meshes = []

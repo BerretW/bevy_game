@@ -438,7 +438,7 @@ fn extract_adm(adm_path: &Path, out_dir: &Path) -> Result<usize, String> {
         return Err("není ADM soubor".into());
     }
     let version = read_u32_cur(&mut cur)?;
-    if version != 1 {
+    if version != 1 && version != 2 && version != 3 {
         return Err(format!("nepodporovaná verze ADM: {}", version));
     }
     let mesh_count   = read_u32_cur(&mut cur)? as usize;

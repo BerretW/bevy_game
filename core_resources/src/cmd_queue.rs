@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
 use core_shared::{Health, PlayerMarker};
 use serde::{Deserialize, Serialize};
@@ -82,10 +83,23 @@ pub enum LuaCommand {
         name: String,
         looping: bool,
         speed: f32,
+        blend_time: f32,
+        flags: u32,
     },
     /// Zastaví aktuální animaci entity.
     StopAnimation {
         handle: u64,
+    },
+    /// Připojí child entitu k parent entitě přes dvojici socketů.
+    Attach {
+        child_handle: u64,
+        child_socket: String,
+        parent_handle: u64,
+        parent_socket: String,
+    },
+    /// Odpojí child entitu z hierarchie a zachová world-space transform.
+    Detach {
+        child_handle: u64,
     },
     /// Phase 4 — nastav libovolný stat hráče (server only).
     SetStat {
@@ -240,6 +254,19 @@ pub struct LuaMaterialOverride {
     pub wet_height: Option<f32>,
 }
 
+/// Mapa socketů dostupných na root entitě modelu.
+/// Klíč je canonical socket name (např. `SOC_R_Hand_Weapon`), hodnota je ECS entita socket uzlu.
+#[derive(Component, Debug, Clone, Default)]
+pub struct AdsSocketMap(pub HashMap<String, Entity>);
+
+/// Marker aktivního socket attachmentu pro debug a synchronní dotazy.
+#[derive(Component, Debug, Clone)]
+pub struct SocketAttachment {
+    pub child_socket: String,
+    pub parent_handle: u64,
+    pub parent_socket: String,
+}
+
 /// Animační stav entity. Phase 4 propojí tuto komponentu s Bevy AnimationPlayer.
 #[derive(Component, Debug, Clone)]
 pub struct AnimationState {
@@ -247,11 +274,13 @@ pub struct AnimationState {
     pub speed: f32,
     pub looping: bool,
     pub paused: bool,
+    pub blend_time: f32,
+    pub flags: u32,
 }
 
 impl Default for AnimationState {
     fn default() -> Self {
-        Self { current: None, speed: 1.0, looping: true, paused: false }
+        Self { current: None, speed: 1.0, looping: true, paused: false, blend_time: 0.0, flags: 1 }
     }
 }
 
@@ -289,6 +318,16 @@ pub struct EntitySnapshot {
     pub is_networked: bool,
     /// `true` pokud má entita aktivní kolizi (výchozí `true` bez `CollisionEnabled`).
     pub collision_enabled: bool,
+    /// Runtime socket transforms ve world-space.
+    pub sockets: HashMap<String, SocketTransformSnapshot>,
+}
+
+/// Snapshot jednoho socketu pro synchronní čtení z Lua.
+#[derive(Debug, Clone, Default)]
+pub struct SocketTransformSnapshot {
+    pub pos: [f32; 3],
+    /// Kvaternion [x, y, z, w].
+    pub rot: [f32; 4],
 }
 
 /// Sdílená cache stavu entit — handle → EntitySnapshot.
@@ -398,6 +437,8 @@ pub fn process_lua_commands(
     mut commands: Commands,
     mut damage_events: MessageWriter<PendingDamageEvent>,
     transforms: Query<&Transform>,
+    globals: Query<&GlobalTransform>,
+    socket_maps: Query<&AdsSocketMap>,
     mut player_stats: Query<(&PlayerMarker, &mut Stats, &mut Inventory)>,
     mut mat_overrides: Query<&mut LuaMaterialOverride>,
 ) {
@@ -554,13 +595,15 @@ pub fn process_lua_commands(
                 );
             }
 
-            LuaCommand::PlayAnimation { handle, name, looping, speed } => {
+            LuaCommand::PlayAnimation { handle, name, looping, speed, blend_time, flags } => {
                 if let Some(entity) = world_state.entity_for(handle) {
                     commands.entity(entity).insert(AnimationState {
                         current: Some(name),
                         speed,
                         looping,
                         paused: false,
+                        blend_time,
+                        flags,
                     });
                 } else {
                     warn!("[cmd_queue] PlayAnimation: unknown handle {}", handle);
@@ -576,6 +619,102 @@ pub fn process_lua_commands(
                 } else {
                     warn!("[cmd_queue] StopAnimation: unknown handle {}", handle);
                 }
+            }
+
+            LuaCommand::Attach { child_handle, child_socket, parent_handle, parent_socket } => {
+                let Some(child_entity) = world_state.entity_for(child_handle) else {
+                    warn!("[cmd_queue] Attach: unknown child handle {}", child_handle);
+                    continue;
+                };
+                let Some(parent_entity) = world_state.entity_for(parent_handle) else {
+                    warn!("[cmd_queue] Attach: unknown parent handle {}", parent_handle);
+                    continue;
+                };
+
+                let Some(child_map) = socket_maps.get(child_entity).ok() else {
+                    warn!("[cmd_queue] Attach: child handle {} has no AdsSocketMap", child_handle);
+                    continue;
+                };
+                let Some(parent_map) = socket_maps.get(parent_entity).ok() else {
+                    warn!("[cmd_queue] Attach: parent handle {} has no AdsSocketMap", parent_handle);
+                    continue;
+                };
+
+                let Some(&child_socket_entity) = child_map.0.get(&child_socket) else {
+                    warn!(
+                        "[cmd_queue] Attach: child socket '{}' not found on handle {}",
+                        child_socket, child_handle
+                    );
+                    continue;
+                };
+                let Some(&parent_socket_entity) = parent_map.0.get(&parent_socket) else {
+                    warn!(
+                        "[cmd_queue] Attach: parent socket '{}' not found on handle {}",
+                        parent_socket, parent_handle
+                    );
+                    continue;
+                };
+
+                let Ok(child_root_world) = globals.get(child_entity) else {
+                    warn!("[cmd_queue] Attach: missing GlobalTransform for child handle {}", child_handle);
+                    continue;
+                };
+                let Ok(parent_root_world) = globals.get(parent_entity) else {
+                    warn!("[cmd_queue] Attach: missing GlobalTransform for parent handle {}", parent_handle);
+                    continue;
+                };
+                let Ok(child_socket_world) = globals.get(child_socket_entity) else {
+                    warn!("[cmd_queue] Attach: missing GlobalTransform for child socket '{}'", child_socket);
+                    continue;
+                };
+                let Ok(parent_socket_world) = globals.get(parent_socket_entity) else {
+                    warn!("[cmd_queue] Attach: missing GlobalTransform for parent socket '{}'", parent_socket);
+                    continue;
+                };
+
+                let child_socket_local =
+                    child_root_world.to_matrix().inverse() * child_socket_world.to_matrix();
+                let target_child_world =
+                    parent_socket_world.to_matrix() * child_socket_local.inverse();
+                let target_child_local =
+                    parent_root_world.to_matrix().inverse() * target_child_world;
+
+                let (scale, rotation, translation) =
+                    target_child_local.to_scale_rotation_translation();
+
+                commands.entity(child_entity).insert((
+                    ChildOf(parent_entity),
+                    Transform {
+                        translation,
+                        rotation,
+                        scale,
+                    },
+                    SocketAttachment {
+                        child_socket,
+                        parent_handle,
+                        parent_socket,
+                    },
+                ));
+            }
+
+            LuaCommand::Detach { child_handle } => {
+                let Some(child_entity) = world_state.entity_for(child_handle) else {
+                    warn!("[cmd_queue] Detach: unknown child handle {}", child_handle);
+                    continue;
+                };
+                let Ok(world_tf) = globals.get(child_entity) else {
+                    warn!("[cmd_queue] Detach: missing GlobalTransform for child handle {}", child_handle);
+                    continue;
+                };
+
+                let (scale, rotation, translation) = world_tf.to_matrix().to_scale_rotation_translation();
+                commands.entity(child_entity).insert(Transform {
+                    translation,
+                    rotation,
+                    scale,
+                });
+                commands.entity(child_entity).remove::<ChildOf>();
+                commands.entity(child_entity).remove::<SocketAttachment>();
             }
 
             LuaCommand::SetStat { player_id, name, value } => {
@@ -668,12 +807,29 @@ pub fn sync_entity_state_cache(
         Option<&AnimationState>,
         Has<NetworkedObjectMarker>,
         Option<&CollisionEnabled>,
+        Option<&AdsSocketMap>,
     )>,
+    globals: Query<&GlobalTransform>,
     cache: Res<EntityStateCache>,
 ) {
     let mut lock = cache.0.lock().unwrap_or_else(|p| p.into_inner());
     lock.clear();
-    for (handle, transform, model, health, anim, is_networked, collision) in &query {
+    for (handle, transform, model, health, anim, is_networked, collision, socket_map) in &query {
+        let mut sockets = HashMap::new();
+        if let Some(socket_map) = socket_map {
+            for (name, socket_entity) in &socket_map.0 {
+                if let Ok(tf) = globals.get(*socket_entity) {
+                    sockets.insert(
+                        name.clone(),
+                        SocketTransformSnapshot {
+                            pos: tf.translation().to_array(),
+                            rot: tf.rotation().to_array(),
+                        },
+                    );
+                }
+            }
+        }
+
         let snapshot = EntitySnapshot {
             pos: transform.translation.to_array(),
             rot: [
@@ -693,6 +849,7 @@ pub fn sync_entity_state_cache(
             anim_paused: anim.map(|a| a.paused).unwrap_or(false),
             is_networked,
             collision_enabled: collision.map(|c| c.0).unwrap_or(true),
+            sockets,
         };
         lock.insert(handle.0, snapshot);
     }

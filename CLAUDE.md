@@ -80,7 +80,7 @@ files { 'assets/ui_icons.png' }
 | **Phase 3.7** — Raycast API | `RaycastBridge`, `Raycast.GetGroundPosition()`, yaw v `PlayerInput.look[0]` |
 | **Phase 3.8** — Event Bus | `LocalEventBus`, `TriggerEvent`, JSON payloads, `input:state` bridge, `sq:ready` init pattern, Lua-safe string player IDs |
 | **Phase 3.9** — Entity State API | `EntityHandle`, `ModelName`, `AnimationState`, `EntityStateCache`, `World.Get*/Set*` API |
-| **Phase 4** — ADS + GUI | Apparatus Drawable System (`.drawable` TOML, materiály WGSL, LOD systém, kolize), Blender toolkit (`bevy_toolkit.py`), immediate-mode GUI (`Gui.*`), `CreateThread`/`Wait`, `UI.Window` |
+| **Phase 4** — ADS + GUI | Apparatus Drawable System (`.drawable` TOML, materiály WGSL, LOD systém, kolize), Blender toolkit (`bevy_toolkit.py`), immediate-mode GUI (`Gui.*`), `CreateThread`/`Wait`, `UI.Window`, ADS socket metadata (`AdsSocketMap` + `AdsSocket`), `World.Attach/Detach/GetSocketTransform`, prefix semantika `DEF_/IK_/SOC_/MEC_`, LOD2+ skeletal pruning, ADM v3 animační klipy + runtime playback, ADM skinning export + `SkinnedMesh` binding, track flags pro body-part blending, Mixamo auto-rename/import/export tooling, model_viewer animation browser |
 
 **Phase 3.6 — YMAP Streaming** (částečně):
 - [X] `World.SpawnNetworkedObject` základ
@@ -361,7 +361,9 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `World.SpawnNetworkedObject(model, pos, rot)` | server | Replikovaná entita → handle |
 | `World.DeleteObject(handle)` | both | Despawn |
 | `World.SetTransform/SetPosition/SetRotation/SetScale/SetModel` | both | Transformace |
-| `World.PlayAnimation(h, name, loop?, speed?)` / `StopAnimation` | both | Animace |
+| `World.PlayAnimation(h, name, blend?)` nebo `World.PlayAnimation(h, name, loop?, speed?, blend?)` / `StopAnimation` | both | Animace (`name` podporuje `clip:N`/`anim:N`/`N`; GLTF = clip index, ADM = clip index nebo clip name) |
+| `World.Attach(child, child_socket, parent, parent_socket)` / `World.Detach(child)` | both | Socket-to-socket attachment |
+| `World.GetSocketTransform(handle, socket)` | both | World-space socket transform |
 | `World.IsValid/IsAlive/GetHealth/GetModel` | both | State dotazy |
 | `World.GetPosition/Rotation/Quaternion/Scale/Transform/Animation/AnimationSpeed` | both | Gettery |
 | `World.ApplyDamage(target, amount, source?)` | server | Damage intent |

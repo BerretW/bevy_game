@@ -135,9 +135,57 @@ pub fn update_lod_visibility(
     }
 }
 
+/// LOD2+ pruning: skryje detailní face/finger DEF_ kosti pro vzdálené modely,
+/// při návratu na LOD0/1 je znovu zobrazí.
+///
+/// Prakticky snižuje počet aktualizovaných bone chainů u vzdálených ped modelů
+/// bez destruktivního despawnu entit.
+pub fn apply_skeletal_pruning(
+    lod_groups: Query<(&LodGroup, Option<&Children>), Changed<LodGroup>>,
+    children_q: Query<&Children>,
+    names: Query<&Name>,
+    mut visibility_q: Query<&mut Visibility>,
+) {
+    for (lod, root_children) in &lod_groups {
+        let prune = lod.active_lod != u8::MAX && lod.active_lod >= 2;
+
+        let Some(root_children) = root_children else { continue };
+        let mut stack: Vec<Entity> = root_children.iter().collect();
+
+        while let Some(entity) = stack.pop() {
+            if let Ok(name) = names.get(entity) {
+                let n = name.as_str();
+                if n.starts_with("DEF_") && is_prunable_bone_name(n) {
+                    if let Ok(mut vis) = visibility_q.get_mut(entity) {
+                        *vis = if prune {
+                            Visibility::Hidden
+                        } else {
+                            Visibility::Inherited
+                        };
+                    }
+                }
+            }
+
+            if let Ok(children) = children_q.get(entity) {
+                stack.extend(children.iter());
+            }
+        }
+    }
+}
+
+fn is_prunable_bone_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    const TOKENS: [&str; 18] = [
+        "finger", "thumb", "index", "middle", "ring", "pinky",
+        "jaw", "lip", "cheek", "brow", "eyelid", "eye_lid",
+        "tongue", "nose", "ear", "face", "moustache", "beard",
+    ];
+    TOKENS.iter().any(|t| lower.contains(t))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_lod_level;
+    use super::{is_prunable_bone_name, parse_lod_level};
 
     #[test]
     fn parse_lod_no_suffix() {
@@ -160,5 +208,13 @@ mod tests {
         // Neplatné číslo za _LOD → 0
         assert_eq!(parse_lod_level("Wall_LODx"), 0);
         assert_eq!(parse_lod_level("Wall_LOD"), 0);
+    }
+
+    #[test]
+    fn pruning_name_match() {
+        assert!(is_prunable_bone_name("DEF_finger_index_01"));
+        assert!(is_prunable_bone_name("DEF_face_jaw"));
+        assert!(!is_prunable_bone_name("DEF_spine_02"));
+        assert!(!is_prunable_bone_name("DEF_thigh_l"));
     }
 }

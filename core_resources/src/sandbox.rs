@@ -1277,6 +1277,33 @@ fn install_runtime_api_inner(
         Ok(mlua::Value::Table(t))
     })?)?;
 
+    // Vrátí world-space transform socketu: {pos={x,y,z}, rot={x,y,z,w}} nebo nil.
+    let ec = entity_cache.clone();
+    world.set("GetSocketTransform", lua.create_function(
+        move |lua, (handle, socket_name): (u64, String)| -> mlua::Result<mlua::Value> {
+            let Some(snap) = ec.get(handle) else { return Ok(mlua::Value::Nil) };
+            let Some(socket_tf) = snap.sockets.get(&socket_name) else {
+                return Ok(mlua::Value::Nil);
+            };
+
+            let pos_t = lua.create_table()?;
+            pos_t.set("x", socket_tf.pos[0])?;
+            pos_t.set("y", socket_tf.pos[1])?;
+            pos_t.set("z", socket_tf.pos[2])?;
+
+            let rot_t = lua.create_table()?;
+            rot_t.set("x", socket_tf.rot[0])?;
+            rot_t.set("y", socket_tf.rot[1])?;
+            rot_t.set("z", socket_tf.rot[2])?;
+            rot_t.set("w", socket_tf.rot[3])?;
+
+            let t = lua.create_table()?;
+            t.set("pos", pos_t)?;
+            t.set("rot", rot_t)?;
+            Ok(mlua::Value::Table(t))
+        },
+    )?)?;
+
     let ec = entity_cache.clone();
     world.set("GetAnimation", lua.create_function(move |lua, handle: u64| -> mlua::Result<mlua::Value> {
         Ok(match ec.get(handle).and_then(|s| s.animation) {
@@ -1334,15 +1361,83 @@ fn install_runtime_api_inner(
         },
     )?)?;
 
-    // PlayAnimation(handle, name, looping?, speed?) — looping=true, speed=1.0 by default
+    // PlayAnimation podporuje 3 tvary:
+    // 1) PlayAnimation(handle, name, blend_time?)
+    // 2) PlayAnimation(handle, name, looping?, speed?, blend_time?)
+    // 3) PlayAnimation(handle, name, looping?, speed?, blend_time?, flags?)
     let cq = cmd_queue.clone();
     world.set("PlayAnimation", lua.create_function(
-        move |_, (handle, name, looping_v, speed_v): (u64, String, Option<bool>, Option<f32>)| {
+        move |_, args: MultiValue| {
+            if args.len() < 2 {
+                return Err(mlua::Error::RuntimeError(
+                    "World.PlayAnimation(handle, name, ...) requires at least 2 arguments".into(),
+                ));
+            }
+
+            let handle = match &args[0] {
+                mlua::Value::Integer(v) if *v >= 0 => *v as u64,
+                mlua::Value::Number(v) if *v >= 0.0 => *v as u64,
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "World.PlayAnimation: invalid handle".into(),
+                    ))
+                }
+            };
+            let name = match &args[1] {
+                mlua::Value::String(s) => s.to_str()?.to_string(),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "World.PlayAnimation: invalid animation name".into(),
+                    ))
+                }
+            };
+
+            let mut looping = true;
+            let mut speed = 1.0_f32;
+            let mut blend_time = 0.0_f32;
+            let mut flags = 1_u32;
+
+            if args.len() >= 3 {
+                match &args[2] {
+                    mlua::Value::Boolean(v) => looping = *v,
+                    mlua::Value::Integer(v) => blend_time = *v as f32,
+                    mlua::Value::Number(v) => blend_time = *v as f32,
+                    mlua::Value::Nil => {}
+                    _ => {}
+                }
+            }
+            if args.len() >= 4 {
+                match &args[3] {
+                    mlua::Value::Integer(v) => speed = *v as f32,
+                    mlua::Value::Number(v) => speed = *v as f32,
+                    mlua::Value::Nil => {}
+                    _ => {}
+                }
+            }
+            if args.len() >= 5 {
+                match &args[4] {
+                    mlua::Value::Integer(v) => blend_time = *v as f32,
+                    mlua::Value::Number(v) => blend_time = *v as f32,
+                    mlua::Value::Nil => {}
+                    _ => {}
+                }
+            }
+            if args.len() >= 6 {
+                match &args[5] {
+                    mlua::Value::Integer(v) if *v >= 0 => flags = *v as u32,
+                    mlua::Value::Number(v) if *v >= 0.0 => flags = *v as u32,
+                    mlua::Value::Nil => {}
+                    _ => {}
+                }
+            }
+
             cq.push(LuaCommand::PlayAnimation {
                 handle,
                 name,
-                looping: looping_v.unwrap_or(true),
-                speed: speed_v.unwrap_or(1.0),
+                looping,
+                speed,
+                blend_time,
+                flags,
             });
             Ok(())
         },
@@ -1410,6 +1505,27 @@ fn install_runtime_api_inner(
     let cq = cmd_queue.clone();
     world.set("SetMaterialParam", lua.create_function(move |_, (handle, param, value): (u64, String, f32)| {
         cq.push(LuaCommand::SetMaterialParam { handle, param, value });
+        Ok(())
+    })?)?;
+
+    // World.Attach(child_handle, child_socket, parent_handle, parent_socket)
+    let cq = cmd_queue.clone();
+    world.set("Attach", lua.create_function(
+        move |_, (child_handle, child_socket, parent_handle, parent_socket): (u64, String, u64, String)| {
+            cq.push(LuaCommand::Attach {
+                child_handle,
+                child_socket,
+                parent_handle,
+                parent_socket,
+            });
+            Ok(())
+        },
+    )?)?;
+
+    // World.Detach(child_handle)
+    let cq = cmd_queue.clone();
+    world.set("Detach", lua.create_function(move |_, child_handle: u64| {
+        cq.push(LuaCommand::Detach { child_handle });
         Ok(())
     })?)?;
 

@@ -202,6 +202,12 @@ class BEVY_PT_Panel(bpy.types.Panel):
         tool_row.operator("bevy.set_all_materials_unembedded", text="Set all Materials Unembedded")
         tools_box.operator("bevy.find_missing_textures", text="Find Missing Textures", icon="VIEWZOOM")
 
+        mixamo_box = layout.box()
+        mixamo_box.label(text="Mixamo Tools", icon="ARMATURE_DATA")
+        mixamo_box.operator("ads.rename_mixamo_rig", text="Auto Rename Mixamo Rig", icon="SORTALPHA")
+        mixamo_box.operator("ads.import_mixamo_animations", text="Import Mixamo Animations", icon="IMPORT")
+        mixamo_box.operator("ads.export_adm", text="Export ADM (Bones + Clips)", icon="EXPORT")
+
         if not obj:
             self._draw_export_box(layout, settings)
             return

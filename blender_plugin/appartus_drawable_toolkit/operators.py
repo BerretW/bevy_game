@@ -1,4 +1,5 @@
 import os
+import re
 import bpy
 from mathutils import Vector
 
@@ -99,6 +100,144 @@ def _build_map_manifest_lines(instances):
             lines.append(f"tags = [{tags}]")
         lines.append("")
     return lines
+
+
+_MIXAMO_BONE_MAP = {
+    'Hips': 'pelvis',
+    'Spine': 'spine_01',
+    'Spine1': 'spine_02',
+    'Spine2': 'spine_03',
+    'Neck': 'neck',
+    'Head': 'head',
+    'LeftShoulder': 'clavicle_l',
+    'LeftArm': 'upperarm_l',
+    'LeftForeArm': 'forearm_l',
+    'LeftHand': 'hand_l',
+    'RightShoulder': 'clavicle_r',
+    'RightArm': 'upperarm_r',
+    'RightForeArm': 'forearm_r',
+    'RightHand': 'hand_r',
+    'LeftUpLeg': 'thigh_l',
+    'LeftLeg': 'calf_l',
+    'LeftFoot': 'foot_l',
+    'LeftToeBase': 'toe_l',
+    'RightUpLeg': 'thigh_r',
+    'RightLeg': 'calf_r',
+    'RightFoot': 'foot_r',
+    'RightToeBase': 'toe_r',
+}
+
+
+def _find_target_armature(context, objects=None):
+    active = getattr(context, 'active_object', None)
+    if active and active.type == 'ARMATURE':
+        return active
+
+    if objects:
+        for obj in objects:
+            if obj.type == 'ARMATURE':
+                return obj
+        for obj in objects:
+            parent = getattr(obj, 'parent', None)
+            if parent and parent.type == 'ARMATURE':
+                return parent
+            for modifier in getattr(obj, 'modifiers', []):
+                if modifier.type == 'ARMATURE' and getattr(modifier, 'object', None) and modifier.object.type == 'ARMATURE':
+                    return modifier.object
+
+    for obj in context.scene.objects:
+        if obj.type == 'ARMATURE':
+            return obj
+
+    return None
+
+
+def _normalize_mixamo_bone_name(name):
+    base = name.split(':')[-1].strip()
+    if base.startswith(('DEF_', 'IK_', 'SOC_', 'MEC_')):
+        return base
+
+    mapped = _MIXAMO_BONE_MAP.get(base)
+    if mapped:
+        return f'DEF_{mapped}'
+
+    finger_match = re.match(r'^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)(\d+)$', base)
+    if finger_match:
+        side = 'l' if finger_match.group(1) == 'Left' else 'r'
+        finger = finger_match.group(2).lower()
+        index = int(finger_match.group(3))
+        return f'DEF_{finger}_{index:02d}_{side}'
+
+    side_match = re.match(r'^(Left|Right)(.+)$', base)
+    if side_match:
+        side = 'l' if side_match.group(1) == 'Left' else 'r'
+        core = re.sub(r'(?<!^)([A-Z])', r'_\1', side_match.group(2)).lower()
+        core = re.sub(r'[^a-z0-9_]+', '_', core)
+        return f'DEF_{core}_{side}'
+
+    core = re.sub(r'(?<!^)([A-Z])', r'_\1', base).lower()
+    core = re.sub(r'[^a-z0-9_]+', '_', core)
+    return f'DEF_{core}'
+
+
+def _rename_mixamo_armature(armature_obj):
+    rename_map = {}
+    for bone in armature_obj.data.bones:
+        old_name = bone.name
+        new_name = _normalize_mixamo_bone_name(old_name)
+        if new_name == old_name:
+            continue
+        rename_map[old_name] = new_name
+        stripped = old_name.split(':')[-1]
+        rename_map[stripped] = new_name
+        bone.name = new_name
+
+    if not rename_map:
+        return rename_map
+
+    for obj in bpy.data.objects:
+        if obj.type != 'MESH':
+            continue
+        uses_armature = False
+        for modifier in getattr(obj, 'modifiers', []):
+            if modifier.type == 'ARMATURE' and getattr(modifier, 'object', None) == armature_obj:
+                uses_armature = True
+                break
+        if not uses_armature and obj.parent != armature_obj:
+            continue
+
+        for vertex_group in getattr(obj, 'vertex_groups', []):
+            if vertex_group.name in rename_map:
+                vertex_group.name = rename_map[vertex_group.name]
+
+    return rename_map
+
+
+def _push_action_to_nla(armature_obj, action, strip_name=None):
+    if action is None:
+        return None
+
+    armature_obj.animation_data_create()
+    track = armature_obj.animation_data.nla_tracks.new()
+    track.name = strip_name or action.name
+
+    frame_start = int(round(float(action.frame_range[0])))
+    frame_end = int(round(float(action.frame_range[1])))
+    if frame_end <= frame_start:
+        frame_end = frame_start + 1
+
+    strip = track.strips.new(strip_name or action.name, frame_start, action)
+    try:
+        strip.action_frame_start = frame_start
+        strip.action_frame_end = frame_end
+    except Exception:
+        pass
+    try:
+        strip.frame_start = frame_start
+        strip.frame_end = frame_end
+    except Exception:
+        pass
+    return strip
 
 
 class BEVY_OT_InitProject(bpy.types.Operator):
@@ -873,6 +1012,134 @@ class BEVY_OT_ImportDrawable(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class BEVY_OT_RenameMixamoRig(bpy.types.Operator):
+    bl_idname = "ads.rename_mixamo_rig"
+    bl_label = "Auto Rename Mixamo Rig"
+    bl_description = "Rename Mixamo bones to ADS DEF_ naming and update matching mesh vertex groups"
+
+    def execute(self, context):
+        targets = []
+        active = getattr(context, 'active_object', None)
+        if active and active.type == 'ARMATURE':
+            targets.append(active)
+        else:
+            targets.extend(obj for obj in context.selected_objects if obj.type == 'ARMATURE')
+
+        if not targets:
+            target = _find_target_armature(context)
+            if target is not None:
+                targets.append(target)
+
+        if not targets:
+            self.report({'WARNING'}, "No armature selected")
+            return {'CANCELLED'}
+
+        renamed = 0
+        for armature_obj in targets:
+            rename_map = _rename_mixamo_armature(armature_obj)
+            renamed += len(rename_map)
+
+        self.report({'INFO'}, f"Renamed {renamed} Mixamo bone name(s)")
+        return {'FINISHED'}
+
+
+class BEVY_OT_ImportMixamoAnimations(bpy.types.Operator):
+    bl_idname = "ads.import_mixamo_animations"
+    bl_label = "Import Mixamo Animations"
+    bl_description = "Import one or more Mixamo FBX animations, auto-rename them and push actions to the target armature"
+
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+    files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement)
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.fbx;*.FBX", options={'HIDDEN'})
+    auto_rename: bpy.props.BoolProperty(name="Auto Rename Rig", default=True)
+    merge_to_target: bpy.props.BoolProperty(name="Merge To Target Armature", default=True)
+    cleanup_imported: bpy.props.BoolProperty(name="Delete Imported Animation Rig", default=True)
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        paths = []
+        if self.files:
+            for file_item in self.files:
+                paths.append(os.path.join(self.directory, file_item.name))
+        elif self.filepath:
+            paths.append(self.filepath)
+
+        if not paths:
+            self.report({'WARNING'}, "No FBX files selected")
+            return {'CANCELLED'}
+
+        target_armature = _find_target_armature(context)
+        if target_armature is not None and self.auto_rename:
+            _rename_mixamo_armature(target_armature)
+
+        imported_actions = 0
+        for path in paths:
+            if not os.path.isfile(path):
+                self.report({'WARNING'}, f"File not found: {path}")
+                continue
+
+            before_objects = set(bpy.data.objects.keys())
+            try:
+                bpy.ops.import_scene.fbx(
+                    filepath=path,
+                    use_anim=True,
+                    automatic_bone_orientation=True,
+                )
+            except TypeError:
+                bpy.ops.import_scene.fbx(filepath=path)
+
+            new_objects = [bpy.data.objects[name] for name in (set(bpy.data.objects.keys()) - before_objects) if name in bpy.data.objects]
+            imported_armatures = [obj for obj in new_objects if obj.type == 'ARMATURE']
+            if not imported_armatures:
+                self.report({'WARNING'}, f"No armature found in {os.path.basename(path)}")
+                continue
+
+            imported_armature = imported_armatures[0]
+            if self.auto_rename:
+                _rename_mixamo_armature(imported_armature)
+
+            animation_data = getattr(imported_armature, 'animation_data', None)
+            source_action = getattr(animation_data, 'action', None) if animation_data else None
+            if source_action is None and animation_data is not None:
+                for track in animation_data.nla_tracks:
+                    for strip in track.strips:
+                        if getattr(strip, 'action', None) is not None:
+                            source_action = strip.action
+                            break
+                    if source_action is not None:
+                        break
+
+            if source_action is None:
+                self.report({'WARNING'}, f"No action found in {os.path.basename(path)}")
+                continue
+
+            clip_name = bpy.path.clean_name(os.path.splitext(os.path.basename(path))[0])
+            try:
+                source_action.name = clip_name
+            except Exception:
+                pass
+
+            if self.merge_to_target and target_armature is not None:
+                _push_action_to_nla(target_armature, source_action, clip_name)
+                imported_actions += 1
+
+                if self.cleanup_imported:
+                    for obj in new_objects:
+                        try:
+                            bpy.data.objects.remove(obj, do_unlink=True)
+                        except Exception:
+                            pass
+            else:
+                imported_actions += 1
+
+        self.report({'INFO'}, f"Imported {imported_actions} animation clip(s)")
+        return {'FINISHED'}
+
+
 class ADS_OT_export_adm(bpy.types.Operator):
     bl_idname  = "ads.export_adm"
     bl_label   = "Export ADM"
@@ -904,8 +1171,10 @@ class ADS_OT_export_adm(bpy.types.Operator):
         drawable_path = os.path.join(self.directory, f"{export_name}.drawable")
 
         # Export geometrie + embedded DDS textur
+        armature = _find_target_armature(context, objects)
+
         try:
-            meshes, nodes = export_adm(adm_path, objects=objects, export_textures=True)
+            meshes, nodes = export_adm(adm_path, objects=objects, export_textures=True, armature_object=armature)
         except Exception as e:
             self.report({'ERROR'}, f"ADM export selhal: {e}")
             return {'CANCELLED'}

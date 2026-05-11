@@ -11,9 +11,11 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use avian3d::prelude::*;
 use core_net::{ClientHandshakeState, HandshakeStatus};
 use bevy::asset::AssetPath;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use bevy_gltf::{
     GltfExtras,
+    GltfAssetLabel,
     GltfMaterialExtras,
     GltfMaterialName,
     GltfMeshExtras,
@@ -21,7 +23,7 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
+use core_resources::{AnimationState, CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
@@ -72,6 +74,12 @@ struct PlayerVisualAttached;
 #[derive(Component)]
 struct LocalObjectVisualAttached;
 
+#[derive(Resource, Default)]
+struct LuaAnimationGraphCache {
+    // (model_name, clip_index) -> (graph_handle, node_index)
+    map: HashMap<(String, u32), (Handle<AnimationGraph>, AnimationNodeIndex)>,
+}
+
 pub struct ClientGameplayPlugin;
 
 impl Plugin for ClientGameplayPlugin {
@@ -99,6 +107,7 @@ impl Plugin for ClientGameplayPlugin {
             .register_type::<Name>();
 
         app.init_resource::<CameraLookState>();
+        app.init_resource::<LuaAnimationGraphCache>();
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
         app.add_systems(OnExit(AppState::InGame), reset_connection_bridge);
@@ -119,6 +128,7 @@ impl Plugin for ClientGameplayPlugin {
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 attach_mesh_to_local_objects,
+                apply_lua_animation_state,
                 handle_engine_cmds,
             )
                 .chain()
@@ -998,5 +1008,107 @@ fn attach_mesh_to_local_objects(
             "[gameplay/client] LocalObject '{}' not found in ModelRegistry; using fallback cube",
             marker.model
         );
+    }
+}
+
+fn parse_animation_index(selector: &str) -> Option<u32> {
+    if let Ok(idx) = selector.parse::<u32>() {
+        return Some(idx);
+    }
+
+    if let Some(rest) = selector.strip_prefix("clip:") {
+        return rest.parse::<u32>().ok();
+    }
+    if let Some(rest) = selector.strip_prefix("anim:") {
+        return rest.parse::<u32>().ok();
+    }
+
+    None
+}
+
+fn resolve_animation_graph(
+    model_name: &str,
+    animation_selector: &str,
+    model_registry: &ModelRegistry,
+    asset_server: &AssetServer,
+    graphs: &mut Assets<AnimationGraph>,
+    cache: &mut LuaAnimationGraphCache,
+) -> Option<(Handle<AnimationGraph>, AnimationNodeIndex)> {
+    let clip_index = parse_animation_index(animation_selector)?;
+
+    let key = (model_name.to_string(), clip_index);
+    if let Some(cached) = cache.map.get(&key) {
+        return Some(cached.clone());
+    }
+
+    let model_path = model_registry.path(model_name)?;
+    let ext = model_path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    if ext != "glb" && ext != "gltf" {
+        return None;
+    }
+
+    let model_asset = model_path.to_string_lossy().replace('\\', "/");
+    let clip = asset_server.load(GltfAssetLabel::Animation(clip_index as usize).from_asset(model_asset));
+    let (graph, node) = AnimationGraph::from_clip(clip);
+    let graph_handle = graphs.add(graph);
+    cache.map.insert(key, (graph_handle.clone(), node));
+    Some((graph_handle, node))
+}
+
+fn apply_lua_animation_state(
+    mut commands: Commands,
+    model_registry: Res<ModelRegistry>,
+    asset_server: Res<AssetServer>,
+    mut graph_assets: ResMut<Assets<AnimationGraph>>,
+    mut graph_cache: ResMut<LuaAnimationGraphCache>,
+    anim_roots: Query<(Entity, &AnimationState, &ModelName)>,
+    children_q: Query<&Children>,
+    mut players: Query<(Entity, &mut AnimationPlayer, Option<&AnimationGraphHandle>)>,
+) {
+    for (root, state, model_name) in &anim_roots {
+        let Some(clip_name) = state.current.as_ref() else { continue };
+
+        let Some((graph_handle, node)) = resolve_animation_graph(
+            &model_name.0,
+            clip_name,
+            &model_registry,
+            &asset_server,
+            &mut graph_assets,
+            &mut graph_cache,
+        ) else {
+            continue;
+        };
+
+        for entity in children_q.iter_descendants(root) {
+            let Ok((player_entity, mut player, graph_handle_comp)) = players.get_mut(entity) else {
+                continue;
+            };
+
+            if graph_handle_comp.map(|h| h.0 != graph_handle).unwrap_or(true) {
+                commands
+                    .entity(player_entity)
+                    .insert(AnimationGraphHandle(graph_handle.clone()));
+            }
+
+            let playing = player.play(node);
+            if state.looping {
+                playing.repeat();
+            }
+
+            if let Some(active) = player.animation_mut(node) {
+                active.set_speed(state.speed);
+                if state.paused {
+                    active.pause();
+                } else {
+                    active.resume();
+                }
+            }
+
+            if state.blend_time > 0.0 {
+                // Zatím bez full AnimationTransitions graph workflow.
+                // Placeholder: opětovné přehrání vyvolá blend path v default playeru.
+                let _ = Duration::from_secs_f32(state.blend_time);
+            }
+        }
     }
 }

@@ -1,5 +1,7 @@
 """Export meshů do binárního .adm formátu pro Apparatus Drawable System."""
 
+import math
+import re
 import struct
 import os
 import bpy
@@ -28,6 +30,16 @@ def _to_bevy_mat4(mat):
     return [f for col in m.col for f in col]
 
 
+def _to_bevy_trs(mat):
+    """Konvertuje Blender matici na Bevy TRS tuple (pos3, rot4, scale3)."""
+    m = _C @ mat @ _C_INV
+    loc, rot, scale = m.decompose()
+    pos = (loc.x, loc.y, loc.z)
+    quat = (rot.x, rot.y, rot.z, rot.w)
+    scl = (scale.x, scale.y, scale.z)
+    return pos, quat, scl
+
+
 def _pack_str(s):
     """u16 length prefix + utf8 bytes."""
     b = s.encode('utf-8')
@@ -43,11 +55,84 @@ def _get_color(attr, loop_idx, vert_idx):
     return (c[0], c[1], c[2], c[3] if len(c) > 3 else 1.0)
 
 
-def _collect_mesh_data(obj, material_index=None):
+def _collect_vertex_skinning(obj, vertex_index, bone_index_lookup):
+    if not bone_index_lookup or vertex_index >= len(obj.data.vertices):
+        return (0, 0, 0, 0), (0.0, 0.0, 0.0, 0.0)
+
+    weighted = []
+    for group in obj.data.vertices[vertex_index].groups:
+        if group.group >= len(obj.vertex_groups):
+            continue
+        group_name = obj.vertex_groups[group.group].name
+        bone_index = bone_index_lookup.get(group_name)
+        if bone_index is None:
+            bone_index = bone_index_lookup.get(_canonical_bone_name(group_name))
+        if bone_index is None or group.weight <= 0.0:
+            continue
+        weighted.append((group.weight, bone_index))
+
+    if not weighted:
+        return (0, 0, 0, 0), (0.0, 0.0, 0.0, 0.0)
+
+    weighted.sort(key=lambda item: item[0], reverse=True)
+    weighted = weighted[:4]
+    total = sum(weight for weight, _ in weighted)
+    if total <= 0.0:
+        return (0, 0, 0, 0), (0.0, 0.0, 0.0, 0.0)
+
+    norm = [(bone_index, weight / total) for weight, bone_index in weighted]
+    while len(norm) < 4:
+        norm.append((0, 0.0))
+
+    joints = tuple(int(bone_index) for bone_index, _ in norm)
+    weights = tuple(float(weight) for _, weight in norm)
+    return joints, weights
+
+
+def _object_uses_armature(obj, armature_object):
+    if obj is None or armature_object is None or obj.type != 'MESH' or armature_object.type != 'ARMATURE':
+        return False
+    if obj.parent == armature_object:
+        return True
+    for modifier in getattr(obj, 'modifiers', []):
+        if modifier.type == 'ARMATURE' and getattr(modifier, 'object', None) == armature_object:
+            return True
+    return False
+
+
+def _canonical_bone_name(name):
+    token = name.split(':')[-1].strip()
+    token = token.replace('.', '_').replace('-', '_').lower()
+    if token.startswith('def_'):
+        token = token[4:]
+    token = re.sub(r'_(l|r)$', r'\1', token)
+    token = re.sub(r'[^a-z0-9]+', '', token)
+    return token
+
+
+def _build_bone_index_lookup(ordered_bones):
+    lookup = {}
+
+    def register(key, index):
+        if not key:
+            return
+        if key not in lookup:
+            lookup[key] = index
+
+    for idx, bone in enumerate(ordered_bones):
+        name = bone.name
+        register(name, idx)
+        register(name.split(':')[-1], idx)
+        register(_canonical_bone_name(name), idx)
+
+    return lookup
+
+
+def _collect_mesh_data(obj, material_index=None, bone_index_lookup=None, bind_matrix=None):
     """
     Získá mesh data ze object v object-local space.
     Pokud je zadán material_index, exportuje pouze trojúhelníky s daným material slotem.
-    Vrátí: (positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices)
+    Vrátí: (positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices)
     Vše v Bevy souřadnicovém systému.
     """
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -165,8 +250,11 @@ def _collect_mesh_data(obj, material_index=None):
     mesh.loop_triangles.foreach_get('use_smooth',     tri_use_smooth)
     mesh.loop_triangles.foreach_get('normal',         tri_nrms_flat)
 
-    positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices = [], [], [], [], [], [], [], []
+    positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices = [], [], [], [], [], [], [], [], [], []
     vert_map = {}
+    normal_matrix = None
+    if bind_matrix is not None:
+        normal_matrix = bind_matrix.to_3x3().inverted().transposed()
 
     for ti in range(num_tris):
         if material_index is not None and tri_mat_idx[ti] != material_index:
@@ -202,12 +290,23 @@ def _collect_mesh_data(obj, material_index=None):
                 vert_map[key] = new_idx
 
                 px = vert_cos[vi * 3];  py = vert_cos[vi * 3 + 1];  pz = vert_cos[vi * 3 + 2]
-                positions.append((px, pz, -py))   # Blender→Bevy Y-up
-                normals.append((nx, nz, -ny))
+                if bind_matrix is not None:
+                    pos = bind_matrix @ mathutils.Vector((px, py, pz))
+                    nrm = (normal_matrix @ mathutils.Vector((nx, ny, nz))).normalized()
+                else:
+                    pos = mathutils.Vector((px, py, pz))
+                    nrm = mathutils.Vector((nx, ny, nz))
+
+                positions.append((pos.x, pos.z, -pos.y))   # Blender→Bevy Y-up
+                normals.append((nrm.x, nrm.z, -nrm.y))
 
                 if has_tangents:
                     tx = loop_tans[loop_idx * 3];  ty = loop_tans[loop_idx * 3 + 1];  tz = loop_tans[loop_idx * 3 + 2]
-                    tangents.append((tx, tz, -ty, loop_bsigns[loop_idx]))
+                    if bind_matrix is not None:
+                        tan = (normal_matrix @ mathutils.Vector((tx, ty, tz))).normalized()
+                        tangents.append((tan.x, tan.z, -tan.y, loop_bsigns[loop_idx]))
+                    else:
+                        tangents.append((tx, tz, -ty, loop_bsigns[loop_idx]))
                 else:
                     tangents.append((1.0, 0.0, 0.0, 1.0))
 
@@ -215,14 +314,17 @@ def _collect_mesh_data(obj, material_index=None):
                 uv1s.append((uv1_data[loop_idx * 2], 1.0 - uv1_data[loop_idx * 2 + 1]) if uv1_data else (0.0, 0.0))
                 masks0s.append(_sample_color(masks0_colors, loop_idx, vi))
                 masks1s.append(_sample_color(masks1_colors, loop_idx, vi))
+                joints, weights = _collect_vertex_skinning(obj, vi, bone_index_lookup)
+                joint_indices.append(joints)
+                joint_weights.append(weights)
 
             indices.append(vert_map[key])
 
     obj_eval.to_mesh_clear()
-    return positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices
+    return positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices
 
 
-def _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices):
+def _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices):
     has_pos = len(positions) > 0
     has_nrm = len(normals) > 0
     has_tan = len(tangents) > 0
@@ -230,6 +332,8 @@ def _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, ma
     has_uv1 = len(uv1s) > 0
     has_m0  = any(any(c != 0 for c in m) for m in masks0s)
     has_m1  = any(any(c != 0 for c in m) for m in masks1s)
+    has_weights = any(any(v != 0.0 for v in weight) for weight in joint_weights)
+    has_joints = len(joint_indices) > 0 and has_weights
 
     flags = 0
     if has_pos: flags |= (1 << 0)
@@ -239,6 +343,8 @@ def _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, ma
     if has_uv1: flags |= (1 << 4)
     if has_m0:  flags |= (1 << 5)
     if has_m1:  flags |= (1 << 6)
+    if has_joints: flags |= (1 << 7)
+    if has_weights: flags |= (1 << 8)
 
     buf += _pack_str(name)
     buf += struct.pack('<III', len(positions), len(indices), flags)
@@ -258,6 +364,10 @@ def _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, ma
         buf += struct.pack(f'{len(masks0s) * 4}B',    *[v for m in masks0s   for v in m])
     if has_m1:
         buf += struct.pack(f'{len(masks1s) * 4}B',    *[v for m in masks1s   for v in m])
+    if has_joints:
+        buf += struct.pack(f'<{len(joint_indices) * 4}H', *[v for joint in joint_indices for v in joint])
+    if has_weights:
+        buf += struct.pack(f'<{len(joint_weights) * 4}f', *[v for weight in joint_weights for v in weight])
 
     buf += struct.pack(f'<{len(indices)}I', *indices)
     return buf
@@ -271,6 +381,314 @@ def _write_node(buf, name, node_type_byte, mesh_index, parent_index, material_na
     buf += _pack_str(material_name)
     buf += struct.pack('<16f', *mat_bevy)
     return buf
+
+
+def _write_animations(buf, clips):
+    """Zapíše animační sekci ADM v3.
+
+    Formát:
+      u32 clip_count
+      for clip:
+        str name
+        f32 duration
+        u32 track_count
+        for track:
+          str node_name
+                u32 flags
+          u32 key_count
+          for key:
+            f32 time
+            vec3 pos
+            quat rot_xyzw
+            vec3 scale
+    """
+    buf += struct.pack('<I', len(clips))
+    for clip in clips:
+        buf += _pack_str(clip['name'])
+        buf += struct.pack('<f', clip['duration'])
+        tracks = clip['tracks']
+        buf += struct.pack('<I', len(tracks))
+        for tr in tracks:
+            buf += _pack_str(tr['node'])
+            buf += struct.pack('<I', tr.get('flags', 1))
+            keys = tr['keys']
+            buf += struct.pack('<I', len(keys))
+            for key in keys:
+                t = key['time']
+                p = key['pos']
+                r = key['rot']
+                s = key['scale']
+                buf += struct.pack(
+                    '<f3f4f3f',
+                    t,
+                    p[0], p[1], p[2],
+                    r[0], r[1], r[2], r[3],
+                    s[0], s[1], s[2],
+                )
+    return buf
+
+
+def _bone_track_flags(node_name):
+    name = node_name.split(':')[-1]
+    low = name.lower()
+
+    if low.startswith('def_'):
+        low = low[4:]
+
+    side = None
+    if low.endswith('_r'):
+        side = 'right'
+        low = low[:-2]
+    elif low.endswith('_l'):
+        side = 'left'
+        low = low[:-2]
+
+    if low in ('hips', 'pelvis', 'root'):
+        return 8064
+    if 'spine' in low or 'chest' in low or 'neck' in low or low == 'head' or low in ('clavicle', 'shoulder'):
+        return 24576
+
+    if side == 'right':
+        if 'clavicle' in low or 'shoulder' in low:
+            return 14
+        if 'arm' in low:
+            return 14
+        if 'hand' in low or 'finger' in low or 'thumb' in low:
+            return 14
+        if 'forearm' in low or 'lowerarm' in low:
+            return 14
+        if 'upleg' in low or 'thigh' in low or 'leg' in low or 'calf' in low or 'shin' in low or 'foot' in low or 'toe' in low:
+            return 8064
+
+    if side == 'left':
+        if 'clavicle' in low or 'shoulder' in low:
+            return 112
+        if 'arm' in low:
+            return 112
+        if 'hand' in low or 'finger' in low or 'thumb' in low:
+            return 112
+        if 'forearm' in low or 'lowerarm' in low:
+            return 112
+        if 'upleg' in low or 'thigh' in low or 'leg' in low or 'calf' in low or 'shin' in low or 'foot' in low or 'toe' in low:
+            return 8064
+
+    if 'arm' in low:
+        return 14
+    if 'leg' in low or 'thigh' in low or 'calf' in low or 'shin' in low or 'foot' in low or 'toe' in low:
+        return 8064
+    if 'spine' in low or 'chest' in low or 'neck' in low or low == 'head':
+        return 24576
+    if 'clavicle' in low or 'shoulder' in low:
+        return 112
+
+    return 1
+
+
+def _ordered_bones(armature_obj):
+    bones = list(armature_obj.data.bones)
+    ordered = []
+    seen = set()
+
+    def visit(bone):
+        if bone.name in seen:
+            return
+        if bone.parent is not None:
+            visit(bone.parent)
+        seen.add(bone.name)
+        ordered.append(bone)
+
+    for bone in bones:
+        visit(bone)
+
+    return ordered
+
+
+def _bone_rest_local_matrix(bone):
+    if bone.parent is None:
+        return bone.matrix_local.copy()
+    return bone.parent.matrix_local.inverted() @ bone.matrix_local
+
+
+def _bone_pose_local_matrix(pose_bone):
+    if pose_bone.parent is None:
+        return pose_bone.matrix.copy()
+    return pose_bone.parent.matrix.inverted() @ pose_bone.matrix
+
+
+def _build_armature_clip_specs(scene, armature_obj):
+    animation_data = getattr(armature_obj, 'animation_data', None)
+    if not animation_data:
+        return []
+
+    clip_specs = []
+    for track in animation_data.nla_tracks:
+        if getattr(track, 'mute', False):
+            continue
+        for strip in track.strips:
+            action = getattr(strip, 'action', None)
+            if action is None or getattr(strip, 'mute', False):
+                continue
+            clip_name = strip.name.strip() or action.name.strip() or armature_obj.name
+            frame_start = float(getattr(strip, 'action_frame_start', action.frame_range[0]))
+            frame_end = float(getattr(strip, 'action_frame_end', action.frame_range[1]))
+            clip_specs.append((clip_name, action, frame_start, frame_end))
+
+    action = getattr(animation_data, 'action', None)
+    if not clip_specs and action is not None:
+        clip_name = action.name.strip() or armature_obj.name
+        clip_specs.append((clip_name, action, float(action.frame_range[0]), float(action.frame_range[1])))
+
+    return clip_specs
+
+
+def _collect_armature_animation(armature_obj):
+    scene = bpy.context.scene
+    fps = scene.render.fps / max(1.0, float(scene.render.fps_base))
+    if fps <= 0.0:
+        fps = 30.0
+
+    animation_data = getattr(armature_obj, 'animation_data', None)
+    if not animation_data:
+        return []
+
+    clip_specs = _build_armature_clip_specs(scene, armature_obj)
+    if not clip_specs:
+        return []
+
+    bones = _ordered_bones(armature_obj)
+    old_frame = scene.frame_current
+    old_action = getattr(animation_data, 'action', None)
+    old_use_nla = getattr(animation_data, 'use_nla', None)
+    old_track_mutes = [bool(getattr(track, 'mute', False)) for track in animation_data.nla_tracks]
+    clips = []
+
+    try:
+        for track in animation_data.nla_tracks:
+            track.mute = True
+        if old_use_nla is not None:
+            animation_data.use_nla = False
+
+        for clip_name, action, frame_start, frame_end in clip_specs:
+            animation_data.action = action
+            start_frame = int(math.floor(frame_start))
+            end_frame = max(start_frame + 1, int(math.ceil(frame_end)))
+            tracks = []
+
+            for bone in bones:
+                pose_bone = armature_obj.pose.bones.get(bone.name)
+                if pose_bone is None:
+                    continue
+
+                keys = []
+                for frame in range(start_frame, end_frame + 1):
+                    scene.frame_set(frame)
+                    bpy.context.view_layer.update()
+                    pose_bone = armature_obj.pose.bones.get(bone.name)
+                    if pose_bone is None:
+                        continue
+                    pos, rot, scale = _to_bevy_trs(_bone_pose_local_matrix(pose_bone))
+                    keys.append({
+                        'time': float((frame - start_frame) / fps),
+                        'pos': pos,
+                        'rot': rot,
+                        'scale': scale,
+                    })
+
+                if not keys:
+                    continue
+
+                first = keys[0]
+                varying = any(
+                    (k['pos'] != first['pos']) or
+                    (k['rot'] != first['rot']) or
+                    (k['scale'] != first['scale'])
+                    for k in keys[1:]
+                )
+                if varying or len(keys) == 1:
+                    tracks.append({'node': bone.name, 'flags': _bone_track_flags(bone.name), 'keys': keys})
+
+            if tracks:
+                duration = max(0.0, (end_frame - start_frame) / fps)
+                clips.append({
+                    'name': clip_name,
+                    'duration': float(duration),
+                    'tracks': tracks,
+                })
+    finally:
+        scene.frame_set(old_frame)
+        animation_data.action = old_action
+        if old_use_nla is not None:
+            animation_data.use_nla = old_use_nla
+        for track, old_mute in zip(animation_data.nla_tracks, old_track_mutes):
+            track.mute = old_mute
+        bpy.context.view_layer.update()
+
+    return clips
+
+
+def _collect_scene_animation(objects):
+    """Vrátí 0 nebo 1 clip se sampled keyframes z frame range aktuální scény.
+
+    Exportuje objektové transform animace pro všechny exportované objekty,
+    které mají animation_data (action/NLA). Název clipu: 'scene'.
+    """
+    if not objects:
+        return []
+
+    scene = bpy.context.scene
+    animated = [o for o in objects if getattr(o, 'animation_data', None)]
+    if not animated:
+        return []
+
+    frame_start = int(scene.frame_start)
+    frame_end = int(scene.frame_end)
+    if frame_end < frame_start:
+        return []
+
+    fps = scene.render.fps / max(1.0, float(scene.render.fps_base))
+    if fps <= 0.0:
+        fps = 30.0
+
+    old_frame = scene.frame_current
+    tracks = []
+    try:
+        for obj in animated:
+            keys = []
+            for frame in range(frame_start, frame_end + 1):
+                scene.frame_set(frame)
+                pos, rot, scale = _to_bevy_trs(obj.matrix_local)
+                t = (frame - frame_start) / fps
+                keys.append({
+                    'time': float(t),
+                    'pos': pos,
+                    'rot': rot,
+                    'scale': scale,
+                })
+
+            # Vyhoď konstantní tracky (1 klíč nebo všechny klíče stejné)
+            if not keys:
+                continue
+            first = keys[0]
+            varying = any(
+                (k['pos'] != first['pos']) or
+                (k['rot'] != first['rot']) or
+                (k['scale'] != first['scale'])
+                for k in keys[1:]
+            )
+            if varying or len(keys) == 1:
+                tracks.append({'node': obj.name, 'flags': 1, 'keys': keys})
+    finally:
+        scene.frame_set(old_frame)
+
+    if not tracks:
+        return []
+
+    duration = max(0.0, (frame_end - frame_start) / fps)
+    return [{
+        'name': 'scene',
+        'duration': float(duration),
+        'tracks': tracks,
+    }]
 
 
 def _get_image_bytes(img):
@@ -297,13 +715,16 @@ def _get_image_bytes(img):
     raise RuntimeError(f"Textura '{img.name}' není na disku ani packed")
 
 
-def export_adm(filepath, objects=None, export_textures=True):
+def export_adm(filepath, objects=None, export_textures=True, armature_object=None):
     """
     Exportuje objekty do .adm souboru.
     objects: seznam bpy.types.Object; None = všechny mesh objekty ve scéně.
     """
     if objects is None:
         objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+
+    if armature_object is not None and armature_object not in objects:
+        objects = list(objects) + [armature_object]
 
     # Seřaď podle hierarchie (parents před children)
     def sort_key(o):
@@ -315,6 +736,12 @@ def export_adm(filepath, objects=None, export_textures=True):
         return depth
     objects = sorted(objects, key=sort_key)
 
+    ordered_bones = []
+    bone_weight_index_lookup = {}
+    if armature_object is not None and armature_object.type == 'ARMATURE':
+        ordered_bones = _ordered_bones(armature_object)
+        bone_weight_index_lookup = _build_bone_index_lookup(ordered_bones)
+
     # Unikátní meshe (může více objektů sdílet stejný mesh data)
     mesh_data_list = []  # list of (name, positions, ...) tuples
     mesh_index_map = {}  # object.data.name → mesh_index
@@ -325,7 +752,9 @@ def export_adm(filepath, objects=None, export_textures=True):
     for obj in objects:
         # Detekce node type
         name_up = obj.name.upper()
-        if 'COL_' in name_up or name_up.startswith('COL'):
+        if obj.type == 'ARMATURE':
+            node_type = 2  # EMPTY (armature root)
+        elif 'COL_' in name_up or name_up.startswith('COL'):
             node_type = 1  # COLLISION
         else:
             node_type = 0  # MESH
@@ -335,7 +764,9 @@ def export_adm(filepath, objects=None, export_textures=True):
         if obj.parent and obj.parent in obj_to_node:
             parent_idx = obj_to_node[obj.parent]
 
-        mat_bevy = _to_bevy_mat4(obj.matrix_local)
+        skinned_mesh = node_type == 0 and _object_uses_armature(obj, armature_object)
+        bind_matrix = obj.matrix_local.copy() if skinned_mesh else None
+        mat_bevy = _to_bevy_mat4(mathutils.Matrix.Identity(4) if skinned_mesh else obj.matrix_local)
 
         if node_type == 0 and len(obj.material_slots) > 1:
             # Multi-material mesh: jeden node per material slot.
@@ -346,9 +777,17 @@ def export_adm(filepath, objects=None, export_textures=True):
                 mat_name = slot.material.name if slot.material else ''
                 sub_name = obj.name if mat_idx == 0 else f"{obj.name}.{mat_idx}"
 
-                mesh_key = f"__mat_{obj.data.name if obj.data else obj.name}_{mat_idx}"
+                if skinned_mesh:
+                    mesh_key = f"__skinned_mat_{obj.name}_{mat_idx}"
+                else:
+                    mesh_key = f"__mat_{obj.data.name if obj.data else obj.name}_{mat_idx}"
                 if mesh_key not in mesh_index_map:
-                    data = _collect_mesh_data(obj, material_index=mat_idx)
+                    data = _collect_mesh_data(
+                        obj,
+                        material_index=mat_idx,
+                        bone_index_lookup=bone_weight_index_lookup,
+                        bind_matrix=bind_matrix,
+                    )
                     if not data[0]:  # žádné trojúhelníky nepoužívají tento material slot
                         continue
                     mesh_index_map[mesh_key] = len(mesh_data_list)
@@ -381,16 +820,32 @@ def export_adm(filepath, objects=None, export_textures=True):
                     needs_mesh = True
 
             if needs_mesh:
-                key = obj.data.name if obj.data else obj.name
+                key = obj.name if skinned_mesh else (obj.data.name if obj.data else obj.name)
                 if key not in mesh_index_map:
                     mesh_index_map[key] = len(mesh_data_list)
-                    data = _collect_mesh_data(obj)
+                    data = _collect_mesh_data(
+                        obj,
+                        bone_index_lookup=bone_weight_index_lookup,
+                        bind_matrix=bind_matrix,
+                    )
                     mesh_data_list.append((obj.name, *data))
                 mesh_idx = mesh_index_map[key]
 
             node_idx = len(node_list)
             obj_to_node[obj] = node_idx
             node_list.append((obj.name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
+
+    bone_index_map = {}
+    if armature_object is not None and armature_object.type == 'ARMATURE':
+        armature_node_idx = obj_to_node.get(armature_object)
+        if armature_node_idx is not None:
+            for bone in ordered_bones:
+                parent_idx = armature_node_idx
+                if bone.parent is not None:
+                    parent_idx = bone_index_map.get(bone.parent.name, armature_node_idx)
+                bone_idx = len(node_list)
+                node_list.append((bone.name, 3, -1, parent_idx, '', _to_bevy_mat4(_bone_rest_local_matrix(bone))))
+                bone_index_map[bone.name] = bone_idx
 
     # Sbíráme embedded textury (ze všech materiálů s bevy_toolkit props)
     # V ADM se balí VŠECHNY přiřazené textury bez ohledu na _embedded flag
@@ -430,20 +885,27 @@ def export_adm(filepath, objects=None, export_textures=True):
                         except Exception as e:
                             print(f"[adm_export] nelze exportovat texturu '{img_name}': {e}")
 
+    # Animace (ADM v2)
+    clips = []
+    if armature_object is not None and armature_object.type == 'ARMATURE':
+        clips = _collect_armature_animation(armature_object)
+    if not clips:
+        clips = _collect_scene_animation(objects)
+
     # Build binary — bytearray is mutable so += never copies the whole buffer
     buf = bytearray()
 
     # Header
     buf += b'ADM\x00'
-    buf += struct.pack('<I', 1)   # version
+    buf += struct.pack('<I', 3)   # version
     buf += struct.pack('<I', len(mesh_data_list))
     buf += struct.pack('<I', len(node_list))
     buf += struct.pack('<I', 1 if embedded_textures else 0)
 
     # Mesh sekce
     for entry in mesh_data_list:
-        name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices = entry
-        buf = _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, indices)
+        name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices = entry
+        buf = _write_mesh(buf, name, positions, normals, tangents, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices)
 
     # Node sekce
     for (name, type_b, mesh_idx, parent_idx, mat_name, mat16) in node_list:
@@ -458,9 +920,12 @@ def export_adm(filepath, objects=None, export_textures=True):
             buf += struct.pack('<I', len(data))
             buf += data
 
+    # Animation sekce (v3)
+    buf = _write_animations(buf, clips)
+
     with open(filepath, 'wb') as f:
         f.write(buf)
 
-    print(f"[adm_export] zapsáno {len(mesh_data_list)} meshů, {len(node_list)} uzlů, "
-          f"{len(embedded_textures)} embedded textur → {filepath}")
+        print(f"[adm_export] zapsáno {len(mesh_data_list)} meshů, {len(node_list)} uzlů, "
+            f"{len(embedded_textures)} embedded textur, {len(clips)} clipů → {filepath}")
     return len(mesh_data_list), len(node_list)

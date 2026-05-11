@@ -10,9 +10,10 @@ use bevy::image::{
     ImageType,
 };
 use bevy::prelude::*;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 
-use core_resources::ModelName;
+use core_resources::{AdsSocketMap, AnimationState, ModelName};
 
 use crate::manifest::DrawableManifest;
 use crate::material::{LayeredEnvMaterial, StandardPbrMaterial, VehicleGlassMaterial};
@@ -21,6 +22,9 @@ use crate::hook::{
     build_standard_pbr,
     build_layered_env,
     build_vehicle_glass,
+    classify_ads_node_name,
+    AdsNodeKind,
+    AdsSocket,
     DisableDrawableCollisions,
 };
 
@@ -29,7 +33,9 @@ use crate::hook::{
 // ---------------------------------------------------------------------------
 
 const MAGIC: [u8; 4] = *b"ADM\0";
-const VERSION: u32 = 1;
+const VERSION_V1: u32 = 1;
+const VERSION_V2: u32 = 2;
+const VERSION_V3: u32 = 3;
 
 const ATTR_POS:    u32 = 1 << 0;
 const ATTR_NRM:    u32 = 1 << 1;
@@ -38,6 +44,8 @@ const ATTR_UV0:    u32 = 1 << 3;
 const ATTR_UV1:    u32 = 1 << 4;
 const ATTR_MASKS0: u32 = 1 << 5;
 const ATTR_MASKS1: u32 = 1 << 6;
+const ATTR_JOINT_INDICES: u32 = 1 << 7;
+const ATTR_JOINT_WEIGHTS: u32 = 1 << 8;
 
 fn repeat_sampler() -> ImageSampler {
     ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -46,6 +54,24 @@ fn repeat_sampler() -> ImageSampler {
         address_mode_w: ImageAddressMode::Repeat,
         ..default()
     })
+}
+
+fn mesh_uses_skinning(mesh: &Mesh) -> bool {
+    mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX).is_some()
+        && mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT).is_some()
+}
+
+fn compute_node_global_bind_transforms(nodes: &[AdmNode]) -> Vec<Mat4> {
+    let mut globals = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let global = if let Some(parent_idx) = node.parent_index {
+            globals[parent_idx] * node.transform
+        } else {
+            node.transform
+        };
+        globals.push(global);
+    }
+    globals
 }
 
 // ---------------------------------------------------------------------------
@@ -59,8 +85,31 @@ pub struct AdmScene {
     /// `None` if the mesh had no position data.
     pub mesh_aabbs:  Vec<Option<(Vec3, Vec3)>>,
     pub nodes:       Vec<AdmNode>,
+    pub animations:  Vec<AdmAnimationClip>,
     pub embedded:    HashMap<String, Handle<Image>>,
     pub source_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdmAnimationClip {
+    pub name: String,
+    pub duration: f32,
+    pub tracks: Vec<AdmAnimationTrack>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdmAnimationTrack {
+    pub node_name: String,
+    pub flags: u32,
+    pub keys: Vec<AdmKeyframe>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdmKeyframe {
+    pub time: f32,
+    pub pos: Vec3,
+    pub rot: Quat,
+    pub scale: Vec3,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +127,10 @@ pub enum AdmNodeType {
     Mesh,
     Collision,
     Empty,
+    Bone,
+    Socket,
+    IkTarget,
+    Mechanical,
 }
 
 #[derive(Component)]
@@ -85,6 +138,15 @@ pub struct AdmSceneRoot(pub Handle<AdmScene>);
 
 #[derive(Component)]
 pub struct AdmSceneSpawned;
+
+#[derive(Component, Default)]
+pub struct AdmNodeEntityMap(pub HashMap<String, Entity>);
+
+#[derive(Component, Default)]
+pub struct AdmAnimationPlayback {
+    pub active_clip: Option<String>,
+    pub time: f32,
+}
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -149,7 +211,7 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
     }
 
     let version      = read_u32(&mut cur)?;
-    if version != VERSION {
+    if version != VERSION_V1 && version != VERSION_V2 && version != VERSION_V3 {
         return Err(AdmError::BadVersion(version));
     }
 
@@ -210,13 +272,54 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
         }
     }
 
+    // ADM v2 optional animation section.
+    let animations = if version >= VERSION_V2 && (cur.position() as usize) < bytes.len() {
+        parse_animations(&mut cur, version)?
+    } else {
+        Vec::new()
+    };
+
     Ok(AdmScene {
         meshes: mesh_handles,
         mesh_aabbs,
         nodes,
+        animations,
         embedded,
         source_path,
     })
+}
+
+fn parse_animations(cur: &mut Cursor<&[u8]>, version: u32) -> Result<Vec<AdmAnimationClip>, AdmError> {
+    let clip_count = read_u32(cur)? as usize;
+    let mut clips = Vec::with_capacity(clip_count);
+
+    for _ in 0..clip_count {
+        let name = read_string(cur)?;
+        let duration = read_f32(cur)?;
+        let track_count = read_u32(cur)? as usize;
+        let mut tracks = Vec::with_capacity(track_count);
+
+        for _ in 0..track_count {
+            let node_name = read_string(cur)?;
+            let flags = if version >= VERSION_V3 { read_u32(cur)? } else { 1 };
+            let key_count = read_u32(cur)? as usize;
+            let mut keys = Vec::with_capacity(key_count);
+
+            for _ in 0..key_count {
+                let time = read_f32(cur)?;
+                let pos = Vec3::new(read_f32(cur)?, read_f32(cur)?, read_f32(cur)?);
+                let rot = Quat::from_xyzw(read_f32(cur)?, read_f32(cur)?, read_f32(cur)?, read_f32(cur)?);
+                let scale = Vec3::new(read_f32(cur)?, read_f32(cur)?, read_f32(cur)?);
+                keys.push(AdmKeyframe { time, pos, rot, scale });
+            }
+
+            tracks.push(AdmAnimationTrack { node_name, flags, keys });
+        }
+
+        clips.push(AdmAnimationClip { name, duration, tracks });
+    }
+
+    Ok(clips)
 }
 
 fn parse_mesh(cur: &mut Cursor<&[u8]>) -> Result<(String, Mesh, Option<(Vec3, Vec3)>), AdmError> {
@@ -319,6 +422,22 @@ fn parse_mesh(cur: &mut Cursor<&[u8]>) -> Result<(String, Mesh, Option<(Vec3, Ve
         );
     }
 
+    // Skinning: optional 4-joint weights per vertex (ADM v1.2+).
+    if attr_flags & ATTR_JOINT_INDICES != 0 {
+        let raw = read_u16_vec(cur, vertex_count * 4)?;
+        let joints: Vec<[u16; 4]> = raw.chunks_exact(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(joints));
+    }
+    if attr_flags & ATTR_JOINT_WEIGHTS != 0 {
+        let raw = read_f32_vec(cur, vertex_count * 4)?;
+        let weights: Vec<[f32; 4]> = raw.chunks_exact(4)
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
+    }
+
     // Indices
     let index_data = read_u32_vec(cur, index_count)?;
     mesh.insert_indices(Indices::U32(index_data));
@@ -338,6 +457,10 @@ fn parse_node(cur: &mut Cursor<&[u8]>) -> Result<AdmNode, AdmError> {
         0 => AdmNodeType::Mesh,
         1 => AdmNodeType::Collision,
         2 => AdmNodeType::Empty,
+        3 => AdmNodeType::Bone,
+        4 => AdmNodeType::Socket,
+        5 => AdmNodeType::IkTarget,
+        6 => AdmNodeType::Mechanical,
         other => return Err(AdmError::BadNodeType(other)),
     };
 
@@ -407,10 +530,26 @@ fn read_f32_vec(cur: &mut Cursor<&[u8]>, count: usize) -> Result<Vec<f32>, AdmEr
     Ok(result)
 }
 
+fn read_f32(cur: &mut Cursor<&[u8]>) -> Result<f32, AdmError> {
+    let mut buf = [0u8; 4];
+    cur.read_exact(&mut buf).map_err(|_| AdmError::Io)?;
+    Ok(f32::from_le_bytes(buf))
+}
+
 fn read_u8_vec(cur: &mut Cursor<&[u8]>, count: usize) -> Result<Vec<u8>, AdmError> {
     let mut buf = vec![0u8; count];
     cur.read_exact(&mut buf).map_err(|_| AdmError::Io)?;
     Ok(buf)
+}
+
+fn read_u16_vec(cur: &mut Cursor<&[u8]>, count: usize) -> Result<Vec<u16>, AdmError> {
+    let mut result = Vec::with_capacity(count);
+    let mut buf = [0u8; 2];
+    for _ in 0..count {
+        cur.read_exact(&mut buf).map_err(|_| AdmError::Io)?;
+        result.push(u16::from_le_bytes(buf));
+    }
+    Ok(result)
 }
 
 fn read_u32_vec(cur: &mut Cursor<&[u8]>, count: usize) -> Result<Vec<u32>, AdmError> {
@@ -436,6 +575,7 @@ pub fn spawn_adm_scenes(
         Without<AdmSceneSpawned>,
     >,
     adm_assets: Res<Assets<AdmScene>>,
+    mesh_assets: Res<Assets<Mesh>>,
     drawable_reg: Res<DrawableManifestRegistry>,
     manifests: Res<Assets<DrawableManifest>>,
     fallback: Res<crate::hook::DrawableFallbackTextures>,
@@ -444,6 +584,7 @@ pub fn spawn_adm_scenes(
     mut glass_mats: ResMut<Assets<VehicleGlassMaterial>>,
     mut tex_reg: ResMut<TextureRegistry>,
     mut std_base_mats: ResMut<Assets<StandardMaterial>>,
+    mut inverse_bindposes_assets: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     asset_server: Res<AssetServer>,
 ) {
     // Ensure default material exists
@@ -460,9 +601,12 @@ pub fn spawn_adm_scenes(
 
         // Embedded images from the AdmScene itself
         let embedded = &scene.embedded;
+        let global_bind_transforms = compute_node_global_bind_transforms(&scene.nodes);
 
         // Spawn node entities
         let mut node_entities: Vec<Entity> = Vec::with_capacity(scene.nodes.len());
+        let mut sockets = AdsSocketMap::default();
+        let mut node_map = AdmNodeEntityMap::default();
 
         for node in &scene.nodes {
             let (scale, rotation, translation) = node.transform.to_scale_rotation_translation();
@@ -476,6 +620,9 @@ pub fn spawn_adm_scenes(
                 InheritedVisibility::default(),
                 ViewVisibility::default(),
             ));
+
+            let node_kind = classify_ads_node_name(&node.name);
+            entity_cmd.insert(node_kind);
 
             match node.node_type {
                 AdmNodeType::Mesh => {
@@ -600,10 +747,18 @@ pub fn spawn_adm_scenes(
                         );
                     }
                 }
-                AdmNodeType::Empty => {}
+                AdmNodeType::Empty | AdmNodeType::Bone | AdmNodeType::IkTarget | AdmNodeType::Mechanical => {}
+                AdmNodeType::Socket => {
+                    entity_cmd.insert(Visibility::Hidden);
+                }
             }
 
             let entity_id = entity_cmd.id();
+            node_map.0.insert(node.name.clone(), entity_id);
+            if node.name.starts_with("SOC_") || node.node_type == AdmNodeType::Socket || node_kind == AdsNodeKind::Socket {
+                sockets.0.insert(node.name.clone(), entity_id);
+                commands.entity(entity_id).insert(AdsSocket { name: node.name.clone() });
+            }
             node_entities.push(entity_id);
         }
 
@@ -622,7 +777,166 @@ pub fn spawn_adm_scenes(
             }
         }
 
+        let bone_node_indices: Vec<usize> = scene.nodes.iter().enumerate()
+            .filter_map(|(index, node)| (node.node_type == AdmNodeType::Bone).then_some(index))
+            .collect();
+
+        if !bone_node_indices.is_empty() {
+            let joint_entities: Vec<Entity> = bone_node_indices.iter()
+                .map(|&index| node_entities[index])
+                .collect();
+
+            for (node_index, node) in scene.nodes.iter().enumerate() {
+                let Some(mesh_index) = node.mesh_index else { continue };
+                if node.node_type != AdmNodeType::Mesh {
+                    continue;
+                }
+                let Some(mesh_handle) = scene.meshes.get(mesh_index) else { continue };
+                let Some(mesh) = mesh_assets.get(mesh_handle) else { continue };
+                if !mesh_uses_skinning(mesh) {
+                    continue;
+                }
+
+                let mesh_global = global_bind_transforms[node_index];
+                let inverse_bindposes = bone_node_indices.iter()
+                    .map(|&bone_index| global_bind_transforms[bone_index].inverse() * mesh_global)
+                    .collect::<Vec<_>>();
+                let inverse_bindposes = inverse_bindposes_assets.add(
+                    SkinnedMeshInverseBindposes::from(inverse_bindposes)
+                );
+
+                commands.entity(node_entities[node_index]).insert(SkinnedMesh {
+                    inverse_bindposes,
+                    joints: joint_entities.clone(),
+                });
+            }
+        }
+
         // Mark as spawned
-        commands.entity(root_entity).insert(AdmSceneSpawned);
+        let mut root_cmd = commands.entity(root_entity);
+        root_cmd.insert(AdmSceneSpawned);
+        root_cmd.insert(node_map);
+        root_cmd.insert(AdmAnimationPlayback::default());
+        if !sockets.0.is_empty() {
+            root_cmd.insert(sockets);
+        }
     }
+}
+
+pub fn apply_adm_animations(
+    time: Res<Time>,
+    mut roots: Query<(
+        &AdmSceneRoot,
+        &AnimationState,
+        &AdmNodeEntityMap,
+        &mut AdmAnimationPlayback,
+    ), With<AdmSceneSpawned>>,
+    adm_assets: Res<Assets<AdmScene>>,
+    mut transforms: Query<&mut Transform>,
+) {
+    for (scene_root, anim_state, node_map, mut playback) in &mut roots {
+        let Some(clip_name) = anim_state.current.as_ref() else { continue };
+        let Some(scene) = adm_assets.get(&scene_root.0) else { continue };
+        if scene.animations.is_empty() { continue; }
+
+        let clip_idx = resolve_clip_index(scene, clip_name);
+        let Some(clip_idx) = clip_idx else { continue };
+        let clip = &scene.animations[clip_idx];
+
+        if playback.active_clip.as_deref() != Some(&clip.name) {
+            playback.active_clip = Some(clip.name.clone());
+            playback.time = 0.0;
+        }
+
+        if !anim_state.paused {
+            playback.time += time.delta_secs() * anim_state.speed.max(0.0);
+            if clip.duration > 0.0 {
+                if anim_state.looping {
+                    playback.time = playback.time.rem_euclid(clip.duration);
+                } else {
+                    playback.time = playback.time.min(clip.duration);
+                }
+            }
+        }
+
+        let t = playback.time;
+        for track in &clip.tracks {
+            if !animation_track_matches_flags(track.flags, anim_state.flags) {
+                continue;
+            }
+            let Some(entity) = node_map.0.get(&track.node_name).copied() else { continue };
+            let Some(sampled) = sample_track(track, t) else { continue };
+            if let Ok(mut tf) = transforms.get_mut(entity) {
+                tf.translation = sampled.pos;
+                tf.rotation = sampled.rot;
+                tf.scale = sampled.scale;
+            }
+        }
+    }
+}
+
+fn animation_track_matches_flags(track_flags: u32, animation_flags: u32) -> bool {
+    if animation_flags == 1 || track_flags == 1 {
+        return true;
+    }
+    (track_flags & animation_flags) != 0
+}
+
+fn resolve_clip_index(scene: &AdmScene, selector: &str) -> Option<usize> {
+    if let Some(rest) = selector.strip_prefix("clip:") {
+        if let Ok(i) = rest.parse::<usize>() {
+            if i < scene.animations.len() {
+                return Some(i);
+            }
+        }
+    }
+    if let Some(rest) = selector.strip_prefix("anim:") {
+        if let Ok(i) = rest.parse::<usize>() {
+            if i < scene.animations.len() {
+                return Some(i);
+            }
+        }
+    }
+    if let Ok(i) = selector.parse::<usize>() {
+        if i < scene.animations.len() {
+            return Some(i);
+        }
+    }
+
+    scene.animations.iter().position(|c| c.name == selector)
+}
+
+fn sample_track(track: &AdmAnimationTrack, time: f32) -> Option<AdmKeyframe> {
+    if track.keys.is_empty() {
+        return None;
+    }
+    if track.keys.len() == 1 {
+        return Some(track.keys[0].clone());
+    }
+
+    if time <= track.keys[0].time {
+        return Some(track.keys[0].clone());
+    }
+
+    let last = track.keys.len() - 1;
+    if time >= track.keys[last].time {
+        return Some(track.keys[last].clone());
+    }
+
+    for w in track.keys.windows(2) {
+        let a = &w[0];
+        let b = &w[1];
+        if time >= a.time && time <= b.time {
+            let span = (b.time - a.time).max(1e-6);
+            let alpha = ((time - a.time) / span).clamp(0.0, 1.0);
+            return Some(AdmKeyframe {
+                time,
+                pos: a.pos.lerp(b.pos, alpha),
+                rot: a.rot.slerp(b.rot, alpha),
+                scale: a.scale.lerp(b.scale, alpha),
+            });
+        }
+    }
+
+    Some(track.keys[last].clone())
 }

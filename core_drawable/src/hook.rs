@@ -10,7 +10,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 
-use core_resources::{LuaMaterialOverride, ModelName};
+use core_resources::{AdsSocketMap, LuaMaterialOverride, ModelName};
 
 use crate::lod::{parse_lod_level, DefaultLodDistances, LodGroup, LodLevel};
 use crate::manifest::{CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
@@ -94,6 +94,37 @@ pub struct DrawableCollision {
     pub tags: Vec<String>,
     pub lock_translation: Option<[bool; 3]>,
     pub lock_rotation: Option<[bool; 3]>,
+}
+
+/// Semantika uzlu podle AAA prefix standardu (DEF_/IK_/SOC_/MEC_).
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdsNodeKind {
+    Standard,
+    DeformationBone,
+    IkTarget,
+    Socket,
+    Mechanical,
+}
+
+/// Socket marker na uzlu, který je použitelný pro attachment lookup.
+#[derive(Component, Debug, Clone)]
+pub struct AdsSocket {
+    pub name: String,
+}
+
+/// Klasifikuje jméno uzlu podle ADS prefix konvence.
+pub fn classify_ads_node_name(name: &str) -> AdsNodeKind {
+    if name.starts_with("DEF_") {
+        AdsNodeKind::DeformationBone
+    } else if name.starts_with("IK_") {
+        AdsNodeKind::IkTarget
+    } else if name.starts_with("SOC_") {
+        AdsNodeKind::Socket
+    } else if name.starts_with("MEC_") {
+        AdsNodeKind::Mechanical
+    } else {
+        AdsNodeKind::Standard
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +283,7 @@ pub fn hook_drawable_scenes(
 
         // LOD: sledujeme named non-collision uzly → (úroveň, entita)
         let mut lod_named: Vec<(u8, Entity)> = Vec::new();
+        let mut sockets = AdsSocketMap::default();
 
         for entity in scene_spawner.iter_instance_entities(scene_ready.0) {
             // Look up entity definition by name — optional, unnamed primitives still get materials.
@@ -295,6 +327,13 @@ pub fn hook_drawable_scenes(
 
             // LOD: sleduj pojmenované uzly (ne COL_) — jejich viditelnost řídí subtree
             if let Some(ref name) = entity_name {
+                let node_kind = classify_ads_node_name(name);
+                commands.entity(entity).insert(node_kind);
+
+                if node_kind == AdsNodeKind::Socket {
+                    sockets.0.insert(name.clone(), entity);
+                    commands.entity(entity).insert(AdsSocket { name: name.clone() });
+                }
                 if !name.starts_with("COL_") {
                     let level = parse_lod_level(name);
                     lod_named.push((level, entity));
@@ -378,6 +417,10 @@ pub fn hook_drawable_scenes(
                 "[drawable] '{}': LOD group {} úrovní, vzdálenosti {:?}",
                 model_name.0, top + 1, distances
             );
+        }
+
+        if !sockets.0.is_empty() {
+            commands.entity(root_entity).insert(sockets);
         }
 
         commands.entity(root_entity).insert(DrawableHooked);

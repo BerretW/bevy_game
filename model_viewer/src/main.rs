@@ -20,6 +20,7 @@
 use std::path::PathBuf;
 
 use bevy::asset::UnapprovedPathMode;
+use bevy::ecs::hierarchy::ChildOf;
 use bevy::gltf::{Gltf, GltfLoaderSettings};
 use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
@@ -27,13 +28,14 @@ use bevy::window::WindowResolution;
 
 use core_drawable::{
     AdmScene, AdmSceneRoot,
+    AdsNodeKind,
     CollisionShape, DrawableCollision,
     LodGroup,
     DrawableManifest, DrawableManifestRegistry, DrawablePlugin, EntityDef,
     GltfHandleCache, TextureSource,
     StandardPbrMaterial, LayeredEnvMaterial,
 };
-use core_resources::{ModelName, ModelRegistry};
+use core_resources::{AnimationState, ModelName, ModelRegistry};
 
 mod camera;
 mod textures;
@@ -97,6 +99,8 @@ fn main() {
         .init_resource::<ModelRegistry>()
         .init_resource::<camera::OrbitState>()
         .init_resource::<textures::TextureBrowser>()
+        .init_resource::<AdmAnimationBrowser>()
+        .init_resource::<RigViewerState>()
         .insert_resource(ViewerState::default())
         .insert_resource(ModelPaths(model_paths))
         .add_systems(Startup, (setup_scene, load_models.after(setup_scene)))
@@ -105,14 +109,27 @@ fn main() {
             (
                 camera::orbit_camera,
                 handle_keyboard,
+                handle_animation_keyboard,
+                sync_rig_viewer_state,
+                handle_rig_keyboard,
                 handle_lod_key,
                 handle_material_debug,
                 draw_grid,
                 draw_colliders,
+                draw_skeleton_overlay,
                 draw_lod_circles,
                 sync_mesh_visibility_for_collider_mode,
                 update_info_overlay,
+                sync_adm_animation_browser,
+                apply_animation_browser_state,
+                update_animation_overlay,
+                update_rig_overlay,
                 update_collider_panel,
+            ),
+        )
+        .add_systems(
+            Update,
+            (
                 textures::init_texture_browser,
                 textures::handle_texture_keys,
                 textures::rebuild_panel,
@@ -144,11 +161,33 @@ struct ViewerState {
     grid_visible:      bool,
     overlay_visible:   bool,
     colliders_visible: bool,
+    skeleton_visible:  bool,
+}
+
+#[derive(Resource, Default)]
+struct RigViewerState {
+    ik_mode: bool,
+    ik_targets: Vec<Entity>,
+    ik_names: Vec<String>,
+    selected_ik: usize,
+    move_step: f32,
+}
+
+#[derive(Resource, Default)]
+struct AdmAnimationBrowser {
+    root: Option<Entity>,
+    model_name: Option<String>,
+    clips: Vec<String>,
+    selected_idx: usize,
+    flags: u32,
+    speed: f32,
+    looping: bool,
+    paused: bool,
 }
 
 impl Default for ViewerState {
     fn default() -> Self {
-        Self { grid_visible: true, overlay_visible: true, colliders_visible: false }
+        Self { grid_visible: true, overlay_visible: true, colliders_visible: false, skeleton_visible: false }
     }
 }
 
@@ -171,6 +210,12 @@ const VCOL_DEBUG_MODES: &[(f32, &str)] = &[
     (-4.0, "vcol B (wet)"),
     (-5.0, "vcol A (palette)"),
 ];
+
+const ADM_ANIM_MASK_ALL: u32 = 1;
+const ADM_ANIM_MASK_RIGHT_UPPER_LIMB: u32 = 14;
+const ADM_ANIM_MASK_LEFT_UPPER_LIMB: u32 = 112;
+const ADM_ANIM_MASK_LOWER_BODY: u32 = 8064;
+const ADM_ANIM_MASK_UPPER_BODY: u32 = 24576;
 
 #[derive(Resource, Default)]
 struct WeatherState {
@@ -256,7 +301,7 @@ fn setup_scene(mut commands: Commands) {
         Text::new(
             "Pravé drag: orbit  |  Střední drag: pan  |  Kolečko: zoom  \
              |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export\n\
-             W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  L: LOD úroveň",
+               W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  X: kostra  |  Z: IK edit  |  L: LOD úroveň",
         ),
         TextFont { font_size: 13.0, ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
@@ -329,6 +374,37 @@ fn setup_scene(mut commands: Commands) {
         Visibility::Hidden,
         LodPanel,
     ));
+
+    // Animation panel (vpravo nahoře pod debug stavem)
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 12.5, ..default() },
+        TextColor(Color::srgba(1.0, 0.88, 0.55, 0.95)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(52.0),
+            right: Val::Px(8.0),
+            max_width: Val::Px(500.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        AnimPanel,
+    ));
+
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 12.5, ..default() },
+        TextColor(Color::srgba(0.75, 0.95, 1.0, 0.95)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(52.0),
+            left: Val::Px(8.0),
+            max_width: Val::Px(460.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        RigPanel,
+    ));
 }
 
 // ─── Markery ──────────────────────────────────────────────────────────────────
@@ -344,6 +420,12 @@ struct ColliderPanel;
 
 #[derive(Component)]
 struct LodPanel;
+
+#[derive(Component)]
+struct AnimPanel;
+
+#[derive(Component)]
+struct RigPanel;
 
 // ─── Model loading ────────────────────────────────────────────────────────────
 
@@ -427,7 +509,7 @@ fn load_one_model(
             info!("[viewer] žádný .drawable pro '{}', použijí se výchozí materiály", stem);
         }
 
-        commands.spawn((AdmSceneRoot(adm_handle), Transform::default(), ModelName(stem)));
+        commands.spawn((AdmSceneRoot(adm_handle), Transform::default(), ModelName(stem), AnimationState::default()));
     } else {
         // GLB / GLTF path
         let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
@@ -621,6 +703,300 @@ fn handle_keyboard(
     }
     if keys.just_pressed(KeyCode::KeyC) {
         state.colliders_visible = !state.colliders_visible;
+    }
+    if keys.just_pressed(KeyCode::KeyX) {
+        state.skeleton_visible = !state.skeleton_visible;
+    }
+}
+
+fn sync_rig_viewer_state(
+    mut rig: ResMut<RigViewerState>,
+    nodes: Query<(Entity, &AdsNodeKind, Option<&Name>)>,
+) {
+    let mut targets: Vec<(String, Entity)> = nodes.iter()
+        .filter_map(|(entity, kind, name)| {
+            (*kind == AdsNodeKind::IkTarget).then(|| {
+                (
+                    name.map(|value| value.as_str().to_string())
+                        .unwrap_or_else(|| format!("IK {}", entity.index())),
+                    entity,
+                )
+            })
+        })
+        .collect();
+    targets.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let entities: Vec<Entity> = targets.iter().map(|(_, entity)| *entity).collect();
+    if entities != rig.ik_targets {
+        rig.ik_names = targets.iter().map(|(name, _)| name.clone()).collect();
+        rig.ik_targets = entities;
+        if rig.selected_ik >= rig.ik_targets.len() {
+            rig.selected_ik = 0;
+        }
+    }
+    if rig.move_step <= 0.0 {
+        rig.move_step = 0.05;
+    }
+}
+
+fn handle_rig_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut state: ResMut<ViewerState>,
+    mut rig: ResMut<RigViewerState>,
+    mut transforms: Query<&mut Transform>,
+) {
+    if keys.just_pressed(KeyCode::KeyZ) {
+        rig.ik_mode = !rig.ik_mode;
+        if rig.ik_mode {
+            state.skeleton_visible = true;
+        }
+    }
+
+    if rig.ik_targets.is_empty() {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::Tab) {
+        let backwards = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        if backwards {
+            rig.selected_ik = if rig.selected_ik == 0 {
+                rig.ik_targets.len().saturating_sub(1)
+            } else {
+                rig.selected_ik.saturating_sub(1)
+            };
+        } else {
+            rig.selected_ik = (rig.selected_ik + 1) % rig.ik_targets.len();
+        }
+    }
+
+    if !rig.ik_mode {
+        return;
+    }
+
+    let Some(&selected) = rig.ik_targets.get(rig.selected_ik) else { return };
+    let Ok(mut transform) = transforms.get_mut(selected) else { return };
+
+    let mut delta = Vec3::ZERO;
+    let step = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        rig.move_step * 4.0
+    } else {
+        rig.move_step
+    };
+
+    if keys.pressed(KeyCode::KeyJ) { delta.x -= step; }
+    if keys.pressed(KeyCode::KeyL) { delta.x += step; }
+    if keys.pressed(KeyCode::KeyI) { delta.y += step; }
+    if keys.pressed(KeyCode::KeyK) { delta.y -= step; }
+    if keys.pressed(KeyCode::KeyU) { delta.z -= step; }
+    if keys.pressed(KeyCode::KeyO) { delta.z += step; }
+
+    if delta != Vec3::ZERO {
+        transform.translation += delta;
+    }
+}
+
+fn handle_animation_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut browser: ResMut<AdmAnimationBrowser>,
+) {
+    if browser.clips.is_empty() {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::Space) {
+        browser.paused = !browser.paused;
+    }
+    if keys.just_pressed(KeyCode::KeyN) || keys.just_pressed(KeyCode::ArrowRight) {
+        browser.selected_idx = (browser.selected_idx + 1) % browser.clips.len();
+    }
+    if keys.just_pressed(KeyCode::KeyB) || keys.just_pressed(KeyCode::ArrowLeft) {
+        browser.selected_idx = if browser.selected_idx == 0 {
+            browser.clips.len().saturating_sub(1)
+        } else {
+            browser.selected_idx.saturating_sub(1)
+        };
+    }
+
+    if keys.just_pressed(KeyCode::Digit1) {
+        browser.flags = ADM_ANIM_MASK_ALL;
+    } else if keys.just_pressed(KeyCode::Digit2) {
+        browser.flags = ADM_ANIM_MASK_LOWER_BODY;
+    } else if keys.just_pressed(KeyCode::Digit3) {
+        browser.flags = ADM_ANIM_MASK_UPPER_BODY;
+    } else if keys.just_pressed(KeyCode::Digit4) {
+        browser.flags = ADM_ANIM_MASK_RIGHT_UPPER_LIMB;
+    } else if keys.just_pressed(KeyCode::Digit5) {
+        browser.flags = ADM_ANIM_MASK_LEFT_UPPER_LIMB;
+    } else if keys.just_pressed(KeyCode::Digit6) {
+        browser.flags = ADM_ANIM_MASK_LOWER_BODY | ADM_ANIM_MASK_RIGHT_UPPER_LIMB;
+    }
+}
+
+fn sync_adm_animation_browser(
+    mut browser: ResMut<AdmAnimationBrowser>,
+    roots: Query<(Entity, &AdmSceneRoot, &ModelName), With<AnimationState>>,
+    adm_assets: Res<Assets<AdmScene>>,
+) {
+    if let Some(root) = browser.root {
+        if roots.get(root).is_err() {
+            browser.root = None;
+            browser.clips.clear();
+        }
+    }
+
+    if browser.root.is_none() {
+        for (entity, adm_root, model_name) in &roots {
+            let Some(scene) = adm_assets.get(&adm_root.0) else { continue };
+            if scene.animations.is_empty() {
+                continue;
+            }
+
+            browser.root = Some(entity);
+            browser.model_name = Some(model_name.0.clone());
+            browser.clips = scene.animations.iter().map(|clip| clip.name.clone()).collect();
+            browser.selected_idx = 0;
+            browser.flags = ADM_ANIM_MASK_ALL;
+            browser.speed = 1.0;
+            browser.looping = true;
+            browser.paused = false;
+            break;
+        }
+    }
+
+    if let Some(root) = browser.root {
+        if let Ok((_, adm_root, model_name)) = roots.get(root) {
+            browser.model_name = Some(model_name.0.clone());
+            if let Some(scene) = adm_assets.get(&adm_root.0) {
+                let clips: Vec<String> = scene.animations.iter().map(|clip| clip.name.clone()).collect();
+                if clips != browser.clips {
+                    browser.clips = clips;
+                    if browser.selected_idx >= browser.clips.len() {
+                        browser.selected_idx = 0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn apply_animation_browser_state(
+    browser: Res<AdmAnimationBrowser>,
+    mut roots: Query<&mut AnimationState, With<AdmSceneRoot>>,
+) {
+    let Some(root) = browser.root else { return };
+    let Some(clip_name) = browser.clips.get(browser.selected_idx).cloned() else { return };
+    let Ok(mut anim_state) = roots.get_mut(root) else { return };
+
+    anim_state.current = Some(clip_name);
+    anim_state.flags = browser.flags;
+    anim_state.speed = browser.speed;
+    anim_state.looping = browser.looping;
+    anim_state.paused = browser.paused;
+}
+
+fn update_animation_overlay(
+    browser: Res<AdmAnimationBrowser>,
+    mut panel: Query<(&mut Text, &mut Visibility), With<AnimPanel>>,
+) {
+    let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
+
+    if browser.root.is_none() || browser.clips.is_empty() {
+        *vis = Visibility::Hidden;
+        txt.0 = String::new();
+        return;
+    }
+
+    *vis = Visibility::Visible;
+    let model_name = browser.model_name.as_deref().unwrap_or("ADM");
+    let clip_name = browser.clips.get(browser.selected_idx).map(|s| s.as_str()).unwrap_or("-");
+    let mut lines = vec![
+        format!("── Animace ({}) ──", model_name),
+        format!("Clip: {}  [{}/{}]", clip_name, browser.selected_idx + 1, browser.clips.len()),
+        format!("Flags: {}  Speed: {:.2}  Loop: {}  Paused: {}", browser.flags, browser.speed, browser.looping, browser.paused),
+        "1 all | 2 lower body | 3 upper body | 4 right arm | 5 left arm | 6 ride+smoke".to_string(),
+        "Space pause | N/→ next | B/← prev".to_string(),
+    ];
+
+    if browser.clips.len() > 1 {
+        lines.push("Clipy:".to_string());
+        for (idx, name) in browser.clips.iter().enumerate() {
+            let marker = if idx == browser.selected_idx { ">" } else { " " };
+            lines.push(format!("{} {}", marker, name));
+        }
+    }
+
+    txt.0 = lines.join("\n");
+}
+
+fn update_rig_overlay(
+    state: Res<ViewerState>,
+    rig: Res<RigViewerState>,
+    nodes: Query<&AdsNodeKind>,
+    mut panel: Query<(&mut Text, &mut Visibility), With<RigPanel>>,
+) {
+    let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
+
+    if !state.skeleton_visible && !rig.ik_mode {
+        *vis = Visibility::Hidden;
+        txt.0 = String::new();
+        return;
+    }
+
+    *vis = Visibility::Visible;
+    let selected_name = rig.ik_names.get(rig.selected_ik).map(String::as_str).unwrap_or("-");
+    let rig_entity_count = nodes.iter().count();
+    let lines = vec![
+        format!("── Rig ──  Skeleton:{}  IK edit:{}", state.skeleton_visible, rig.ik_mode),
+        format!("IK targets: {}  Selected: {}", rig.ik_targets.len(), selected_name),
+        format!("Move step: {:.2}", rig.move_step),
+        "X show bones | Z IK mode | Tab next target | Shift+Tab prev".to_string(),
+        "I/K Y+/- | J/L X-/+ | U/O Z-/+ | Shift = faster move".to_string(),
+        format!("Rig entities: {}", rig_entity_count),
+    ];
+    txt.0 = lines.join("\n");
+}
+
+fn draw_skeleton_overlay(
+    mut gizmos: Gizmos,
+    state: Res<ViewerState>,
+    rig: Res<RigViewerState>,
+    nodes: Query<(Entity, &AdsNodeKind, &GlobalTransform, Option<&ChildOf>)>,
+) {
+    if !state.skeleton_visible {
+        return;
+    }
+
+    let selected = rig.ik_targets.get(rig.selected_ik).copied();
+
+    for (entity, kind, gt, parent) in &nodes {
+        let pos = gt.translation();
+        let color = match kind {
+            AdsNodeKind::DeformationBone => Color::srgb(0.2, 0.9, 1.0),
+            AdsNodeKind::IkTarget => {
+                if Some(entity) == selected {
+                    Color::srgb(1.0, 0.95, 0.2)
+                } else {
+                    Color::srgb(1.0, 0.45, 0.2)
+                }
+            }
+            AdsNodeKind::Mechanical => Color::srgb(0.9, 0.5, 1.0),
+            AdsNodeKind::Socket => Color::srgb(0.2, 1.0, 0.4),
+            AdsNodeKind::Standard => continue,
+        };
+
+        let size = if *kind == AdsNodeKind::IkTarget { 0.055 } else { 0.025 };
+        draw_cross_gizmo(&mut gizmos, pos, size, color);
+
+        if let Some(parent) = parent {
+            if let Ok((_, parent_kind, parent_gt, _)) = nodes.get(parent.parent()) {
+                if *kind == AdsNodeKind::DeformationBone
+                    || *kind == AdsNodeKind::IkTarget
+                    || *parent_kind == AdsNodeKind::DeformationBone
+                {
+                    gizmos.line(parent_gt.translation(), pos, color.with_alpha(0.8));
+                }
+            }
+        }
     }
 }
 
@@ -829,6 +1205,12 @@ fn draw_box_gizmo(gizmos: &mut Gizmos, center: Vec3, rot: Quat, half: Vec3, colo
     gizmos.line(c[2], c[6], color); gizmos.line(c[3], c[7], color);
 }
 
+fn draw_cross_gizmo(gizmos: &mut Gizmos, center: Vec3, half: f32, color: Color) {
+    gizmos.line(center - Vec3::X * half, center + Vec3::X * half, color);
+    gizmos.line(center - Vec3::Y * half, center + Vec3::Y * half, color);
+    gizmos.line(center - Vec3::Z * half, center + Vec3::Z * half, color);
+}
+
 fn draw_sphere_gizmo(gizmos: &mut Gizmos, center: Vec3, rot: Quat, radius: f32, color: Color) {
     let (rx, ry, rz) = (rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z);
     draw_arc_gizmo(gizmos, center, rx, ry, radius, 0.0, std::f32::consts::TAU, 24, color);
@@ -893,9 +1275,13 @@ fn draw_arc_gizmo(
 /// L = zobrazí panel / cykluje auto → LOD0 → LOD1 → ... → auto
 fn handle_lod_key(
     keys: Res<ButtonInput<KeyCode>>,
+    rig: Res<RigViewerState>,
     mut lod_state: ResMut<LodViewerState>,
     lod_groups: Query<&LodGroup>,
 ) {
+    if rig.ik_mode {
+        return;
+    }
     if !keys.just_pressed(KeyCode::KeyL) { return; }
 
     lod_state.panel_active = true;
