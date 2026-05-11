@@ -2,8 +2,8 @@ asset_name = "mutant"
 version = "1.1"
 
 [materials]
-"standard.002" = { template = "standard_pbr", textures = { albedo = { name = "mutamt_ab", source = "embedded" }, mrao = { name = "mutamt_ao", source = "embedded" }, normal = { name = "mutamt_nm", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
+"standard" = { template = "standard_pbr", textures = { albedo = { name = "mutamt_ab", source = "embedded" }, mrao = { name = "mutamt_ao", source = "embedded" }, normal = { name = "mutamt_nm", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
 
 [entities]
 "MutantMesh" = { type = "MESH", cast_shadows = true }
-"COL_MutantMesh" = { type = "COLLISION", shape = "MESH", half_extents = [68.5398, 41.5734, 80.1721], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "MUD", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, true, true] }
+"COL_MutantMesh" = { type = "COLLISION", shape = "CONVEX", half_extents = [69.8289, 40.2015, 77.434], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, false, false] }

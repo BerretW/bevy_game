@@ -24,15 +24,19 @@ ATTR_UV0    = 1 << 3
 ATTR_UV1    = 1 << 4
 ATTR_MASKS0 = 1 << 5
 ATTR_MASKS1 = 1 << 6
+ATTR_JOINT_INDICES = 1 << 7
+ATTR_JOINT_WEIGHTS = 1 << 8
 
 
 def _u8(f):   return struct.unpack('<B', f.read(1))[0]
 def _u16(f):  return struct.unpack('<H', f.read(2))[0]
 def _u32(f):  return struct.unpack('<I', f.read(4))[0]
 def _i32(f):  return struct.unpack('<i', f.read(4))[0]
+def _f32(f):  return struct.unpack('<f', f.read(4))[0]
 def _str(f):  n = _u16(f); return f.read(n).decode('utf-8')
 def _f32s(f, n): return struct.unpack(f'<{n}f', f.read(n * 4))
 def _u8s(f, n):  return struct.unpack(f'<{n}B', f.read(n))
+def _u16s(f, n): return struct.unpack(f'<{n}H', f.read(n * 2))
 def _u32s(f, n): return struct.unpack(f'<{n}I', f.read(n * 4))
 
 
@@ -52,6 +56,17 @@ def _bevy_to_bl_mat4(floats):
     return _C_INV @ m_bevy @ _C
 
 
+def _bevy_trs_to_blender(pos, rot_xyzw, scale):
+    """Bevy TRS (Y-up) -> Blender TRS (Z-up)."""
+    m_pos = mathutils.Matrix.Translation(mathutils.Vector((pos[0], pos[1], pos[2])))
+    m_rot = mathutils.Quaternion((rot_xyzw[3], rot_xyzw[0], rot_xyzw[1], rot_xyzw[2])).to_matrix().to_4x4()
+    m_scl = mathutils.Matrix.Diagonal((scale[0], scale[1], scale[2], 1.0))
+    m_bevy = m_pos @ m_rot @ m_scl
+    m_bl = _C_INV @ m_bevy @ _C
+    loc, rot, scl = m_bl.decompose()
+    return loc, rot, scl
+
+
 def _parse_mesh(f):
     name        = _str(f)
     vert_count  = _u32(f)
@@ -59,6 +74,7 @@ def _parse_mesh(f):
     attr_flags  = _u32(f)
 
     positions, normals, uv0s, uv1s, masks0s, masks1s = [], [], [], [], [], []
+    joint_indices, joint_weights = [], []
 
     if attr_flags & ATTR_POS:
         raw = _f32s(f, vert_count * 3)
@@ -89,8 +105,16 @@ def _parse_mesh(f):
         masks1s = [(raw[i]/255, raw[i+1]/255, raw[i+2]/255, raw[i+3]/255)
                    for i in range(0, len(raw), 4)]
 
+    if attr_flags & ATTR_JOINT_INDICES:
+        raw = _u16s(f, vert_count * 4)
+        joint_indices = [(raw[i], raw[i+1], raw[i+2], raw[i+3]) for i in range(0, len(raw), 4)]
+
+    if attr_flags & ATTR_JOINT_WEIGHTS:
+        raw = _f32s(f, vert_count * 4)
+        joint_weights = [(raw[i], raw[i+1], raw[i+2], raw[i+3]) for i in range(0, len(raw), 4)]
+
     indices = list(_u32s(f, index_count))
-    return name, positions, normals, uv0s, uv1s, masks0s, masks1s, indices
+    return name, positions, normals, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices
 
 
 def _parse_node(f):
@@ -103,7 +127,7 @@ def _parse_node(f):
     return name, node_type, mesh_index, parent_index, material_name, mat_floats
 
 
-def _build_blender_mesh(name, positions, normals, uv0s, uv1s, masks0s, masks1s, indices):
+def _build_blender_mesh(name, positions, normals, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices):
     mesh = bpy.data.meshes.new(name)
     tri_count = len(indices) // 3
     faces = [(indices[i*3], indices[i*3+1], indices[i*3+2]) for i in range(tri_count)]
@@ -140,10 +164,17 @@ def _build_blender_mesh(name, positions, normals, uv0s, uv1s, masks0s, masks1s, 
             ca.data[vi].color = c
 
     # bevy_masks2 (druhá sada vertex colors)
-    if masks1s:
-        ca2 = mesh.color_attributes.new(name="bevy_masks2", type='FLOAT_COLOR', domain='POINT')
-        for vi, c in enumerate(masks1s):
-            ca2.data[vi].color = c
+    # Importer ji vytváří vždy, aby downstream tooling mělo konzistentní datový model.
+    # Fallback pořadí: explicitní MASKS1 -> UV1 (AO=U, Emissive=V) -> default AO=1, Emissive=0.
+    if not masks1s:
+        if uv1s:
+            masks1s = [(uv[0], uv[1], 0.0, 1.0) for uv in uv1s]
+        else:
+            masks1s = [(1.0, 0.0, 0.0, 1.0)] * len(positions)
+
+    ca2 = mesh.color_attributes.new(name="bevy_masks2", type='FLOAT_COLOR', domain='POINT')
+    for vi, c in enumerate(masks1s):
+        ca2.data[vi].color = c
 
     return mesh
 
@@ -186,6 +217,216 @@ def _parse_animations_v2(f, version=2):
             tracks.append((node, flags, keys))
         clips.append((name, duration, tracks))
     return clips
+
+
+def _find_armature_root_index(node_data):
+    bone_indices = [i for i, (_, ntype, _, _, _, _) in enumerate(node_data) if ntype == 3]
+    if not bone_indices:
+        return None
+    root_candidates = []
+    for i in bone_indices:
+        parent_idx = node_data[i][3]
+        if 0 <= parent_idx < len(node_data):
+            if node_data[parent_idx][1] != 3:
+                root_candidates.append(parent_idx)
+    if root_candidates:
+        return root_candidates[0]
+
+    for i, (_, ntype, _, _, _, _) in enumerate(node_data):
+        if ntype == 2:
+            return i
+    return None
+
+
+def _build_armature_from_nodes(node_data, collection):
+    armature_root_idx = _find_armature_root_index(node_data)
+    bone_node_indices = [i for i, (_, ntype, _, _, _, _) in enumerate(node_data) if ntype == 3]
+    if armature_root_idx is None or not bone_node_indices:
+        return None, [], {}
+
+    root_name, _, _, _, _, root_mat_floats = node_data[armature_root_idx]
+    root_mat = _bevy_to_bl_mat4(root_mat_floats)
+    arm_data = bpy.data.armatures.new(f"{root_name}_ArmatureData")
+    arm_obj = bpy.data.objects.new(f"{root_name}_Armature", arm_data)
+    collection.objects.link(arm_obj)
+    arm_obj.matrix_local = root_mat
+
+    view_layer = bpy.context.view_layer
+    prev_active = view_layer.objects.active
+    prev_mode = bpy.context.mode
+    try:
+        view_layer.objects.active = arm_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        edit_bones = arm_data.edit_bones
+        eb_by_node = {}
+        global_by_node = {}
+
+        for node_idx in bone_node_indices:
+            name, _, _, parent_idx, _, mat_floats = node_data[node_idx]
+            local = _bevy_to_bl_mat4(mat_floats)
+            parent_global = global_by_node.get(parent_idx, mathutils.Matrix.Identity(4))
+            global_mat = parent_global @ local
+            global_by_node[node_idx] = global_mat
+
+            eb = edit_bones.new(name)
+            try:
+                eb.matrix = global_mat
+            except Exception:
+                eb.head = global_mat.translation
+                axis = (global_mat.to_3x3() @ mathutils.Vector((0.0, 1.0, 0.0))).normalized()
+                if axis.length < 1e-6:
+                    axis = mathutils.Vector((0.0, 1.0, 0.0))
+                eb.tail = eb.head + axis * 0.1
+            if (eb.tail - eb.head).length < 1e-4:
+                eb.tail = eb.head + mathutils.Vector((0.0, 0.1, 0.0))
+
+            if parent_idx in eb_by_node:
+                eb.parent = eb_by_node[parent_idx]
+            eb_by_node[node_idx] = eb
+    finally:
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except Exception:
+            pass
+        view_layer.objects.active = prev_active
+        if prev_mode != 'OBJECT':
+            try:
+                bpy.ops.object.mode_set(mode=prev_mode)
+            except Exception:
+                pass
+
+    joint_bone_names = [node_data[i][0] for i in bone_node_indices]
+    bone_by_node_index = {idx: node_data[idx][0] for idx in bone_node_indices}
+    return arm_obj, joint_bone_names, bone_by_node_index
+
+
+def _bind_meshes_to_armature(mesh_data, node_data, node_objects, arm_obj, joint_bone_names):
+    if arm_obj is None:
+        return
+
+    for node_index, (nname, ntype, mesh_idx, _, _, _) in enumerate(node_data):
+        if ntype not in (0, 1):
+            continue
+        if not (0 <= mesh_idx < len(mesh_data)):
+            continue
+        obj = node_objects[node_index] if node_index < len(node_objects) else None
+        if obj is None or obj.type != 'MESH':
+            continue
+
+        _, _, _, _, _, _, _, joint_indices, joint_weights, _ = mesh_data[mesh_idx]
+        if not joint_indices or not joint_weights:
+            continue
+
+        arm_mod = next((m for m in obj.modifiers if m.type == 'ARMATURE' and m.object == arm_obj), None)
+        if arm_mod is None:
+            arm_mod = obj.modifiers.new(name='Armature', type='ARMATURE')
+            arm_mod.object = arm_obj
+
+        vg_by_name = {vg.name: vg for vg in obj.vertex_groups}
+        for bone_name in joint_bone_names:
+            if bone_name not in vg_by_name:
+                vg_by_name[bone_name] = obj.vertex_groups.new(name=bone_name)
+
+        for v_idx, joints in enumerate(joint_indices):
+            if v_idx >= len(joint_weights):
+                break
+            weights = joint_weights[v_idx]
+            for i in range(4):
+                weight = float(weights[i])
+                if weight <= 1e-6:
+                    continue
+                joint_idx = int(joints[i])
+                if joint_idx < 0 or joint_idx >= len(joint_bone_names):
+                    continue
+                vg_by_name[joint_bone_names[joint_idx]].add([v_idx], weight, 'ADD')
+
+
+def _import_armature_animations(clips, arm_obj):
+    if arm_obj is None or not clips:
+        return
+
+    fps = bpy.context.scene.render.fps / max(1.0, float(bpy.context.scene.render.fps_base))
+    if fps <= 0.0:
+        fps = 30.0
+
+    arm_obj.animation_data_create()
+    for track in list(arm_obj.animation_data.nla_tracks):
+        arm_obj.animation_data.nla_tracks.remove(track)
+
+    # Blender pose kanály jsou delta vůči rest poze (matrix_basis), zatímco ADM klíče
+    # nesou lokální bone transform přímo. Proto před keyframingem převádíme
+    # key_local -> basis = rest_local^-1 * key_local.
+    rest_local_inv_by_bone = {}
+    for bone in arm_obj.data.bones:
+        if bone.parent is None:
+            rest_local = bone.matrix_local.copy()
+        else:
+            rest_local = bone.parent.matrix_local.inverted_safe() @ bone.matrix_local
+        rest_local_inv_by_bone[bone.name] = rest_local.inverted_safe()
+
+    for clip_name, _duration, tracks in clips:
+        action = bpy.data.actions.new(name=f"ADM_{clip_name}")
+        has_keys = False
+
+        for node_name, _flags, keys in tracks:
+            if node_name not in arm_obj.pose.bones:
+                continue
+            if not keys:
+                continue
+            arm_obj.pose.bones[node_name].rotation_mode = 'QUATERNION'
+
+            loc_curves = [action.fcurves.new(data_path=f'pose.bones["{node_name}"].location', index=i) for i in range(3)]
+            rot_curves = [action.fcurves.new(data_path=f'pose.bones["{node_name}"].rotation_quaternion', index=i) for i in range(4)]
+            scl_curves = [action.fcurves.new(data_path=f'pose.bones["{node_name}"].scale', index=i) for i in range(3)]
+
+            for curve in (*loc_curves, *rot_curves, *scl_curves):
+                curve.keyframe_points.add(count=len(keys))
+
+            for key_i, (time_sec, pos, rot_xyzw, scale) in enumerate(keys):
+                frame = 1.0 + float(time_sec) * fps
+
+                loc, rot, scl = _bevy_trs_to_blender(pos, rot_xyzw, scale)
+                key_local = (
+                    mathutils.Matrix.Translation(loc)
+                    @ rot.to_matrix().to_4x4()
+                    @ mathutils.Matrix.Diagonal((scl.x, scl.y, scl.z, 1.0))
+                )
+                basis = rest_local_inv_by_bone.get(node_name, mathutils.Matrix.Identity(4)) @ key_local
+                b_loc, b_rot, b_scl = basis.decompose()
+
+                l = (b_loc.x, b_loc.y, b_loc.z)
+                q = (b_rot.w, b_rot.x, b_rot.y, b_rot.z)
+                s = (b_scl.x, b_scl.y, b_scl.z)
+
+                for i in range(3):
+                    loc_curves[i].keyframe_points[key_i].co = (frame, l[i])
+                    scl_curves[i].keyframe_points[key_i].co = (frame, s[i])
+                for i in range(4):
+                    rot_curves[i].keyframe_points[key_i].co = (frame, q[i])
+
+            for curve in (*loc_curves, *rot_curves, *scl_curves):
+                for kp in curve.keyframe_points:
+                    kp.interpolation = 'LINEAR'
+                curve.update()
+            has_keys = True
+
+        if not has_keys:
+            bpy.data.actions.remove(action)
+            continue
+
+        track = arm_obj.animation_data.nla_tracks.new()
+        track.name = clip_name
+        frame_start = 1
+        frame_end = max(frame_start + 1, int(round(action.frame_range[1])))
+        strip = track.strips.new(clip_name, frame_start, action)
+        strip.action_frame_start = action.frame_range[0]
+        strip.action_frame_end = action.frame_range[1]
+        strip.frame_start = frame_start
+        strip.frame_end = frame_end
+
+    if arm_obj.animation_data.nla_tracks:
+        arm_obj.animation_data.action = None
 
 
 def _load_image_from_bytes(img_name, is_srgb, ext, data):
@@ -362,18 +603,19 @@ def import_adm(filepath):
                 except Exception as e:
                     print(f"[adm_import] nelze načíst texturu '{img_name}': {e}")
 
+        animations = []
         if version >= 2:
-            # Runtime importer zatím klipy jen načte/spotřebuje,
-            # playback řeší engine část v Rustu.
             try:
-                _ = _parse_animations_v2(f, version=version)
+                animations = _parse_animations_v2(f, version=version)
             except Exception as e:
                 print(f"[adm_import] warning: animační sekce je poškozená: {e}")
 
     # Vytvoř Blender mesh assets
     bl_meshes = []
-    for (mname, positions, normals, uv0s, uv1s, masks0s, masks1s, indices) in mesh_data:
-        bl_meshes.append(_build_blender_mesh(mname, positions, normals, uv0s, uv1s, masks0s, masks1s, indices))
+    for (mname, positions, normals, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices) in mesh_data:
+        bl_meshes.append(_build_blender_mesh(
+            mname, positions, normals, uv0s, uv1s, masks0s, masks1s, joint_indices, joint_weights, indices
+        ))
 
     # Vytvoř objekty
     node_objects = []
@@ -382,6 +624,12 @@ def import_adm(filepath):
     collection = bpy.context.collection
 
     for (nname, ntype, mesh_idx, parent_idx, mat_name, mat_floats) in node_data:
+        # Bone nody (type=3) reprezentujeme přes skutečnou Blender armaturu,
+        # ne přes pomocné Empty objekty.
+        if ntype == 3:
+            node_objects.append(None)
+            continue
+
         bl_mat = _bevy_to_bl_mat4(mat_floats)
 
         if ntype == 0 and 0 <= mesh_idx < len(bl_meshes):
@@ -417,8 +665,51 @@ def import_adm(filepath):
 
     # Parent-child vztahy
     for i, (_, _, _, parent_idx, _, _) in enumerate(node_data):
+        child = node_objects[i] if i < len(node_objects) else None
+        if child is None:
+            continue
         if 0 <= parent_idx < len(node_objects):
-            node_objects[i].parent = node_objects[parent_idx]
+            parent = node_objects[parent_idx]
+            if parent is not None:
+                child.parent = parent
+
+    # Rekonstrukce armatury + skinningu + animací
+    arm_obj, joint_bone_names, bone_by_node_index = _build_armature_from_nodes(node_data, collection)
+    if arm_obj is not None:
+        created.append(arm_obj)
+
+        armature_root_idx = _find_armature_root_index(node_data)
+        if armature_root_idx is not None and 0 <= armature_root_idx < len(node_objects):
+            placeholder = node_objects[armature_root_idx]
+            if placeholder is not None and placeholder != arm_obj:
+                for child in node_objects:
+                    if child is not None and child.parent == placeholder:
+                        child.parent = arm_obj
+                if placeholder in created:
+                    created.remove(placeholder)
+                try:
+                    bpy.data.objects.remove(placeholder, do_unlink=True)
+                except Exception:
+                    pass
+            node_objects[armature_root_idx] = arm_obj
+
+        # Objekt parentnutý na bone node přepojíme na skutečný bone parent.
+        for i, (_, _, _, parent_idx, _, mat_floats) in enumerate(node_data):
+            if i >= len(node_objects):
+                continue
+            obj = node_objects[i]
+            if obj is None:
+                continue
+            bone_name = bone_by_node_index.get(parent_idx)
+            if not bone_name:
+                continue
+            obj.parent = arm_obj
+            obj.parent_type = 'BONE'
+            obj.parent_bone = bone_name
+            obj.matrix_local = _bevy_to_bl_mat4(mat_floats)
+
+        _bind_meshes_to_armature(mesh_data, node_data, node_objects, arm_obj, joint_bone_names)
+        _import_armature_animations(animations, arm_obj)
 
     # Přiřaď textury do materiálů importovaných z tohoto ADM
     if loaded_images:
