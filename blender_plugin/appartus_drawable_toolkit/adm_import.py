@@ -360,29 +360,95 @@ def _build_armature_from_nodes(node_data, collection):
         edit_bones = arm_data.edit_bones
         eb_by_node = {}
         global_by_node = {}
-
+        children_by_node = {}
         for node_idx in bone_node_indices:
-            name, _, _, parent_idx, _, mat_floats = node_data[node_idx]
+            parent_idx = node_data[node_idx][3]
+            children_by_node.setdefault(parent_idx, []).append(node_idx)
+
+        # 1) Přepočet bone globálních matic v armature-local prostoru.
+        for node_idx in bone_node_indices:
+            _name, _ntype, _mesh, parent_idx, _mat_name, mat_floats = node_data[node_idx]
             local = _bevy_to_bl_mat4(mat_floats)
             parent_global = global_by_node.get(parent_idx, mathutils.Matrix.Identity(4))
-            global_mat = parent_global @ local
-            global_by_node[node_idx] = global_mat
+            global_by_node[node_idx] = parent_global @ local
 
-            eb = edit_bones.new(name)
-            try:
-                eb.matrix = global_mat
-            except Exception:
-                eb.head = global_mat.translation
-                axis = (global_mat.to_3x3() @ mathutils.Vector((0.0, 1.0, 0.0))).normalized()
-                if axis.length < 1e-6:
-                    axis = mathutils.Vector((0.0, 1.0, 0.0))
-                eb.tail = eb.head + axis * 0.1
-            if (eb.tail - eb.head).length < 1e-4:
-                eb.tail = eb.head + mathutils.Vector((0.0, 0.1, 0.0))
+        # 2) Vytvoření všech bone objektů.
+        for node_idx in bone_node_indices:
+            name = node_data[node_idx][0]
+            eb_by_node[node_idx] = edit_bones.new(name)
 
+        # 3) Nastavení parentingu a head/tail podle hierarchy.
+        #    Díky tomu nevznikají nulové délky, které se ve viewportu zobrazí jen jako body.
+        for node_idx in bone_node_indices:
+            eb = eb_by_node[node_idx]
+            parent_idx = node_data[node_idx][3]
             if parent_idx in eb_by_node:
                 eb.parent = eb_by_node[parent_idx]
-            eb_by_node[node_idx] = eb
+
+            global_mat = global_by_node[node_idx]
+            head = global_mat.translation.copy()
+            child_indices = children_by_node.get(node_idx, [])
+            local_y_axis = (global_mat.to_3x3() @ mathutils.Vector((0.0, 1.0, 0.0)))
+            if local_y_axis.length < 1e-6:
+                local_y_axis = mathutils.Vector((0.0, 1.0, 0.0))
+            else:
+                local_y_axis.normalize()
+
+            if child_indices:
+                # Směr kosti bereme VŽDY z exportované lokální +Y osy.
+                # Child uzly slouží jen k odhadu délky.
+                best_len = 0.0
+                for child_idx in child_indices:
+                    vec = global_by_node[child_idx].translation - head
+                    if vec.length < 1e-6:
+                        continue
+                    proj = abs(vec.dot(local_y_axis))
+                    if proj > best_len:
+                        best_len = proj
+
+                if best_len > 1e-5:
+                    tail = head + local_y_axis * best_len
+                else:
+                    tail = head + local_y_axis * 0.08
+            else:
+                # Leaf bone: použij lokální +Y osu a konzervativní délku.
+                axis = local_y_axis.copy()
+                if axis.length < 1e-6:
+                    axis = mathutils.Vector((0.0, 1.0, 0.0))
+                else:
+                    axis.normalize()
+
+                parent_len = 0.0
+                if parent_idx in eb_by_node:
+                    parent_eb = eb_by_node[parent_idx]
+                    parent_len = (parent_eb.tail - parent_eb.head).length
+                fallback_len = parent_len * 0.4 if parent_len > 1e-5 else 0.08
+                tail = head + axis * fallback_len
+
+            if (tail - head).length < 1e-5:
+                axis = local_y_axis.copy()
+                if axis.length < 1e-6:
+                    axis = mathutils.Vector((0.0, 1.0, 0.0))
+                else:
+                    axis.normalize()
+                tail = head + axis * 0.08
+
+            eb.head = head
+            eb.tail = tail
+
+            # Roll: referenční Z osu promítneme do roviny kolmé na skutečný
+            # head->tail směr. Bez projekce může align_roll kost přetočit.
+            z_axis = (global_mat.to_3x3() @ mathutils.Vector((0.0, 0.0, 1.0)))
+            bone_y = (eb.tail - eb.head)
+            if z_axis.length > 1e-6 and bone_y.length > 1e-6:
+                bone_y = bone_y.normalized()
+                z_proj = z_axis - bone_y * z_axis.dot(bone_y)
+                if z_proj.length > 1e-6:
+                    z_axis = z_proj.normalized()
+                try:
+                    eb.align_roll(z_axis)
+                except Exception:
+                    pass
     finally:
         if entered_edit:
             _exit_edit_mode(arm_obj, view_layer)
