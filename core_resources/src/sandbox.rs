@@ -46,6 +46,38 @@ impl Default for RaycastBridge {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CrosshairBridge — entity pod středem obrazovky (world-space raycast)
+// ---------------------------------------------------------------------------
+
+/// Entita, na kterou hráč právě míří (crosshair raycast z kamery).
+/// Gameplay systém ji aktualizuje každý frame přes Avian SpatialQuery.
+/// Lua sandbox čte přes `Raycast.GetEntityUnderCrosshair(max_dist?)`.
+/// Na serveru je vždy `None`.
+#[derive(Default, Clone)]
+pub struct CrosshairHit {
+    pub handle: u64,
+    pub distance: f32,
+}
+
+#[derive(Resource, Clone)]
+pub struct CrosshairBridge(pub Arc<Mutex<Option<CrosshairHit>>>);
+
+impl Default for CrosshairBridge {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+}
+
+impl CrosshairBridge {
+    pub fn set(&self, hit: Option<CrosshairHit>) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = hit;
+    }
+    pub fn get(&self) -> Option<CrosshairHit> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
 impl RaycastBridge {
     pub fn set_pos(&self, pos: [f32; 3]) {
         *self.0.lock().unwrap_or_else(|p| p.into_inner()) = pos;
@@ -185,6 +217,7 @@ pub struct GameBridges {
     pub cmd_dispatch: LuaCmdDispatch,
     pub ace:          AceRegistry,
     pub auth:         AuthBridge,
+    pub crosshair:    CrosshairBridge,
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +514,7 @@ impl LuaSandbox {
         draw_buffer: GuiDrawBuffer,
         ace_registry: AceRegistry,
         auth_bridge: AuthBridge,
+        crosshair: CrosshairBridge,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -523,6 +557,7 @@ impl LuaSandbox {
             &draw_buffer,
             &ace_registry,
             &auth_bridge,
+            &crosshair,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -825,8 +860,9 @@ fn install_runtime_api(
     draw_buffer: &GuiDrawBuffer,
     ace_registry: &AceRegistry,
     auth_bridge: &AuthBridge,
+    crosshair: &CrosshairBridge,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -856,6 +892,7 @@ fn install_runtime_api_inner(
     draw_buffer: &GuiDrawBuffer,
     ace_registry: &AceRegistry,
     auth_bridge: &AuthBridge,
+    crosshair: &CrosshairBridge,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -1328,6 +1365,21 @@ fn install_runtime_api_inner(
             Ok(t)
         })?,
     )?;
+    // Raycast.GetEntityUnderCrosshair(max_dist?) → {handle, distance} | nil
+    // Client: vrací entitu pod středem obrazovky (crosshair raycast) do max_dist metrů.
+    // Server: vždy nil.
+    let ch_arc = crosshair.0.clone();
+    rc_ns.set("GetEntityUnderCrosshair", lua.create_function(move |lua, max_dist: Option<f32>| {
+        let max_d = max_dist.unwrap_or(100.0);
+        let guard = ch_arc.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(hit) = guard.as_ref() else { return Ok(mlua::Value::Nil) };
+        if hit.distance > max_d { return Ok(mlua::Value::Nil) }
+        let t = lua.create_table()?;
+        t.set("handle", hit.handle)?;
+        t.set("distance", hit.distance)?;
+        Ok(mlua::Value::Table(t))
+    })?)?;
+
     globals.set("Raycast", rc_ns)?;
 
     // -- Player namespace (Phase 4) -----------------------------------------

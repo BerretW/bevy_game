@@ -47,6 +47,7 @@ pub use sandbox::{
     LocalEvent, LocalEventBus,
     LuaCmdDispatch, PendingCmd,
     LuaEventDirection, LuaEventOut,
+    CrosshairBridge, CrosshairHit,
     LuaSandbox, RaycastBridge, SandboxError,
 };
 pub use types::{IdError, ResourceId, Side};

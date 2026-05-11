@@ -21,7 +21,7 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{ConnectionInfo, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
+use core_resources::{ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
@@ -131,6 +131,7 @@ impl Plugin for ClientGameplayPlugin {
                 sync_net_transform_to_render,
                 update_camera_follow,
                 update_raycast_bridge,
+                update_crosshair_entity,
                 update_input_bridge,
                 update_connection_bridge,
                 update_local_player_visibility,
@@ -847,6 +848,58 @@ fn handle_engine_cmds(
     if bridges.engine.take_quit() {
         std::process::exit(0);
     }
+}
+
+/// Vrhá paprsek z kamery dopředu, hledá první entitu s `EntityHandle` v hierarchii.
+/// Výsledek (handle, vzdálenost) zapíše do `CrosshairBridge` pro Lua `Raycast.GetEntityUnderCrosshair()`.
+/// Hráčské entity (s `PlayerMarker`) jsou ignorovány.
+fn update_crosshair_entity(
+    camera_q: Query<&GlobalTransform, With<MainGameplayCamera>>,
+    spatial_query: SpatialQuery,
+    child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
+    handle_q: Query<&EntityHandle>,
+    player_q: Query<Has<core_shared::PlayerMarker>>,
+    bridges: Res<GameBridges>,
+) {
+    let Ok(cam) = camera_q.single() else {
+        bridges.crosshair.set(None);
+        return;
+    };
+    let origin = cam.translation();
+    let dir = cam.forward();
+
+    let filter = SpatialQueryFilter::default();
+    let hit = spatial_query.cast_ray(origin, dir, 100.0, true, &filter);
+    let Some(hit) = hit else {
+        bridges.crosshair.set(None);
+        return;
+    };
+
+    // Projdi hierarchii nahoru — collider může být na child entitě, EntityHandle na rootu.
+    let mut current = hit.entity;
+    let root_with_handle = loop {
+        if let Ok(h) = handle_q.get(current) {
+            break Some((current, h.0));
+        }
+        if let Ok(child_of) = child_of_q.get(current) {
+            current = child_of.parent();
+        } else {
+            break None;
+        }
+    };
+
+    let Some((root_entity, handle)) = root_with_handle else {
+        bridges.crosshair.set(None);
+        return;
+    };
+
+    // Ignoruj hráčské entity.
+    if player_q.get(root_entity).unwrap_or(false) {
+        bridges.crosshair.set(None);
+        return;
+    }
+
+    bridges.crosshair.set(Some(CrosshairHit { handle, distance: hit.distance }));
 }
 
 /// Přidá vizuál na lokální objekty spawnuté přes `World.SpawnLocalObject`.
