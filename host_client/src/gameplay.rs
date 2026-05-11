@@ -21,7 +21,7 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
+use core_resources::{CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
@@ -39,31 +39,14 @@ const MAX_PITCH_RAD: f32 = 1.25;
 const MOUSE_SENS_SCALE: f32 = 0.0025;
 const POSITION_SMOOTHING_RATE: f32 = 14.0;
 const ROTATION_SMOOTHING_RATE: f32 = 18.0;
+/// Výchozí FOV kamery v radiánech (60°) — Bevy default.
+const DEFAULT_CAMERA_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
 #[derive(Resource, Clone, Copy)]
 pub struct LocalClientId(pub u64);
 
 #[derive(Resource, Clone)]
 struct PlayerModelHandle(Handle<crate::drawable::AdmScene>);
-
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
-enum CameraMode {
-    FirstPerson,
-    ThirdPerson,
-}
-
-#[derive(Resource, Clone, Copy)]
-struct CameraModeState {
-    mode: CameraMode,
-}
-
-impl Default for CameraModeState {
-    fn default() -> Self {
-        Self {
-            mode: CameraMode::ThirdPerson,
-        }
-    }
-}
 
 #[derive(Resource, Clone, Copy)]
 struct CameraLookState {
@@ -115,7 +98,6 @@ impl Plugin for ClientGameplayPlugin {
             .register_type::<bevy::ecs::hierarchy::Children>()
             .register_type::<Name>();
 
-        app.init_resource::<CameraModeState>();
         app.init_resource::<CameraLookState>();
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
@@ -351,15 +333,13 @@ fn update_raycast_bridge(
     raycast.set_pos([hit.x, 0.0, hit.z]);
 }
 
-fn toggle_camera_mode(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<CameraModeState>) {
+fn toggle_camera_mode(keys: Res<ButtonInput<KeyCode>>, bridges: Res<GameBridges>) {
     if !keys.just_pressed(KeyCode::F6) {
         return;
     }
-    mode.mode = match mode.mode {
-        CameraMode::FirstPerson => CameraMode::ThirdPerson,
-        CameraMode::ThirdPerson => CameraMode::FirstPerson,
-    };
-    info!("[gameplay/client] camera mode -> {:?}", mode.mode);
+    let new_first = !bridges.camera.is_first_person();
+    bridges.camera.set_first_person(new_first);
+    info!("[gameplay/client] camera mode -> {}", if new_first { "first_person" } else { "third_person" });
 }
 
 fn update_camera_look_from_mouse(
@@ -392,7 +372,6 @@ fn update_camera_look_from_mouse(
 }
 
 fn apply_cursor_mode(
-    mode: Res<CameraModeState>,
     bridges: Res<GameBridges>,
     handshake: Res<ClientHandshakeState>,
     mut cursor_q: Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -409,7 +388,6 @@ fn apply_cursor_mode(
     let locked = bridges.engine.cursor_locked();
     cursor.visible = !locked;
     cursor.grab_mode = if locked { CursorGrabMode::Locked } else { CursorGrabMode::None };
-    let _ = mode.mode;
 }
 
 fn attach_player_model_to_new_players(
@@ -519,23 +497,101 @@ fn sync_net_transform_to_render(
     }
 }
 
+/// Prochází hierarchii dětí a hledá entitu se jménem `bone`.
+/// Depth guard zabraňuje nadměrné rekurzi na komplexních modelech.
+fn find_bone_entity(
+    root: Entity,
+    bone: &str,
+    children_q: &Query<&Children>,
+    name_q: &Query<&Name>,
+    depth: u8,
+) -> Option<Entity> {
+    if depth == 0 { return None; }
+    let Ok(children) = children_q.get(root) else { return None };
+    for child in children.iter() {
+        if name_q.get(child).map(|n| n.as_str() == bone).unwrap_or(false) {
+            return Some(child);
+        }
+        if let Some(found) = find_bone_entity(child, bone, children_q, name_q, depth - 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn update_camera_follow(
     local_client_id: Option<Res<LocalClientId>>,
-    mode: Res<CameraModeState>,
     look: Res<CameraLookState>,
+    bridges: Res<GameBridges>,
+    world_state: Res<LuaWorldState>,
     predicted_players: Query<
         (&Transform, &PlayerMarker),
         (With<Predicted>, Without<MainGameplayCamera>),
     >,
-    mut cam_q: Query<&mut Transform, With<MainGameplayCamera>>,
+    entity_q: Query<&GlobalTransform, Without<MainGameplayCamera>>,
+    children_q: Query<&Children>,
+    name_q: Query<&Name>,
+    mut cam_q: Query<(&mut Transform, &mut Projection), With<MainGameplayCamera>>,
 ) {
-    let Some(local_client_id) = local_client_id else {
-        return;
-    };
-    let Ok(mut cam_transform) = cam_q.single_mut() else {
-        return;
-    };
+    let Ok((mut cam_transform, mut projection)) = cam_q.single_mut() else { return };
 
+    // Forward vector z mouse look state (yaw + pitch)
+    let cp = look.pitch.cos();
+    let mut forward = Vec3::new(look.yaw.sin() * cp, look.pitch.sin(), look.yaw.cos() * cp);
+    if forward.length_squared() < 0.0001 { forward = Vec3::Z; } else { forward = forward.normalize(); }
+
+    // Nastav FOV podle aktivního rigu nebo reset na default.
+    let target_fov = bridges.camera.get_active_rig()
+        .and_then(|r| r.fov)
+        .map(|deg| deg.to_radians())
+        .unwrap_or(DEFAULT_CAMERA_FOV);
+    if let Projection::Perspective(p) = projection.as_mut() {
+        p.fov = target_fov;
+    }
+
+    // --- Custom camera rig ---
+    if let Some(rig) = bridges.camera.get_active_rig() {
+        match &rig.attachment {
+            CameraAttachment::Position { pos, look_at } => {
+                cam_transform.translation = Vec3::from(*pos);
+                if let Some(target) = look_at {
+                    cam_transform.look_at(Vec3::from(*target), Vec3::Y);
+                } else {
+                    let eye = cam_transform.translation;
+                    cam_transform.look_at(eye + forward, Vec3::Y);
+                }
+            }
+            CameraAttachment::Entity { handle, offset, look_at } => {
+                if let Some(entity) = world_state.entity_for(*handle) {
+                    if let Ok(et) = entity_q.get(entity) {
+                        let entity_pos = et.translation();
+                        let cam_pos = entity_pos + Vec3::from(*offset);
+                        cam_transform.translation = cam_pos;
+                        if *look_at {
+                            cam_transform.look_at(entity_pos, Vec3::Y);
+                        } else {
+                            cam_transform.look_at(cam_pos + forward, Vec3::Y);
+                        }
+                    }
+                }
+            }
+            CameraAttachment::Bone { handle, bone, offset } => {
+                if let Some(entity) = world_state.entity_for(*handle) {
+                    if let Some(bone_ent) = find_bone_entity(entity, bone, &children_q, &name_q, 8) {
+                        if let Ok(bt) = entity_q.get(bone_ent) {
+                            let (_, bone_rot, bone_pos) = bt.to_scale_rotation_translation();
+                            cam_transform.translation = bone_pos + bone_rot * Vec3::from(*offset);
+                            cam_transform.rotation = bone_rot;
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // --- Výchozí player kamera ---
+    let Some(local_client_id) = local_client_id else { return };
     let mut player_pos: Option<Vec3> = None;
     for (tfm, marker) in predicted_players.iter() {
         if marker.client_id == local_client_id.0 {
@@ -543,32 +599,17 @@ fn update_camera_follow(
             break;
         }
     }
-
-    let Some(player_pos) = player_pos else {
-        return;
-    };
-
-    let cp = look.pitch.cos();
-    let mut forward = Vec3::new(look.yaw.sin() * cp, look.pitch.sin(), look.yaw.cos() * cp);
-    if forward.length_squared() < 0.0001 {
-        forward = Vec3::Z;
-    } else {
-        forward = forward.normalize();
-    }
+    let Some(player_pos) = player_pos else { return };
 
     let focus = player_pos + Vec3::new(0.0, FIRST_PERSON_EYE_HEIGHT, 0.0);
 
-    match mode.mode {
-        CameraMode::FirstPerson => {
-            let eye = focus;
-            cam_transform.translation = eye;
-            cam_transform.look_at(eye + forward, Vec3::Y);
-        }
-        CameraMode::ThirdPerson => {
-            let eye = focus - forward * THIRD_PERSON_DISTANCE;
-            cam_transform.translation = eye;
-            cam_transform.look_at(focus, Vec3::Y);
-        }
+    if bridges.camera.is_first_person() {
+        cam_transform.translation = focus;
+        cam_transform.look_at(focus + forward, Vec3::Y);
+    } else {
+        let eye = focus - forward * THIRD_PERSON_DISTANCE;
+        cam_transform.translation = eye;
+        cam_transform.look_at(focus, Vec3::Y);
     }
 }
 
@@ -595,22 +636,14 @@ fn prefer_predicted_player_visuals(
 
 fn update_local_player_visibility(
     local_client_id: Option<Res<LocalClientId>>,
-    mode: Res<CameraModeState>,
     mut players: Query<(&PlayerMarker, &mut Visibility), With<PlayerVisualAttached>>,
 ) {
-    let Some(local_client_id) = local_client_id else {
-        return;
-    };
+    let Some(local_client_id) = local_client_id else { return; };
     for (marker, mut vis) in players.iter_mut() {
         if marker.client_id == local_client_id.0 {
-            // Lokalni model nechame viditelny i v 1st person, at je jasne,
-            // ze se replikuje a pohybuje.
             *vis = Visibility::Visible;
         }
     }
-
-    // Pouzij `mode` aby system stale reagoval na zmenu a nevznikal warning.
-    let _ = mode.mode;
 }
 
 fn collect_and_send_input(

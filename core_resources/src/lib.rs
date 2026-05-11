@@ -40,6 +40,7 @@ pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry, ServerResource
 pub use resolver::{resolve_load_order, ResolveError};
 pub use sandbox::{
     AuthBridge, PendingAuthCredentials, PendingAuthResult,
+    CameraAttachment, CameraBridge, CameraRig,
     ConnectionBridge, ConnectionInfo,
     EngineStateBridge,
     GameBridges,

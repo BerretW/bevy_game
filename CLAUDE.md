@@ -72,7 +72,7 @@ files { 'assets/ui_icons.png' }
 |------|---------|
 | **Phase 1** — Shell & VFS | Cargo workspace, VFS scanner, manifest.lua DSL parser, dependency resolver (Kahn), per-resource Lua sandbox |
 | **Phase 2** — Network Handshake | `core_net`, lightyear UDP, Axum HTTP file server, blake3 digest handshake, Lua RPC bridge |
-| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6), client-trusted movement (Avian), yaw sync, movement smoothing |
+| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing |
 | **Phase 3.2** — Lua Bridge | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate) |
 | **Phase 3.3** — Combat | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped` |
 | **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded` |
@@ -273,6 +273,11 @@ Hitbox.Register('player_default', {
 | `Spawn.Register/GetFree/SetActive/GetAll` | server | Spawn body |
 | `Round.GetState/SetTimeLimit/End` | both/server | Stav kola |
 | `Score.Add/Get/GetAll` | server/both | Scoreboard |
+| `Camera.Create/Delete` | client | Vytvoř / smaž pojmenovanou kameru |
+| `Camera.SetActive/GetActive` | client | Přepni aktivní kameru (nil = player kamera) |
+| `Camera.AttachToEntity/AttachToBone/AttachToPosition` | client | Připoj kameru na entitu, kost nebo pozici |
+| `Camera.SetFOV` | client | Nastav FOV aktivní kamery (stupně) |
+| `Camera.SetMode/GetMode` | client | `first_person` / `third_person` / custom_id |
 
 ---
 
@@ -294,7 +299,7 @@ Hitbox.Register('player_default', {
   vfs.rs                         Vfs, walkdir scanner, scan_stream_models()
   watcher.rs                     notify watcher + debounce, ResourcesDirty
   resolver.rs                    resolve_load_order (Kahn's)
-  sandbox.rs                     LuaSandbox, LocalEventBus, RaycastBridge, JSON helpers
+  sandbox.rs                     LuaSandbox, LocalEventBus, RaycastBridge, CameraBridge, JSON helpers
   plugin.rs                      ResourcesPlugin, SandboxRegistry (NonSend)
   cmd_queue.rs                   LuaCommand, CommandQueue, LuaWorldState, process_lua_commands
   model_registry.rs              ModelRegistry, process_model_commands
@@ -366,6 +371,16 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `Gui.GetCursorPos/IsMouseOver/IsMouseDown/IsMouseClicked` | client | GUI input |
 | `UI.Window(opts)` | client | Menu framework (fade, tlačítka, labely) |
 | `CreateThread(fn)` / `Wait(ms)` | both | Lua coroutiny |
+| `Camera.Create(id, opts?)` | client | Vytvoří pojmenovanou kameru; `opts.fov` (stupně); vrátí `id` |
+| `Camera.Delete(id)` | client | Smaže kameru (pokud aktivní → reset na player kameru) |
+| `Camera.SetActive(id\|nil)` | client | Přepne aktivní kameru; `nil` = player kamera |
+| `Camera.GetActive()` | client | ID aktivní custom kamery nebo `nil` |
+| `Camera.AttachToEntity(id, handle, offset?, look_at?)` | client | Sleduje entitu; `look_at=true` = dívá se na ni |
+| `Camera.AttachToBone(id, handle, bone_name, offset?)` | client | Připojí na kost (dědí rotaci kosti) |
+| `Camera.AttachToPosition(id, pos, look_at?)` | client | Statická pozice + volitelný lookAt bod |
+| `Camera.SetFOV(id, degrees)` | client | Nastaví FOV kamery (stupně) |
+| `Camera.SetMode(mode)` | client | `"first_person"` nebo `"third_person"` |
+| `Camera.GetMode()` | client | `"first_person"` / `"third_person"` / custom camera id |
 
 **input:state** (client-only local event): `{ move={x,y}, keys={...} }` — emitován každý frame přes `LocalEventBus`.
 

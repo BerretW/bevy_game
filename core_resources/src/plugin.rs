@@ -328,6 +328,7 @@ fn rebuild(
             bridges.ace.clone(),
             bridges.auth.clone(),
             bridges.crosshair.clone(),
+            bridges.camera.clone(),
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);

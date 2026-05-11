@@ -88,6 +88,111 @@ impl RaycastBridge {
 }
 
 // ---------------------------------------------------------------------------
+// CameraBridge — Lua-controlled camera rig system
+// ---------------------------------------------------------------------------
+
+/// Jak je kamera připojena ke světu.
+#[derive(Debug, Clone)]
+pub enum CameraAttachment {
+    /// Statická pozice + volitelný lookAt bod (None = použije mouse look)
+    Position { pos: [f32; 3], look_at: Option<[f32; 3]> },
+    /// Sleduje entitu; look_at=true → dívá se na entitu, false → mouse look
+    Entity { handle: u64, offset: [f32; 3], look_at: bool },
+    /// Přichycena na kost entity (dědí transformaci kosti + offset v bone-space)
+    Bone { handle: u64, bone: String, offset: [f32; 3] },
+}
+
+/// Pojmenovaná kamera spravovaná přes Lua `Camera.*` API.
+#[derive(Debug, Clone)]
+pub struct CameraRig {
+    pub id: String,
+    pub attachment: CameraAttachment,
+    /// FOV ve stupních; None = použije default (60°)
+    pub fov: Option<f32>,
+}
+
+#[derive(Default)]
+struct CameraBridgeState {
+    rigs: HashMap<String, CameraRig>,
+    /// id aktivní custom kamery; None = player kamera (first/third person)
+    active: Option<String>,
+    /// true = first-person player kamera, false = third-person (default)
+    first_person: bool,
+}
+
+/// Arc-based bridge sdílený mezi Lua sandboxy a Bevy systémem v gameplay.rs.
+#[derive(Resource, Clone)]
+pub struct CameraBridge(Arc<Mutex<CameraBridgeState>>);
+
+impl Default for CameraBridge {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(CameraBridgeState::default())))
+    }
+}
+
+impl CameraBridge {
+    fn lock(&self) -> std::sync::MutexGuard<'_, CameraBridgeState> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn create(&self, id: String, fov: Option<f32>) {
+        let mut g = self.lock();
+        g.rigs.entry(id.clone()).or_insert_with(|| CameraRig {
+            id: id.clone(),
+            attachment: CameraAttachment::Position { pos: [0.0; 3], look_at: None },
+            fov,
+        });
+    }
+
+    pub fn delete(&self, id: &str) {
+        let mut g = self.lock();
+        g.rigs.remove(id);
+        if g.active.as_deref() == Some(id) {
+            g.active = None;
+        }
+    }
+
+    pub fn set_active(&self, id: Option<String>) {
+        self.lock().active = id;
+    }
+
+    pub fn get_active_id(&self) -> Option<String> {
+        self.lock().active.clone()
+    }
+
+    pub fn get_active_rig(&self) -> Option<CameraRig> {
+        let g = self.lock();
+        g.active.as_ref().and_then(|id| g.rigs.get(id).cloned())
+    }
+
+    pub fn set_attachment(&self, id: &str, attachment: CameraAttachment) {
+        let mut g = self.lock();
+        if let Some(rig) = g.rigs.get_mut(id) {
+            rig.attachment = attachment;
+        }
+    }
+
+    pub fn set_fov(&self, id: &str, fov: f32) {
+        let mut g = self.lock();
+        if let Some(rig) = g.rigs.get_mut(id) {
+            rig.fov = Some(fov);
+        }
+    }
+
+    pub fn set_first_person(&self, first: bool) {
+        self.lock().first_person = first;
+    }
+
+    pub fn is_first_person(&self) -> bool {
+        self.lock().first_person
+    }
+
+    pub fn has_rig(&self, id: &str) -> bool {
+        self.lock().rigs.contains_key(id)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Engine state bridge — Lua → Rust control flow (cursor lock, quit, disconnect)
 // ---------------------------------------------------------------------------
 
@@ -218,6 +323,7 @@ pub struct GameBridges {
     pub ace:          AceRegistry,
     pub auth:         AuthBridge,
     pub crosshair:    CrosshairBridge,
+    pub camera:       CameraBridge,
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +621,7 @@ impl LuaSandbox {
         ace_registry: AceRegistry,
         auth_bridge: AuthBridge,
         crosshair: CrosshairBridge,
+        camera_bridge: CameraBridge,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -558,6 +665,7 @@ impl LuaSandbox {
             &ace_registry,
             &auth_bridge,
             &crosshair,
+            &camera_bridge,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -861,8 +969,9 @@ fn install_runtime_api(
     ace_registry: &AceRegistry,
     auth_bridge: &AuthBridge,
     crosshair: &CrosshairBridge,
+    camera_bridge: &CameraBridge,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -893,6 +1002,7 @@ fn install_runtime_api_inner(
     ace_registry: &AceRegistry,
     auth_bridge: &AuthBridge,
     crosshair: &CrosshairBridge,
+    camera_bridge: &CameraBridge,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -2345,6 +2455,128 @@ end
         })?)?;
 
         globals.set("Network", net_ns)?;
+    }
+
+    // -- Camera namespace — klientský systém kamer (Phase 5) ------------------
+    // Na serveru jsou funkce no-op / vracejí nil; namespace existuje na obou stranách.
+    {
+        let cam_ns = lua.create_table()?;
+
+        // Camera.Create(id, opts?) -> id
+        // opts = { fov = 60.0 }
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("Create", lua.create_function(move |_, (id, opts): (String, Option<mlua::Table>)| -> mlua::Result<String> {
+                if side == Side::Client {
+                    let fov = opts.as_ref().and_then(|t| t.get::<f32>("fov").ok());
+                    cb.create(id.clone(), fov);
+                }
+                Ok(id)
+            })?)?;
+        }
+
+        // Camera.Delete(id)
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("Delete", lua.create_function(move |_, id: String| {
+                if side == Side::Client { cb.delete(&id); }
+                Ok(())
+            })?)?;
+        }
+
+        // Camera.SetActive(id | nil) — nil vrátí zpět na player kameru
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("SetActive", lua.create_function(move |_, id: Option<String>| {
+                if side == Side::Client { cb.set_active(id); }
+                Ok(())
+            })?)?;
+        }
+
+        // Camera.GetActive() -> id | nil
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("GetActive", lua.create_function(move |_, ()| -> mlua::Result<Option<String>> {
+                if side != Side::Client { return Ok(None); }
+                Ok(cb.get_active_id())
+            })?)?;
+        }
+
+        // Camera.AttachToEntity(id, entity_handle, offset?, look_at_entity?)
+        // offset = {x,y,z} world-space offset od entity pozice
+        // look_at_entity = true → kamera míří na entitu; false (default) → mouse look
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("AttachToEntity", lua.create_function(move |_,
+                (cam_id, handle, offset_v, look_at): (String, u64, Option<mlua::Table>, Option<bool>)| {
+                if side == Side::Client {
+                    let offset = offset_v.as_ref().map(|t| table_to_vec3(t)).unwrap_or([0.0; 3]);
+                    cb.set_attachment(&cam_id, CameraAttachment::Entity {
+                        handle, offset, look_at: look_at.unwrap_or(false),
+                    });
+                }
+                Ok(())
+            })?)?;
+        }
+
+        // Camera.AttachToBone(id, entity_handle, bone_name, offset?)
+        // Kamera zdědí transformaci kosti (pozice + rotace); offset v bone-space.
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("AttachToBone", lua.create_function(move |_,
+                (cam_id, handle, bone, offset_v): (String, u64, String, Option<mlua::Table>)| {
+                if side == Side::Client {
+                    let offset = offset_v.as_ref().map(|t| table_to_vec3(t)).unwrap_or([0.0; 3]);
+                    cb.set_attachment(&cam_id, CameraAttachment::Bone { handle, bone, offset });
+                }
+                Ok(())
+            })?)?;
+        }
+
+        // Camera.AttachToPosition(id, pos, look_at?)
+        // pos = {x,y,z} světová pozice; look_at = {x,y,z} bod pohledu (nil = mouse look)
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("AttachToPosition", lua.create_function(move |_,
+                (cam_id, pos_t, look_at_v): (String, mlua::Table, Option<mlua::Table>)| {
+                if side == Side::Client {
+                    let pos = table_to_vec3(&pos_t);
+                    let look_at = look_at_v.as_ref().map(|t| table_to_vec3(t));
+                    cb.set_attachment(&cam_id, CameraAttachment::Position { pos, look_at });
+                }
+                Ok(())
+            })?)?;
+        }
+
+        // Camera.SetFOV(id, fov_degrees)
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("SetFOV", lua.create_function(move |_, (cam_id, fov): (String, f32)| {
+                if side == Side::Client { cb.set_fov(&cam_id, fov); }
+                Ok(())
+            })?)?;
+        }
+
+        // Camera.SetMode(mode)  "first_person" | "third_person"
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("SetMode", lua.create_function(move |_, mode: String| {
+                if side == Side::Client { cb.set_first_person(mode == "first_person"); }
+                Ok(())
+            })?)?;
+        }
+
+        // Camera.GetMode() -> "first_person" | "third_person" | custom_camera_id
+        {
+            let cb = camera_bridge.clone();
+            cam_ns.set("GetMode", lua.create_function(move |_, ()| -> mlua::Result<String> {
+                if side != Side::Client { return Ok("third_person".to_string()); }
+                if let Some(id) = cb.get_active_id() { return Ok(id); }
+                Ok(if cb.is_first_person() { "first_person" } else { "third_person" }.to_string())
+            })?)?;
+        }
+
+        globals.set("Camera", cam_ns)?;
     }
 
     Ok(())

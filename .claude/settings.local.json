@@ -80,7 +80,14 @@
       "Bash(Select-Object FullName)",
       "Bash(xargs grep -l \"NetworkedObjectMarker\\\\|SpawnNetworkedObject\")",
       "Bash(xargs grep -l \"PlayerMarker\\\\|NetTransform\")",
-      "Bash(xargs grep -l \"excluded_entities\")"
+      "Bash(xargs grep -l \"excluded_entities\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\" -Recurse -Directory)",
+      "Bash(Select-Object -First 20 FullName)",
+      "Bash(xargs grep -l \"CameraMode\\\\|CameraLook\\\\|MainGameplayCamera\")",
+      "Bash(xargs grep -l \"\\\\.lua\\\\|lua_api\\\\|sandbox\")",
+      "Bash(Get-Content \"c:\\\\Users\\\\adolf\\\\GIT\\\\bevy_game\\\\core_resources\\\\src\\\\sandbox.rs\")",
+      "Bash(Measure-Object -Line)",
+      "Bash(Select-Object -ExpandProperty Lines)"
     ]
   }
 }
