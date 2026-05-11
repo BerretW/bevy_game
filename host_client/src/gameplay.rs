@@ -36,7 +36,6 @@ use crate::drawable::{GltfHandleCache, PedPhysicsDef, PedPhysicsRegistry};
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
 const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
-const PLAYER_MODEL_ASSET_PATH: &str = "models/player.adm";
 const MAX_PITCH_RAD: f32 = 1.25;
 const MOUSE_SENS_SCALE: f32 = 0.0025;
 const POSITION_SMOOTHING_RATE: f32 = 14.0;
@@ -46,9 +45,6 @@ const DEFAULT_CAMERA_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
 #[derive(Resource, Clone, Copy)]
 pub struct LocalClientId(pub u64);
-
-#[derive(Resource, Clone)]
-struct PlayerModelHandle(Handle<crate::drawable::AdmScene>);
 
 #[derive(Resource, Clone, Copy)]
 struct CameraLookState {
@@ -73,6 +69,61 @@ struct PlayerVisualAttached;
 
 #[derive(Component)]
 struct LocalObjectVisualAttached;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocomotionState {
+    Idle,
+    Walk,
+    Run,
+    Sprint,
+}
+
+impl Default for LocomotionState {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerAnimState {
+    Idle,
+    Walk,
+    Run,
+    Sprint,
+    Jump,
+    Fall,
+    Land,
+}
+
+impl PlayerAnimState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Walk => "walk",
+            Self::Run => "run",
+            Self::Sprint => "sprint",
+            Self::Jump => "jump",
+            Self::Fall => "fall",
+            Self::Land => "land",
+        }
+    }
+}
+
+impl Default for PlayerAnimState {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+#[derive(Component, Default)]
+struct AutoPlayerAnimMemory {
+    was_grounded: bool,
+    land_until: f32,
+    airborne_since: Option<f32>,
+    filtered_horiz_speed: f32,
+    locomotion: LocomotionState,
+    anim_state: PlayerAnimState,
+}
 
 #[derive(Resource, Default)]
 struct LuaAnimationGraphCache {
@@ -135,6 +186,7 @@ impl Plugin for ClientGameplayPlugin {
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 attach_mesh_to_local_objects,
+                update_player_state_driven_animations,
                 update_model_animation_registry,
                 apply_lua_animation_state,
                 handle_engine_cmds,
@@ -201,8 +253,8 @@ fn apply_player_movement(
     let Some(lid) = local_client_id else { return };
     let bindings = &cfg.0.input.keys;
 
-    // Načti ped profil pro "player" — fallback na konstanty pokud ještě není ready.
-    let ped = ped_reg.0.get("player").and_then(|h| ped_assets.get(h));
+    // Načti preferovaný ped profil (primárně "player", fallback na první dostupný).
+    let ped = resolve_default_ped_profile(&ped_reg, &ped_assets);
 
     let mut move_x = 0.0f32;
     let mut move_y = 0.0f32;
@@ -268,15 +320,7 @@ fn apply_player_movement(
             vel.z = vel.z + (target_z - vel.z) * alpha;
         }
 
-        let has_ground_contact = shape_hits
-            .map(|hits| {
-                hits.iter().any(|hit| {
-                    // normal2 míří od druhého collideru směrem k casteru.
-                    // Pro "zem pod hráčem" chceme výrazně upward normálu.
-                    (-hit.normal2).dot(Vec3::Y) > 0.35
-                })
-            })
-            .unwrap_or(false);
+        let has_ground_contact = has_ground_contact(shape_hits);
 
         let can_jump = if double_jump_enabled {
             // Legacy fallback: když je double-jump zapnutý, ponecháme i velocity gate.
@@ -292,10 +336,65 @@ fn apply_player_movement(
     }
 }
 
+fn has_ground_contact(shape_hits: Option<&ShapeHits>) -> bool {
+    shape_hits
+        .map(|hits| {
+            hits.iter().any(|hit| {
+                // normal2 míří od druhého collideru směrem k casteru.
+                // Pro "zem pod hráčem" chceme výrazně upward normálu.
+                (-hit.normal2).dot(Vec3::Y) > 0.35
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn resolve_default_ped_profile<'a>(
+    ped_reg: &'a PedPhysicsRegistry,
+    ped_assets: &'a Assets<PedPhysicsDef>,
+) -> Option<&'a PedPhysicsDef> {
+    ped_reg
+        .0
+        .get("player")
+        .and_then(|h| ped_assets.get(h))
+        .or_else(|| ped_reg.0.values().find_map(|h| ped_assets.get(h)))
+}
+
+fn resolve_ped_profile_for_model<'a>(
+    model_name: &str,
+    ped_reg: &'a PedPhysicsRegistry,
+    ped_assets: &'a Assets<PedPhysicsDef>,
+) -> Option<&'a PedPhysicsDef> {
+    ped_reg
+        .0
+        .values()
+        .find_map(|h| {
+            let ped = ped_assets.get(h)?;
+            if ped.identity.model == model_name {
+                Some(ped)
+            } else {
+                None
+            }
+        })
+        .or_else(|| resolve_default_ped_profile(ped_reg, ped_assets))
+}
+
+fn choose_existing_adm_clip(
+    scene: &crate::drawable::AdmScene,
+    preferred: &str,
+    fallback: &str,
+) -> Option<String> {
+    if scene.animations.iter().any(|c| c.name == preferred) {
+        return Some(preferred.to_string());
+    }
+    if scene.animations.iter().any(|c| c.name == fallback) {
+        return Some(fallback.to_string());
+    }
+    scene.animations.first().map(|c| c.name.clone())
+}
+
 
 fn setup_scene_and_camera(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
 ) {
     commands.spawn((
         Camera3d::default(),
@@ -317,12 +416,7 @@ fn setup_scene_and_camera(
         )),
     ));
 
-    commands.insert_resource(PlayerModelHandle(asset_server.load::<crate::drawable::AdmScene>(PLAYER_MODEL_ASSET_PATH)));
-
-    info!(
-        "[gameplay/client] 3D scene ready (camera toggle: F6, player model: {})",
-        PLAYER_MODEL_ASSET_PATH
-    );
+    info!("[gameplay/client] 3D scene ready (camera toggle: F6)");
 }
 
 /// Aktualizuje `RaycastBridge` podle aktualni pozice mysi.
@@ -410,7 +504,9 @@ fn apply_cursor_mode(
 
 fn attach_player_model_to_new_players(
     mut commands: Commands,
-    model: Res<PlayerModelHandle>,
+    asset_server: Res<AssetServer>,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
     predicted_players: Query<&PlayerMarker, With<Predicted>>,
     new_players: Query<
         (Entity, &PlayerMarker, Option<&Predicted>),
@@ -429,6 +525,12 @@ fn attach_player_model_to_new_players(
             continue;
         }
 
+        let model_name = resolve_default_ped_profile(&ped_reg, &ped_assets)
+            .map(|p| p.identity.model.as_str())
+            .unwrap_or("player");
+        let model_path = format!("models/{}.adm", model_name);
+        let model_handle = asset_server.load::<crate::drawable::AdmScene>(model_path);
+
         commands
             .entity(entity)
             .insert((
@@ -438,6 +540,7 @@ fn attach_player_model_to_new_players(
                 InheritedVisibility::default(),
                 ViewVisibility::default(),
                 PlayerVisualAttached,
+                AutoPlayerAnimMemory::default(),
                 // FiveM-style: RigidBody přímo na root entitě hráče.
                 // COL_player z player.drawable bude compound collider tohoto těla.
                 RigidBody::Dynamic,
@@ -460,10 +563,10 @@ fn attach_player_model_to_new_players(
             ))
             .with_children(|p| {
                 p.spawn((
-                    AdmSceneRoot(model.0.clone()),
+                    AdmSceneRoot(model_handle.clone()),
                     // Bez DisableDrawableCollisions — COL_player z manifestu
                     // se stane compound coliderem parent RigidBody.
-                    ModelName("player".to_string()),
+                    ModelName(model_name.to_string()),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                     GlobalTransform::default(),
                     Visibility::default(),
@@ -476,6 +579,186 @@ fn attach_player_model_to_new_players(
             "[gameplay/client] ADM model attached to player {:?} (client_id={})",
             entity, marker.client_id
         );
+    }
+}
+
+fn update_player_state_driven_animations(
+    time: Res<Time>,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
+    adm_assets: Res<Assets<crate::drawable::AdmScene>>,
+    local_bus: Res<LocalEventBus>,
+    local_client_id: Option<Res<LocalClientId>>,
+    mut commands: Commands,
+    mut model_roots: Query<
+        (
+            Entity,
+            &AdmSceneRoot,
+            &ModelName,
+            &bevy::ecs::hierarchy::ChildOf,
+            Option<&mut AnimationState>,
+        ),
+        With<AdmSceneRoot>,
+    >,
+    mut players: Query<(
+        &PlayerMarker,
+        Option<&EntityHandle>,
+        &LinearVelocity,
+        Option<&ShapeHits>,
+        &mut AutoPlayerAnimMemory,
+    )>,
+) {
+    let now = time.elapsed_secs();
+    let dt = time.delta_secs();
+
+    for (model_entity, adm_root, model_name, child_of, anim_state) in &mut model_roots {
+        let parent = child_of.parent();
+        let Ok((marker, handle, vel, shape_hits, mut memory)) = players.get_mut(parent) else {
+            continue;
+        };
+
+        let Some(ped) = resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets) else {
+            continue;
+        };
+
+        let raw_grounded = has_ground_contact(shape_hits);
+        if raw_grounded {
+            memory.airborne_since = None;
+        } else if memory.airborne_since.is_none() {
+            memory.airborne_since = Some(now);
+        }
+
+        // Ground grace okno tlumí 1-2 frame výpadky ShapeCaster kontaktu.
+        let grounded_grace = 0.10;
+        let grounded = raw_grounded
+            || memory
+                .airborne_since
+                .map(|t| now - t <= grounded_grace)
+                .unwrap_or(false);
+
+        if grounded && !memory.was_grounded && vel.y < -0.10 {
+            memory.land_until = now + 0.18;
+        }
+        memory.was_grounded = grounded;
+
+        let horiz_speed = Vec2::new(vel.x, vel.z).length();
+        // Potlačí frame-to-frame jitter velocity a zklidní animační rozhodování.
+        let speed_alpha = (1.0 - (-10.0 * dt).exp()).clamp(0.0, 1.0);
+        memory.filtered_horiz_speed += (horiz_speed - memory.filtered_horiz_speed) * speed_alpha;
+
+        let idle_threshold = ped.movement.idle_threshold.max(0.01);
+        let walk_threshold = (ped.movement.run_speed * 0.60).max(idle_threshold + 0.05);
+        let sprint_threshold = (ped.movement.run_speed + ped.movement.sprint_speed) * 0.5;
+
+        // Hysteréze: oddělené entry/exit prahy, aby Idle byl dosažitelný i při low-speed jitteru.
+        let idle_exit = idle_threshold + 0.06;
+        let walk_up = walk_threshold + 0.16;
+        let walk_down = (walk_threshold - 0.16).max(idle_exit + 0.02);
+        let sprint_up = sprint_threshold + 0.20;
+        let sprint_down = (sprint_threshold - 0.20).max(walk_up + 0.02);
+
+        memory.locomotion = match memory.locomotion {
+            LocomotionState::Idle => {
+                if memory.filtered_horiz_speed > idle_exit {
+                    LocomotionState::Walk
+                } else {
+                    LocomotionState::Idle
+                }
+            }
+            LocomotionState::Walk => {
+                if memory.filtered_horiz_speed <= idle_threshold {
+                    LocomotionState::Idle
+                } else if memory.filtered_horiz_speed >= walk_up {
+                    LocomotionState::Run
+                } else {
+                    LocomotionState::Walk
+                }
+            }
+            LocomotionState::Run => {
+                if memory.filtered_horiz_speed <= walk_down {
+                    LocomotionState::Walk
+                } else if memory.filtered_horiz_speed >= sprint_up {
+                    LocomotionState::Sprint
+                } else {
+                    LocomotionState::Run
+                }
+            }
+            LocomotionState::Sprint => {
+                if memory.filtered_horiz_speed <= sprint_down {
+                    LocomotionState::Run
+                } else {
+                    LocomotionState::Sprint
+                }
+            }
+        };
+
+        let (desired_clip, looping, next_anim_state) = if !grounded {
+            if vel.y < -0.2 {
+                (&ped.animations.fall_loop, true, PlayerAnimState::Fall)
+            } else {
+                (&ped.animations.jump_loop, true, PlayerAnimState::Jump)
+            }
+        } else if now < memory.land_until {
+            (&ped.animations.land, false, PlayerAnimState::Land)
+        } else {
+            match memory.locomotion {
+                LocomotionState::Idle => (&ped.animations.idle, true, PlayerAnimState::Idle),
+                LocomotionState::Walk => (&ped.animations.walk, true, PlayerAnimState::Walk),
+                LocomotionState::Run => (&ped.animations.run, true, PlayerAnimState::Run),
+                LocomotionState::Sprint => (&ped.animations.sprint, true, PlayerAnimState::Sprint),
+            }
+        };
+
+        let resolved_clip = if let Some(scene) = adm_assets.get(&adm_root.0) {
+            choose_existing_adm_clip(scene, desired_clip, &ped.animations.idle)
+        } else {
+            Some(desired_clip.clone())
+        };
+        let Some(clip) = resolved_clip else { continue };
+
+        let blend_time = match next_anim_state {
+            PlayerAnimState::Land => 0.08,
+            PlayerAnimState::Jump | PlayerAnimState::Fall => 0.10,
+            _ => 0.16,
+        };
+
+        if memory.anim_state != next_anim_state {
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "client_id": marker.client_id,
+                "handle": handle.map(|h| h.0),
+                "state": next_anim_state.as_str(),
+                "clip": clip,
+                "grounded": grounded,
+                "speed": memory.filtered_horiz_speed,
+                "is_local": local_client_id.as_ref().map(|id| id.0 == marker.client_id).unwrap_or(false),
+            }))
+            .unwrap_or_default();
+            local_bus.push("player:anim_state".to_string(), payload);
+            memory.anim_state = next_anim_state;
+        }
+
+        match anim_state {
+            Some(mut state) => {
+                if state.current.as_deref() != Some(clip.as_str()) || state.looping != looping {
+                    state.current = Some(clip.clone());
+                    state.looping = looping;
+                    state.paused = false;
+                    state.speed = 1.0;
+                    state.blend_time = blend_time;
+                    state.flags = 1;
+                }
+            }
+            None => {
+                commands.entity(model_entity).insert(AnimationState {
+                    current: Some(clip),
+                    speed: 1.0,
+                    looping,
+                    paused: false,
+                    blend_time,
+                    flags: 1,
+                });
+            }
+        }
     }
 }
 

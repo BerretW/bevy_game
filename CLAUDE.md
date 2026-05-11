@@ -72,7 +72,7 @@ files { 'assets/ui_icons.png' }
 |------|---------|
 | **Phase 1** — Shell & VFS | Cargo workspace, VFS scanner, manifest.lua DSL parser, dependency resolver (Kahn), per-resource Lua sandbox |
 | **Phase 2** — Network Handshake | `core_net`, lightyear UDP, Axum HTTP file server, blake3 digest handshake, Lua RPC bridge |
-| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing |
+| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`: idle/walk/run/sprint/jump/fall/land) |
 | **Phase 3.2** — Lua Bridge | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate) |
 | **Phase 3.3** — Combat | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped` |
 | **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`) |

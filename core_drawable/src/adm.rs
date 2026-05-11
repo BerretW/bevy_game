@@ -914,10 +914,32 @@ pub fn apply_adm_animations(
         };
 
         if playback.active_clip.as_deref() != Some(&clip.name) {
-            playback.previous_clip = playback.active_clip.clone();
-            playback.previous_time = playback.time;
+            let prev_clip_name = playback.active_clip.clone();
+            let prev_time = playback.time;
+
+            // Při přechodu zachovej fázi (0..1) předchozího klipu, aby blend fungoval
+            // plynule i při přepnutí uprostřed kroku/běhu.
+            let phase_aligned_time = prev_clip_name
+                .as_deref()
+                .and_then(|prev_name| resolve_clip_index(scene, prev_name))
+                .and_then(|prev_idx| {
+                    let prev_duration = scene.animations[prev_idx].duration;
+                    if prev_duration <= 0.0 || clip.duration <= 0.0 {
+                        return None;
+                    }
+
+                    let phase = if anim_state.looping {
+                        (prev_time / prev_duration).rem_euclid(1.0)
+                    } else {
+                        (prev_time / prev_duration).clamp(0.0, 1.0)
+                    };
+                    Some(phase * clip.duration)
+                });
+
+            playback.previous_clip = prev_clip_name;
+            playback.previous_time = prev_time;
             playback.active_clip = Some(clip.name.clone());
-            playback.time = 0.0;
+            playback.time = phase_aligned_time.unwrap_or(0.0);
             playback.blend_timer = 0.0;
             playback.total_blend_time = anim_state.blend_time.max(0.0);
             if playback.total_blend_time <= 0.0 {

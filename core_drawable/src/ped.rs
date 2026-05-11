@@ -21,6 +21,9 @@ pub struct PedPhysicsDef {
     pub identity: PedIdentity,
 
     #[serde(default)]
+    pub animations: PedAnimations,
+
+    #[serde(default)]
     pub capsule: PedCapsule,
 
     #[serde(default)]
@@ -71,6 +74,63 @@ impl Default for PedIdentity {
         Self {
             display_name: "Default Ped".into(),
             model: "player".into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Animační mapování (abstraktní akce -> konkrétní klip)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PedAnimations {
+    /// Klip pro stojící idle stav.
+    pub idle: String,
+    /// Klip pro chůzi.
+    pub walk: String,
+    /// Klip pro běh.
+    pub run: String,
+    /// Klip pro sprint.
+    pub sprint: String,
+    /// Klip pro crouch idle.
+    pub crouch_idle: String,
+    /// Klip pro crouch pohyb.
+    pub crouch_move: String,
+    /// Klip pro prone idle.
+    pub prone_idle: String,
+    /// Klip pro prone pohyb.
+    pub prone_move: String,
+    /// Klip startu skoku.
+    pub jump_start: String,
+    /// Klip loopu ve vzduchu.
+    pub jump_loop: String,
+    /// Klip pádu.
+    pub fall_loop: String,
+    /// Klip dopadu.
+    pub land: String,
+    /// Klip vault/mantle akce.
+    pub vault: String,
+    /// Klip reload akce.
+    pub reload: String,
+}
+
+impl Default for PedAnimations {
+    fn default() -> Self {
+        Self {
+            idle: "idle".into(),
+            walk: "walk".into(),
+            run: "run".into(),
+            sprint: "sprint".into(),
+            crouch_idle: "crouch_idle".into(),
+            crouch_move: "crouch_move".into(),
+            prone_idle: "prone_idle".into(),
+            prone_move: "prone_move".into(),
+            jump_start: "jump_start".into(),
+            jump_loop: "jump_loop".into(),
+            fall_loop: "fall_loop".into(),
+            land: "land".into(),
+            vault: "vault".into(),
+            reload: "reload".into(),
         }
     }
 }
