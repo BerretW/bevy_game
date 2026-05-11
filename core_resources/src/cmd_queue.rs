@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use core_shared::{Health, PlayerMarker};
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // LuaCommand — záměry, které Lua enqueuje přes World.* API
@@ -98,6 +99,20 @@ pub enum LuaCommand {
         player_id: u64,
         item: String,
         count: i32,
+    },
+    /// Phase 5 — zapne nebo vypne kolizi entity a jejích potomků.
+    /// Fyzikální backend reaguje přes `CollisionEnabled` komponent.
+    SetCollisionEnabled {
+        handle: u64,
+        enabled: bool,
+    },
+    /// Phase 5 — nastaví jeden materiálový parametr na entitě.
+    /// Param: "snow_level" | "dirt_level" | "wetness" (float 0..1)
+    ///        "snow_height" | "wet_height" (world-space Y cutoff; 0 = vypnuto).
+    SetMaterialParam {
+        handle: u64,
+        param: String,
+        value: f32,
     },
 }
 
@@ -190,14 +205,40 @@ pub struct NetworkedObjectMarker {
 }
 
 /// Embeddovaný handle na všech entitách spawnutých přes Lua bridge.
-/// Umožňuje `sync_entity_state_cache` iterovat přes všechny Lua entity.
-#[derive(Component, Debug, Clone, Copy)]
+/// Replikovaný klientům přes lightyear — client identifikuje síťové entity
+/// stejným u64 klíčem jako server.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EntityHandle(pub u64);
 
 /// Kanonické jméno modelu entity — aktualizované přes `SetModel` příkaz.
-/// Oddělené od markerů pro snadnější mutaci bez znalosti typu objektu.
-#[derive(Component, Debug, Clone)]
+/// Replikované klientům, aby věděli, jaký model načíst.
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelName(pub String);
+
+/// Lua-řízené zapnutí/vypnutí kolizí entity.
+/// Fyzikální backend (Avian) reaguje na `Changed<CollisionEnabled>` a
+/// přidává/odebírá `ColliderDisabled` na všech potomcích s kolizemi.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CollisionEnabled(pub bool);
+
+/// Per-entitní materiálové přepisy nastavované z Lua přes `World.SetMaterialParam`.
+/// `core_drawable` je aplikuje na mesh potomky v systému `apply_material_overrides`.
+/// Pole `None` = neměnit daný parametr.
+#[derive(Component, Debug, Clone, Default)]
+pub struct LuaMaterialOverride {
+    /// Množství sněhu (0.0–1.0) — `DrawableParams.weather.x`.
+    pub snow_level: Option<f32>,
+    /// Množství nečistot (0.0–1.0) — `DrawableParams.weather.y`.
+    pub dirt_level: Option<f32>,
+    /// Vlhkost povrchu (0.0–1.0) — `DrawableParams.weather.z`.
+    pub wetness: Option<f32>,
+    /// World-space Y cutoff pro sníh — pod touto hranicí sníh mizí (`flags.z`).
+    /// 0.0 = bez omezení výšky (sníh všude kde je snow_level > 0).
+    pub snow_height: Option<f32>,
+    /// World-space Y cutoff pro vlhkost — nad touto hranicí vlhkost mizí (`flags.w`).
+    /// 0.0 = bez omezení výšky (vlhkost všude kde je wetness > 0).
+    pub wet_height: Option<f32>,
+}
 
 /// Animační stav entity. Phase 4 propojí tuto komponentu s Bevy AnimationPlayer.
 #[derive(Component, Debug, Clone)]
@@ -244,6 +285,10 @@ pub struct EntitySnapshot {
     pub anim_speed: f32,
     pub anim_looping: bool,
     pub anim_paused: bool,
+    /// `true` pokud je entita síťová (má `NetworkedObjectMarker`).
+    pub is_networked: bool,
+    /// `true` pokud má entita aktivní kolizi (výchozí `true` bez `CollisionEnabled`).
+    pub collision_enabled: bool,
 }
 
 /// Sdílená cache stavu entit — handle → EntitySnapshot.
@@ -354,7 +399,10 @@ pub fn process_lua_commands(
     mut damage_events: MessageWriter<PendingDamageEvent>,
     transforms: Query<&Transform>,
     mut player_stats: Query<(&PlayerMarker, &mut Stats, &mut Inventory)>,
+    mut mat_overrides: Query<&mut LuaMaterialOverride>,
 ) {
+    let mut pending_mat: HashMap<u64, LuaMaterialOverride> = HashMap::new();
+
     for cmd in cmd_queue.drain() {
         match cmd {
             LuaCommand::SpawnLocalObject { handle, model, pos, rot } => {
@@ -564,6 +612,46 @@ pub fn process_lua_commands(
                     warn!("[cmd_queue] GiveItem: unknown player_id {}", player_id);
                 }
             }
+
+            LuaCommand::SetCollisionEnabled { handle, enabled } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    commands.entity(entity).insert(CollisionEnabled(enabled));
+                    debug!("[cmd_queue] SetCollisionEnabled handle={} enabled={}", handle, enabled);
+                } else {
+                    warn!("[cmd_queue] SetCollisionEnabled: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::SetMaterialParam { handle, param, value } => {
+                let entry = pending_mat.entry(handle).or_default();
+                match param.as_str() {
+                    "snow_level"  => entry.snow_level  = Some(value),
+                    "dirt_level"  => entry.dirt_level  = Some(value),
+                    "wetness"     => entry.wetness     = Some(value),
+                    "snow_height" => entry.snow_height = Some(value),
+                    "wet_height"  => entry.wet_height  = Some(value),
+                    other => warn!("[cmd_queue] SetMaterialParam: unknown param '{}'", other),
+                }
+            }
+        }
+    }
+
+    // Aplikuj nahromaděné materiálové přepisy po zpracování všech příkazů.
+    // Pokud entita již má LuaMaterialOverride, jen přepíšeme změněná pole (merge).
+    // Jinak se komponent přidá jako nový (deferred přes Commands).
+    for (handle, new_params) in pending_mat {
+        let Some(entity) = world_state.entity_for(handle) else {
+            warn!("[cmd_queue] SetMaterialParam: unknown handle {}", handle);
+            continue;
+        };
+        if let Ok(mut existing) = mat_overrides.get_mut(entity) {
+            if let Some(v) = new_params.snow_level  { existing.snow_level  = Some(v); }
+            if let Some(v) = new_params.dirt_level  { existing.dirt_level  = Some(v); }
+            if let Some(v) = new_params.wetness     { existing.wetness     = Some(v); }
+            if let Some(v) = new_params.snow_height { existing.snow_height = Some(v); }
+            if let Some(v) = new_params.wet_height  { existing.wet_height  = Some(v); }
+        } else {
+            commands.entity(entity).insert(new_params);
         }
     }
 }
@@ -578,12 +666,14 @@ pub fn sync_entity_state_cache(
         Option<&ModelName>,
         Option<&Health>,
         Option<&AnimationState>,
+        Has<NetworkedObjectMarker>,
+        Option<&CollisionEnabled>,
     )>,
     cache: Res<EntityStateCache>,
 ) {
     let mut lock = cache.0.lock().unwrap_or_else(|p| p.into_inner());
     lock.clear();
-    for (handle, transform, model, health, anim) in &query {
+    for (handle, transform, model, health, anim, is_networked, collision) in &query {
         let snapshot = EntitySnapshot {
             pos: transform.translation.to_array(),
             rot: [
@@ -601,6 +691,8 @@ pub fn sync_entity_state_cache(
             anim_speed: anim.map(|a| a.speed).unwrap_or(1.0),
             anim_looping: anim.map(|a| a.looping).unwrap_or(true),
             anim_paused: anim.map(|a| a.paused).unwrap_or(false),
+            is_networked,
+            collision_enabled: collision.map(|c| c.0).unwrap_or(true),
         };
         lock.insert(handle.0, snapshot);
     }

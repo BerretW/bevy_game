@@ -21,7 +21,7 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{ConnectionInfo, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, ModelName, ModelRegistry};
+use core_resources::{ConnectionInfo, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
@@ -148,7 +148,32 @@ impl Plugin for ClientGameplayPlugin {
                 collect_and_send_input,
             ).chain().run_if(in_state(AppState::InGame)),
         );
+        // Registrace replicated entity handles v LuaWorldState.
+        // Musí běžet po process_lua_commands (lokální spawny) ale před sync_entity_state_cache
+        // (aby replicated entity byly v cache ve stejném framu).
+        app.add_systems(
+            PostUpdate,
+            sync_replicated_entity_handles
+                .after(process_lua_commands)
+                .before(sync_entity_state_cache),
+        );
         // app.add_systems(Update, debug_player_movement.run_if(on_timer(std::time::Duration::from_secs(2))));
+    }
+}
+
+/// Registruje entity replicated přes lightyear v `LuaWorldState`.
+/// Zachytí všechny entity s nově přidaným `EntityHandle` komponentem —
+/// pro lokální spawn jsou již registrované přes `process_lua_commands`,
+/// pro replicated entity ze serveru je toto jediný bod registrace.
+fn sync_replicated_entity_handles(
+    new_handles: Query<(Entity, &EntityHandle), Added<EntityHandle>>,
+    mut world_state: ResMut<LuaWorldState>,
+) {
+    for (entity, handle) in &new_handles {
+        if world_state.entity_for(handle.0).is_none() {
+            world_state.register(handle.0, entity);
+            debug!("[gameplay] registered replicated entity handle={} entity={:?}", handle.0, entity);
+        }
     }
 }
 

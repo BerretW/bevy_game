@@ -171,6 +171,13 @@ impl Plugin for ProtocolPlugin {
         // aby sprite attachment query v gameplay.rs správně cílila na
         // renderovanou (Predicted) entitu, ne jen na Confirmed datovou entitu.
         app.register_component::<PlayerMarker>().add_prediction();
+
+        // Phase 5 — replikace Lua entity handles a jmen modelů.
+        // EntityHandle (u64) je "network ID" — stejné číslo na serveru i klientovi.
+        // ModelName řekne klientovi, jaký model má načíst pro replicated entity.
+        // Žádná prediction není potřeba — tato data se po spawnu nemění.
+        app.register_component::<core_resources::EntityHandle>();
+        app.register_component::<core_resources::ModelName>();
     }
 }
 

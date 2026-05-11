@@ -23,7 +23,7 @@ struct DrawableParams {
     tint:    vec4<f32>,  // RGBA multiplikátor
     weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
     tiling:  vec4<f32>,  // x=tiling, y=debug_viewer_mode, z=l1_tiling, w=mb_alpha_threshold
-    flags:   vec4<f32>,  // x=has_ma
+    flags:   vec4<f32>,  // x=has_ma, y=has_snow_tex, z=snow_height_cutoff_y, w=wet_height_cutoff_y
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var palette_texture: texture_2d<f32>;
@@ -90,7 +90,13 @@ fn fragment(
 
     // 3. Dirt / wet / snow přesně podle Blender graphu
     let dirt_mul = clamp(masks.g * params.weather.y, 0.0, 1.0);
-    let wet_mul  = clamp(masks.b * params.weather.z, 0.0, 1.0);
+
+    // wet_height (flags.w > 0): vlhkost mizí nad touto world Y hranicí (gradient 0.3m).
+    var wet_intensity = params.weather.z;
+    if params.flags.w > 0.0 {
+        wet_intensity *= 1.0 - smoothstep(params.flags.w - 0.15, params.flags.w + 0.15, in.world_position.y);
+    }
+    let wet_mul = clamp(masks.b * wet_intensity, 0.0, 1.0);
 
     let dirt_col = vec4<f32>(0.2, 0.15, 0.12, 1.0);
     let dirt_mix = mix(with_palette, dirt_col, dirt_mul);
@@ -106,6 +112,11 @@ fn fragment(
     let snow_coverage = geom_up * detail_up;
     let snow_raw = clamp(params.weather.x * pow(snow_coverage, 0.55), 0.0, 1.0);
     var snow_mul = smoothstep(0.05, 0.62, snow_raw);
+
+    // snow_height (flags.z > 0): sníh mizí pod touto world Y hranicí (gradient 0.3m).
+    if params.flags.z > 0.0 {
+        snow_mul *= smoothstep(params.flags.z - 0.15, params.flags.z + 0.15, in.world_position.y);
+    }
 
     // Hranový AO: kde pokrytí prudce klesá (přechod sníh→holý kamen), ztmavíme sníh.
     // Simuluje stín, který hrana sněhové vrstvy vrhá na bok — iluze výšky/objemu.

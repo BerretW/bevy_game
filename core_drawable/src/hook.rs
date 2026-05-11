@@ -10,7 +10,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 
-use core_resources::ModelName;
+use core_resources::{LuaMaterialOverride, ModelName};
 
 use crate::lod::{parse_lod_level, DefaultLodDistances, LodGroup, LodLevel};
 use crate::manifest::{CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
@@ -704,6 +704,66 @@ pub fn auto_hide_col_nodes(
             );
             // Skrýt, ale upozornit — authorský problém, ne runtime problém
             commands.entity(entity).insert(Visibility::Hidden);
+        }
+    }
+}
+
+/// Aplikuje `LuaMaterialOverride` z Lua sandboxu na všechny mesh potomky root entity.
+/// Mutuje `DrawableParams.weather` (snow/dirt/wetness) a `flags.z/w` (snow_height/wet_height).
+/// Každá mesh entita má vlastní instanci materiálu → přímá mutace je bezpečná.
+pub fn apply_material_overrides(
+    changed: Query<(Entity, &LuaMaterialOverride), Changed<LuaMaterialOverride>>,
+    children_q: Query<&Children>,
+    std_pbr_q: Query<&MeshMaterial3d<StandardPbrMaterial>>,
+    layered_q: Query<&MeshMaterial3d<LayeredEnvMaterial>>,
+    mut std_pbr: ResMut<Assets<StandardPbrMaterial>>,
+    mut layered: ResMut<Assets<LayeredEnvMaterial>>,
+) {
+    for (root, ov) in &changed {
+        apply_override_to_subtree(
+            root, ov, &children_q, &std_pbr_q, &layered_q,
+            &mut std_pbr, &mut layered,
+        );
+    }
+}
+
+fn apply_override_to_subtree(
+    entity: Entity,
+    ov: &LuaMaterialOverride,
+    children_q: &Query<&Children>,
+    std_pbr_q: &Query<&MeshMaterial3d<StandardPbrMaterial>>,
+    layered_q: &Query<&MeshMaterial3d<LayeredEnvMaterial>>,
+    std_pbr: &mut Assets<StandardPbrMaterial>,
+    layered: &mut Assets<LayeredEnvMaterial>,
+) {
+    if let Ok(mat_comp) = std_pbr_q.get(entity) {
+        if let Some(mat) = std_pbr.get_mut(&mat_comp.0) {
+            let w = &mut mat.extension.params.weather;
+            if let Some(v) = ov.snow_level { w.x = v; }
+            if let Some(v) = ov.dirt_level { w.y = v; }
+            if let Some(v) = ov.wetness    { w.z = v; }
+            let f = &mut mat.extension.params.flags;
+            if let Some(v) = ov.snow_height { f.z = v; }
+            if let Some(v) = ov.wet_height  { f.w = v; }
+        }
+    }
+    if let Ok(mat_comp) = layered_q.get(entity) {
+        if let Some(mat) = layered.get_mut(&mat_comp.0) {
+            let w = &mut mat.extension.params.weather;
+            if let Some(v) = ov.snow_level { w.x = v; }
+            if let Some(v) = ov.dirt_level { w.y = v; }
+            if let Some(v) = ov.wetness    { w.z = v; }
+            let f = &mut mat.extension.params.flags;
+            if let Some(v) = ov.snow_height { f.z = v; }
+            if let Some(v) = ov.wet_height  { f.w = v; }
+        }
+    }
+    if let Ok(children) = children_q.get(entity) {
+        for &child in children {
+            apply_override_to_subtree(
+                child, ov, children_q, std_pbr_q, layered_q,
+                std_pbr, layered,
+            );
         }
     }
 }

@@ -18,7 +18,7 @@ pub use hook::{
     DrawableHooked, DrawableSpawnIntent, DrawableFallbackTextures,
     DrawableCollision, DisableDrawableCollisions, DrawableMaterialsParam,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
-    setup_fallback_textures, auto_hide_col_nodes,
+    setup_fallback_textures, auto_hide_col_nodes, apply_material_overrides,
 };
 pub use loader::DrawableManifestLoader;
 pub use lod::{DefaultLodDistances, LodGroup, LodLevel, parse_lod_level, update_lod_visibility};
@@ -97,6 +97,7 @@ impl Plugin for DrawablePlugin {
                     hook_drawable_scenes.after(attach_drawable_intent),
                     adm::spawn_adm_scenes.after(hook_drawable_scenes),
                     update_lod_visibility.after(hook_drawable_scenes),
+                    apply_material_overrides,
                 ),
             );
     }

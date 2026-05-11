@@ -1,12 +1,54 @@
-Přidat porpodru LOD do enginu a bledner pluginu, aby bylo možné načítat a spravovat více verzí modelů s různou úrovní detailů (Level of Detail) pro optimalizaci výkonu. Systém LOD by měl automaticky přepínat mezi verzemi modelů na základě vzdálenosti od kamery nebo jiných kritérií, což umožní zlepšit výkon bez výrazného snížení vizuální kvality.
+Tento aktualizovaný požadavek reflektuje přechod na **ADM (Apparatus Drawable Mesh)** a klade důraz na využití již hotového LOD systému v `core_drawable`. Cílem je transformovat engine z prostředí pro statické modely na plnohodnotný animační systém AAA standardu.
 
-Požadavek: Implementace Skeletálního a Animačního Systému (ADS Animation & Socketing)
-Potřebuji do enginu (v rámci Bevy a Apparatus Drawable System) přidat podporu pro načítání a ovládání animovaných modelů s kostrou. Systém musí zavést striktní, univerzální názvosloví kostí inspirované AAA enginy (jako RAGE/RDR2) pro snadnou modulárnost a interakci mezi entitami.
-Klíčové vlastnosti návrhu:
-Prefixový systém kostí: Kosti v GLTF modelech budou rozděleny prefixy na deformační (DEF_), inverzní kinematiku (IK_), mechanické části (MEC_) a připojovací body neboli sockety (SOC_).
-Univerzální kostra charakterů: Zavedení standardizovaných jmen jako DEF_Head, DEF_Spine, DEF_R_Hand pro všechny humanoidy, což umožní sdílení animací (tzv. retargeting).
-Podpora IK: Zvláštní uzly IK_ (např. IK_L_Hand, IK_L_Foot), které animační systém enginu využije jako cíle pro procedurální usazování nohou na terén nebo přikládání rukou na zbraně.
-Socket-to-Socket Attachment: Usnadnění propojování předmětů s charaktery. Například zbraň bude mít SOC_Grip_Main a hráč SOC_R_Hand_Weapon. Skriptovací API pak umožní jednoduše zavolat World.Attach(weapon_handle, "SOC_Grip_Main", player_handle, "SOC_R_Hand_Weapon"), čímž se automaticky spočítají relativní transformace tak, aby madlo přesně padlo do dlaně.
-Dostupnost v Lua: Zpřístupnit tyto funkce do existujícího Lua API (přidat do Command Queue příkazy pro attachování a čtení pozic specifických kostí/socketů).
+---
 
+# Požadavek na vývoj: ADS Skeletální Systém, Socketing a Animační LOD
 
+## 1. Cíl úkolu
+Implementovat do **Apparatus Drawable System (ADS)** podporu pro kostry (skinning), animační retargeting pomocí striktního názvosloví kostí a pokročilý systém socketů pro dynamické připojování předmětů. Systém musí plně integrovat stávající LOD logiku pro optimalizaci CPU zátěže kostry.
+
+## 2. Technická specifikace & Architektura
+
+### A. Rozšíření binárního formátu ADM (verze 1.2)
+*   **Vertex Data:** Přidat export a import `JointIndices` (u16[4]) a `JointWeights` (f32[4]) pro každý vertex.
+*   **Skeleton Data:** Do ADM přidat sekci definující hierarchii kostí (jméno, parent_index) a `Inverse Bind Matrices`.
+*   **Metadata Uzlů:** Každý uzel v ADM musí mít flag určující jeho sémantiku (Standard, Bone, Socket, IK_Target).
+
+### B. Standardizace kostry (AAA Prefix Systém)
+V rámci exportu z Blenderu a loadingu v Rustu striktně rozlišovat kosti podle prefixů:
+1.  **`DEF_` (Deformation):** Standardní kosti ovlivňující mesh. Povinný retargeting (např. `DEF_Spine` musí mít u všech humanoidů stejný význam).
+2.  **`IK_` (Inverse Kinematics):** Uzly sloužící jako cíle pro IK solvery (nohy na terénu, ruce na zbrani).
+3.  **`SOC_` (Socket):** Speciální body pro attachmenty (např. `SOC_R_Hand_Weapon`, `SOC_Holster_Back`).
+4.  **`MEC_` (Mechanical):** Animované uzly bez vlivu na skinning (závěr zbraně, víko kufru).
+
+### C. Kontrola a vylepšení stávajícího LOD systému
+*   **Provázání s `core_drawable/src/lod.rs`:** Stávající systém přepíná vizuální meshe. Nově musí systém při přepnutí na nižší LOD (např. LOD2 a dál) **deaktivovat aktualizaci kostry (Skeletal Pruning)**.
+*   **Bone Skipping:** Pro vzdálené LODy (LOD2+) úplně despawnovat entity prstů a obličejových kostí, ponechat jen hlavní páteř a končetiny.
+*   **Static Fallback:** Pro nejnižší LOD u statických objektů převést model na statický mesh bez kostry.
+
+## 3. Socket-to-Socket Attachment
+Implementovat logiku pro propojování dvou entit přes jejich sockety:
+*   **Princip:** Při volání `Attach(child, child_soc, parent, parent_soc)` musí engine spočítat relativní transformaci tak, aby `child_soc` přesně lícoval s `parent_soc`.
+*   **Komponenta `AdsSocket`:** Nová komponenta držící metadata o dostupných socketech na entitě pro rychlý lookup.
+
+## 4. Integrace do Lua API (Command Queue)
+Rozšířit `core_resources/src/cmd_queue.rs` o následující příkazy:
+*   **`PlayAnimation(entity, anim_name, blend_time)`:** Spustí animaci (využít Bevy `AnimationPlayer`).
+*   **`Attach(child_handle, child_socket, parent_handle, parent_socket)`:** Logika socket-to-socket popsaná výše.
+*   **`Detach(child_handle)`:** Odpojení předmětu a návrat do world-space.
+*   **`GetSocketTransform(entity, socket_name)`:** Synchronní čtení pozice socketu z `EntityStateCache`.
+
+## 5. Blender Plugin (Toolkit) Update
+*   **LOD Auto-Packer:** Automaticky detekovat objekty se suffixem `_LODn` a exportovat je jako jediné ADM s více mesh sloty.
+*   **Prefix Validator:** Přidat tlačítko "Validate Skeleton", které zkontroluje, zda kosti odpovídají standardizovanému názvosloví.
+*   **Socket Gizmo:** Vytvořit speciální zobrazení pro `SOC_` uzly v Blenderu pro snazší vizuální orientaci designerů.
+
+## 6. Výkonnostní limity
+*   **Skeletal Parallelism:** Využít multithreading v Bevy pro výpočet transformací kostí.
+*   **Throttling:** Aktualizace kostry pro LOD1+ entity nemusí běžet každý frame (např. 30Hz místo 60Hz).
+*   **Zero-Copy Loading:** ADM loader musí načítat joint data přímo do GPU bufferů bez zbytečných mezikroků v CPU paměti.
+
+---
+
+### Poznámka pro vývojáře:
+*Při implementaci nahlédněte do `core_drawable/src/hook.rs`. Zpracování animací a kostry by mělo probíhat ve fázi `Phase 3: Aplikace definic` během processingu scény. Použijte stávající `DrawableManifest` pro definici vazeb mezi modely a jejich ped_physics profily.*

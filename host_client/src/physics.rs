@@ -3,6 +3,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use core_drawable::{CollisionShape, DrawableCollision};
+use core_resources::CollisionEnabled;
 
 pub struct ClientPhysicsPlugin;
 
@@ -13,7 +14,12 @@ impl Plugin for ClientPhysicsPlugin {
         app.init_resource::<NavMeshSurfaceCache>();
         // Vizualizace colliderů je při startu vypnutá — F3 ji přepíná.
         app.add_systems(Startup, disable_physics_debug_on_start);
-        app.add_systems(Update, (attach_or_update_drawable_colliders, rebuild_navmesh_surface_cache, toggle_physics_debug));
+        app.add_systems(Update, (
+            attach_or_update_drawable_colliders,
+            rebuild_navmesh_surface_cache,
+            toggle_physics_debug,
+            apply_collision_enabled,
+        ));
     }
 }
 
@@ -237,4 +243,40 @@ fn rebuild_navmesh_surface_cache(
     }
 
     cache.triangles = triangles;
+}
+
+/// Reaguje na `Changed<CollisionEnabled>` na root Lua entitách.
+/// Prochází celý strom potomků a přidává nebo odebírá Avian `ColliderDisabled`
+/// marker komponent, čímž zapíná/vypíná fyzikální kolize bez destrukce collideru.
+fn apply_collision_enabled(
+    changed: Query<(Entity, &CollisionEnabled), Changed<CollisionEnabled>>,
+    children_q: Query<&Children>,
+    has_collider: Query<Has<Collider>>,
+    mut commands: Commands,
+) {
+    for (root, ce) in &changed {
+        toggle_colliders_recursive(root, ce.0, &children_q, &has_collider, &mut commands);
+    }
+}
+
+fn toggle_colliders_recursive(
+    entity: Entity,
+    enabled: bool,
+    children_q: &Query<&Children>,
+    has_collider: &Query<Has<Collider>>,
+    commands: &mut Commands,
+) {
+    if has_collider.get(entity).unwrap_or(false) {
+        let mut ecmd = commands.entity(entity);
+        if enabled {
+            ecmd.remove::<ColliderDisabled>();
+        } else {
+            ecmd.insert(ColliderDisabled);
+        }
+    }
+    if let Ok(children) = children_q.get(entity) {
+        for &child in children {
+            toggle_colliders_recursive(child, enabled, children_q, has_collider, commands);
+        }
+    }
 }

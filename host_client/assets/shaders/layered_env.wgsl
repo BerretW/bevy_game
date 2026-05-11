@@ -19,7 +19,7 @@ struct DrawableParams {
     tint:    vec4<f32>,  // RGBA multiplikátor
     weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
     tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=mb_alpha_threshold
-    flags:   vec4<f32>,  // x=has_ma
+    flags:   vec4<f32>,  // x=has_ma, y=has_snow_tex, z=snow_height_cutoff_y, w=wet_height_cutoff_y
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var layer1_albedo_texture: texture_2d<f32>;
@@ -71,7 +71,13 @@ fn fragment(
 
     // 2. Dirt / wet / snow dle Blender graphu
     let dirt_mul = clamp(masks.g * params.weather.y, 0.0, 1.0);
-    let wet_mul  = clamp(masks.b * params.weather.z, 0.0, 1.0);
+
+    // wet_height (flags.w > 0): vlhkost mizí nad touto world Y hranicí (gradient 0.3m).
+    var wet_intensity = params.weather.z;
+    if params.flags.w > 0.0 {
+        wet_intensity *= 1.0 - smoothstep(params.flags.w - 0.15, params.flags.w + 0.15, in.world_position.y);
+    }
+    let wet_mul = clamp(masks.b * wet_intensity, 0.0, 1.0);
 
     let dirt_col = vec4<f32>(0.15, 0.12, 0.10, 1.0);
     let dirt_mix = mix(layer_color, dirt_col, dirt_mul);
@@ -84,6 +90,11 @@ fn fragment(
     let snow_geom = pow(geom_up, 1.6);
     let snow_detail = pow(detail_up, 2.2);
     var snow_mul = clamp(params.weather.x * (0.7 * snow_geom + 0.3 * snow_detail), 0.0, 1.0);
+
+    // snow_height (flags.z > 0): sníh mizí pod touto world Y hranicí (gradient 0.3m).
+    if params.flags.z > 0.0 {
+        snow_mul *= smoothstep(params.flags.z - 0.15, params.flags.z + 0.15, in.world_position.y);
+    }
     var snow_col = textureSample(snow_texture, snow_sampler, in.uv * params.tiling.y);
     if params.flags.y < 0.5 {
         let luma = dot(layer_color.rgb, vec3<f32>(0.299, 0.587, 0.114));

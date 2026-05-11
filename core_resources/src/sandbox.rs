@@ -1207,6 +1207,65 @@ fn install_runtime_api_inner(
         Ok(())
     })?)?;
 
+    // -- Phase 5 extensions ---------------------------------------------------
+
+    // World.GetDistance(handle1, handle2) → number|nil
+    // Vrátí euklidovskou vzdálenost mezi dvěma entitami v world units.
+    // Vrátí nil pokud jedna nebo obě entity neexistují v cache.
+    let ec = entity_cache.clone();
+    world.set("GetDistance", lua.create_function(move |_, (h1, h2): (u64, u64)| -> mlua::Result<mlua::Value> {
+        let (Some(s1), Some(s2)) = (ec.get(h1), ec.get(h2)) else {
+            return Ok(mlua::Value::Nil);
+        };
+        let dx = s1.pos[0] - s2.pos[0];
+        let dy = s1.pos[1] - s2.pos[1];
+        let dz = s1.pos[2] - s2.pos[2];
+        Ok(mlua::Value::Number(((dx * dx + dy * dy + dz * dz) as f64).sqrt()))
+    })?)?;
+
+    // World.GetNetworkId(handle) → number|nil
+    // Vrátí network ID entity pokud je síťová (NetworkedObjectMarker).
+    // Network ID = Lua handle (stejné číslo platí na serveru i klientovi).
+    // Vrátí nil pro lokální (non-networked) entity.
+    let ec = entity_cache.clone();
+    world.set("GetNetworkId", lua.create_function(move |_, handle: u64| -> mlua::Result<mlua::Value> {
+        let Some(snap) = ec.get(handle) else { return Ok(mlua::Value::Nil) };
+        if snap.is_networked {
+            Ok(mlua::Value::Integer(handle as i64))
+        } else {
+            Ok(mlua::Value::Nil)
+        }
+    })?)?;
+
+    // World.GetHandleFromNetworkId(net_id) → number|nil
+    // Přeloží network ID na Lua handle. Protože network ID == handle, jen ověří
+    // existenci entity v cache. Na klientovi funguje po replicaci EntityHandle.
+    let ec = entity_cache.clone();
+    world.set("GetHandleFromNetworkId", lua.create_function(move |_, net_id: u64| -> mlua::Result<mlua::Value> {
+        if ec.is_valid(net_id) {
+            Ok(mlua::Value::Integer(net_id as i64))
+        } else {
+            Ok(mlua::Value::Nil)
+        }
+    })?)?;
+
+    // World.SetCollisionEnabled(handle, enabled) — zapne/vypne fyzikální kolizi entity.
+    // Fyzikální backend (Avian) reaguje na kolizi přes CollisionEnabled komponent.
+    let cq = cmd_queue.clone();
+    world.set("SetCollisionEnabled", lua.create_function(move |_, (handle, enabled): (u64, bool)| {
+        cq.push(LuaCommand::SetCollisionEnabled { handle, enabled });
+        Ok(())
+    })?)?;
+
+    // World.SetMaterialParam(handle, param, value) — nastaví materiálový parametr.
+    // Param: "snow_level" | "dirt_level" | "wetness" (0.0–1.0).
+    // Aplikováno na mesh potomky entity systémem apply_material_overrides v core_drawable.
+    let cq = cmd_queue.clone();
+    world.set("SetMaterialParam", lua.create_function(move |_, (handle, param, value): (u64, String, f32)| {
+        cq.push(LuaCommand::SetMaterialParam { handle, param, value });
+        Ok(())
+    })?)?;
+
     globals.set("World", world)?;
 
     // Engine namespace — Model Registry (Phase 3.4)
