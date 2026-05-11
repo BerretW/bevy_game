@@ -868,8 +868,21 @@ fn update_crosshair_entity(
     let origin = cam.translation();
     let dir = cam.forward();
 
+    // Predikát: přeskoč entity jejichž kořen má PlayerMarker (vlastní hráčovo tělo).
+    // Hráčův collider leží na child entitě → musíme projet hierarchii nahoru.
+    let not_player = |entity: Entity| -> bool {
+        let mut current = entity;
+        loop {
+            if player_q.get(current).unwrap_or(false) { return false; }
+            match child_of_q.get(current) {
+                Ok(co) => current = co.parent(),
+                Err(_)  => return true,
+            }
+        }
+    };
+
     let filter = SpatialQueryFilter::default();
-    let hit = spatial_query.cast_ray(origin, dir, 100.0, true, &filter);
+    let hit = spatial_query.cast_ray_predicate(origin, dir, 100.0, true, &filter, &not_player);
     let Some(hit) = hit else {
         bridges.crosshair.set(None);
         return;
@@ -879,7 +892,7 @@ fn update_crosshair_entity(
     let mut current = hit.entity;
     let root_with_handle = loop {
         if let Ok(h) = handle_q.get(current) {
-            break Some((current, h.0));
+            break Some(h.0);
         }
         if let Ok(child_of) = child_of_q.get(current) {
             current = child_of.parent();
@@ -888,18 +901,10 @@ fn update_crosshair_entity(
         }
     };
 
-    let Some((root_entity, handle)) = root_with_handle else {
-        bridges.crosshair.set(None);
-        return;
-    };
-
-    // Ignoruj hráčské entity.
-    if player_q.get(root_entity).unwrap_or(false) {
-        bridges.crosshair.set(None);
-        return;
+    match root_with_handle {
+        Some(handle) => bridges.crosshair.set(Some(CrosshairHit { handle, distance: hit.distance })),
+        None         => bridges.crosshair.set(None),
     }
-
-    bridges.crosshair.set(Some(CrosshairHit { handle, distance: hit.distance }));
 }
 
 /// Přidá vizuál na lokální objekty spawnuté přes `World.SpawnLocalObject`.

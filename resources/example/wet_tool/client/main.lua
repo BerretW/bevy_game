@@ -1,42 +1,43 @@
 -- wet_tool — nastavení výšky namočení objektu.
---
--- Hráč namíří na objekt, přiblíží se na 1.2 m, stiskne E a zadá
--- výšku (v metrech od základny objektu) do které je objekt mokrý.
--- Vlhkost se zobrazí pomocí World.SetMaterialParam.
+-- Hráč namíří na objekt, přiblíží se na INTERACT_DIST m, stiskne E.
 
-local INTERACT_DIST = 1.2       -- maximální vzdálenost interakce [m]
-local INTERACT_KEY  = "e"       -- klávesa pro otevření promptu
+local INTERACT_DIST = 5.0
+local INTERACT_KEY  = "e"
 
 -- ── Stav ──────────────────────────────────────────────────────────────────
 
-local target_handle   = nil     -- handle entity pod crosshairem (nebo nil)
+local target_handle   = nil
 local target_distance = 0.0
 
-local prompt_open     = false
-local prompt_handle   = nil     -- entita editovaná v promptu
-local prompt_pos_y    = 0.0     -- world Y základny objektu
-local input_buf       = ""      -- aktuálně zadaný text (číslo)
+local prompt_open   = false
+local prompt_handle = nil
+local prompt_pos_y  = 0.0
+local input_buf     = ""
+
+local last_error    = nil
 
 -- ── Pomocné funkce ─────────────────────────────────────────────────────────
 
 local function apply_wet_height(handle, base_y, height_str)
     local h = tonumber(height_str)
-    if not h or h < 0 then return false end
-
-    -- wet_height = world Y základna + zadaná výška [m]
+    if not h or h < 0 then return false, "neplatna hodnota: '" .. height_str .. "'" end
     World.SetMaterialParam(handle, "wetness",    1.0)
     World.SetMaterialParam(handle, "wet_height", base_y + h)
-    return true
+    log_info("[wet_tool] wet_height=" .. height_str .. "m -> world Y=" .. tostring(base_y + h))
+    return true, nil
 end
 
 local function open_prompt(handle)
     local pos = World.GetPosition(handle)
-    if not pos then return end
-
+    if not pos then
+        last_error = "GetPosition nil pro handle " .. tostring(handle)
+        return
+    end
     prompt_handle = handle
-    prompt_pos_y  = pos[2]      -- world Y středu objektu (aproximace základny)
+    prompt_pos_y  = pos.y
     input_buf     = ""
     prompt_open   = true
+    last_error    = nil
 end
 
 local function close_prompt()
@@ -45,12 +46,9 @@ local function close_prompt()
     input_buf     = ""
 end
 
--- Vrátí true pokud je znak povoleno přidat (max délka 7 znaků).
 local function can_append(ch)
     if #input_buf >= 7 then return false end
-    if ch == "." then
-        return not input_buf:find(".", 1, true)
-    end
+    if ch == "." then return not input_buf:find(".", 1, true) end
     return true
 end
 
@@ -60,7 +58,6 @@ CreateThread(function()
     while true do
         Wait(0)
 
-        -- Zjisti entitu pod crosshairem (max INTERACT_DIST metrů).
         local hit = Raycast.GetEntityUnderCrosshair(INTERACT_DIST)
         if hit and World.IsValid(hit.handle) then
             target_handle   = hit.handle
@@ -70,40 +67,29 @@ CreateThread(function()
             target_distance = 0.0
         end
 
-        -- Vstup: otevření promptu klávesou E (jen pokud je cíl v dosahu a prompt zavřený).
         if not prompt_open then
             if target_handle and Input.IsKeyJustPressed(INTERACT_KEY) then
                 open_prompt(target_handle)
             end
         else
-            -- ── Zachycení kláves v promptu ────────────────────────────────
-            -- Čísla 0–9
             for _, d in ipairs({"0","1","2","3","4","5","6","7","8","9"}) do
                 if Input.IsKeyJustPressed(d) and can_append(d) then
                     input_buf = input_buf .. d
                 end
             end
-            -- Desetinná tečka (klávesa "period" nebo numpad "decimal")
             if Input.IsKeyJustPressed("period") and can_append(".") then
                 input_buf = input_buf .. "."
             end
-            -- Backspace
             if Input.IsKeyJustPressed("backspace") and #input_buf > 0 then
                 input_buf = input_buf:sub(1, -2)
             end
-            -- Enter → potvrdit
             if Input.IsKeyJustPressed("enter") then
                 if #input_buf > 0 and prompt_handle then
-                    local ok = apply_wet_height(prompt_handle, prompt_pos_y, input_buf)
-                    if ok then
-                        log_info("[wet_tool] wet_height=" .. input_buf .. "m aplikováno na " .. tostring(prompt_handle))
-                    else
-                        log_warn("[wet_tool] Neplatná hodnota: '" .. input_buf .. "'")
-                    end
+                    local ok, err = apply_wet_height(prompt_handle, prompt_pos_y, input_buf)
+                    if not ok then last_error = err end
                 end
                 close_prompt()
             end
-            -- Escape → zrušit
             if Input.IsKeyJustPressed("escape") then
                 close_prompt()
             end
@@ -112,34 +98,69 @@ CreateThread(function()
 end)
 
 -- ── GUI ───────────────────────────────────────────────────────────────────
+-- DrawText: anchor = TOP_LEFT → x,y je LEVY HORNI roh textu.
+-- DrawRect: anchor = CENTER  → x,y je STRED obdelniku.
+-- Font scale: font_size = scale * win_h * 0.04, clamp(8,256).
+--   Pro 1080p: scale 0.4 = 17px, 0.5 = 22px, 0.6 = 26px.
 
 CreateThread(function()
     while true do
         Wait(0)
 
-        if prompt_open then
-            -- Tmavý panel uprostřed obrazovky
-            local px, py = 0.5, 0.46
-            local pw, ph = 0.32, 0.16
-            Gui.DrawRect(px - pw/2, py - ph/2, pw, ph, 0.05, 0.05, 0.05, 0.88)
-            Gui.DrawBorder(px - pw/2, py - ph/2, pw, ph, 0.002, 0.3, 0.6, 1.0, 0.9)
+        -- ── Debug overlay ────────────────────────────────────────────────
+        local dy = 0.10
+        local function dbg(text, r, g, b)
+            Gui.DrawText(text, 0.01, dy, 0.40, r or 255, g or 255, b or 255, 220)
+            dy = dy + 0.024
+        end
 
-            Gui.DrawText("Výška namočení (metry od základny objektu)",
-                px, py - 0.04, 0.016, 0.85, 0.85, 0.85, 1.0, "center")
+        dbg("[wet_tool] dist_max=" .. INTERACT_DIST .. "m", 180, 180, 180)
+        if target_handle then
+            dbg("hit: h=" .. tostring(target_handle) .. "  d=" .. string.format("%.2f", target_distance) .. "m", 80, 255, 80)
+        else
+            dbg("hit: zadny (>dist / bez fyziky)", 255, 100, 60)
+        end
+        if prompt_open then
+            dbg("prompt: '" .. input_buf .. "'", 255, 220, 50)
+        end
+        if last_error then
+            dbg("ERR: " .. last_error, 255, 60, 60)
+        end
+
+        -- ── Prompt ────────────────────────────────────────────────────────
+        if prompt_open then
+            -- Panel: střed 0.5 × 0.46, rozměr 0.36 × 0.20
+            local px, py = 0.5, 0.46
+            local pw, ph = 0.36, 0.20
+            local lx = px - pw / 2 + 0.012   -- levy okraj textu s marginem
+
+            -- Pozadí a rámeček
+            Gui.DrawRect(px, py, pw, ph, 10, 10, 10, 230)
+            Gui.DrawBorder(px, py, pw, ph, 0.002, 60, 140, 255, 230)
+
+            -- Nadpis (TOP_LEFT, y = horní hrana panelu + malý mezera)
+            Gui.DrawText("Vyska namoceni [m od zakladny]",
+                lx, py - ph/2 + 0.015, 0.40, 200, 200, 200, 255)
 
             -- Vstupní pole
-            local display = input_buf == "" and "_" or input_buf
-            Gui.DrawRect(px - 0.08, py + 0.005, 0.16, 0.038, 0.1, 0.1, 0.1, 0.95)
-            Gui.DrawText(display .. " m",
-                px, py + 0.024, 0.022, 1.0, 1.0, 1.0, 1.0, "center")
+            local field_y = py + 0.015
+            Gui.DrawRect(px, field_y, pw - 0.04, 0.05, 20, 20, 20, 245)
+            Gui.DrawBorder(px, field_y, pw - 0.04, 0.05, 0.0015, 100, 100, 100, 200)
 
-            Gui.DrawText("Enter = potvrdit   |   Escape = zrušit",
-                px, py + 0.062, 0.013, 0.55, 0.55, 0.55, 1.0, "center")
+            local display = (input_buf == "" and "_" or input_buf) .. " m"
+            -- text vstupního pole: levý okraj pole + margin, vertikálně centrovat
+            Gui.DrawText(display,
+                px - (pw - 0.04)/2 + 0.015, field_y - 0.014, 0.55, 255, 255, 255, 255)
+
+            -- Nápověda (dolní část panelu)
+            Gui.DrawText("Enter = ok     Escape = zrusit",
+                lx, py + ph/2 - 0.035, 0.35, 120, 120, 120, 255)
 
         elseif target_handle then
-            -- Interakční hint dole uprostřed
-            Gui.DrawText("[" .. string.upper(INTERACT_KEY) .. "] Nastavit výšku namočení",
-                0.5, 0.87, 0.017, 1.0, 1.0, 1.0, 0.9, "center")
+            -- Hint dole uprostřed obrazovky
+            Gui.DrawRect(0.5, 0.88, 0.34, 0.040, 0, 0, 0, 170)
+            Gui.DrawText("[" .. string.upper(INTERACT_KEY) .. "] Nastavit vysku namoceni",
+                0.5 - 0.34/2 + 0.012, 0.868, 0.42, 255, 255, 255, 230)
         end
     end
 end)

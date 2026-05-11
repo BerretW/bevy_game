@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use bevy::prelude::*;
 
 use core_drawable::MapManifest;
-use core_resources::LocalObjectMarker;
+use core_resources::{EntityHandle, LocalObjectMarker, LuaWorldState};
 
 use crate::AppState;
 
@@ -45,6 +45,7 @@ fn asset_root() -> PathBuf {
 fn load_maps_on_enter(
     mut commands: Commands,
     mut loaded_maps: ResMut<LoadedMapFiles>,
+    mut world_state: ResMut<LuaWorldState>,
 ) {
     let maps_root = asset_root().join("maps");
     let files = collect_map_files(&maps_root);
@@ -97,7 +98,7 @@ fn load_maps_on_enter(
                 entry.id.clone()
             };
 
-            let mut entity = commands.spawn((
+            let mut entity_cmds = commands.spawn((
                 Name::new(format!("map:{}", id)),
                 transform,
                 LocalObjectMarker {
@@ -112,8 +113,14 @@ fn load_maps_on_enter(
             ));
 
             if entry.navmesh_only {
-                entity.insert(Visibility::Hidden);
+                entity_cmds.insert(Visibility::Hidden);
             }
+
+            // Přiřaď EntityHandle aby byl objekt viditelný pro Lua crosshair/API.
+            let entity_id = entity_cmds.id();
+            let handle = entity_id.to_bits();
+            entity_cmds.insert(EntityHandle(handle));
+            world_state.register(handle, entity_id);
 
             spawned_total += 1;
         }
