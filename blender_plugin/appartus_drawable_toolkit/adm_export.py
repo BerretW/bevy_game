@@ -802,7 +802,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
         if obj.parent and obj.parent in obj_to_node:
             parent_idx = obj_to_node[obj.parent]
 
-        skinned_mesh = node_type == 0 and _object_uses_armature(obj, armature_object)
+        skinned_mesh = node_type in (0, 1) and _object_uses_armature(obj, armature_object)
         bind_matrix = adjusted_local.copy() if skinned_mesh else None
         exported_local = mathutils.Matrix.Identity(4) if skinned_mesh else adjusted_local
         mat_bevy = _to_bevy_mat4(exported_local)
@@ -841,7 +841,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
                 if first_node_idx is None:
                     first_node_idx = node_idx
                 node_list.append((sub_name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
-                if is_bone_parent and bone_parent_name:
+                if is_bone_parent and bone_parent_name and not skinned_mesh:
                     pending_bone_parents.append((node_idx, bone_parent_name))
 
             if first_node_idx is not None:
@@ -879,7 +879,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
             node_idx = len(node_list)
             obj_to_node[obj] = node_idx
             node_list.append((obj.name, node_type, mesh_idx, parent_idx, mat_name, mat_bevy))
-            if is_bone_parent and bone_parent_name:
+            if is_bone_parent and bone_parent_name and not skinned_mesh:
                 pending_bone_parents.append((node_idx, bone_parent_name))
             original_local_by_obj[obj] = original_local
             exported_local_by_obj[obj] = exported_local

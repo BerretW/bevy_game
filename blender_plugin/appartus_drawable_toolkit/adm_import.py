@@ -481,6 +481,12 @@ def _bind_meshes_to_armature(mesh_data, node_data, node_objects, arm_obj, joint_
             arm_mod = obj.modifiers.new(name='Armature', type='ARMATURE')
             arm_mod.object = arm_obj
 
+        # Weighted mesh nemá být zároveň bone-parentnutý, jinak dochází k dvojí transformaci.
+        if obj.parent == arm_obj and getattr(obj, 'parent_type', '') == 'BONE':
+            obj.parent_type = 'OBJECT'
+            obj.parent_bone = ""
+            obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+
         vg_by_name = {vg.name: vg for vg in obj.vertex_groups}
         for bone_name in joint_bone_names:
             if bone_name not in vg_by_name:
