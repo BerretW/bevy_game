@@ -663,7 +663,6 @@ impl AssetLoader for PedPhysicsLoader {
         _ctx: &mut LoadContext<'_>,
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
-        use bevy::asset::io::Reader as _;
         reader.read_to_end(&mut bytes).await.map_err(|_| PedPhysicsError::Io)?;
         let text = std::str::from_utf8(&bytes).map_err(|e| PedPhysicsError::Toml(e.to_string()))?;
         toml::from_str(text).map_err(|e| PedPhysicsError::Toml(e.to_string()))

@@ -602,8 +602,6 @@ pub struct LuaSandbox {
     command_handlers: Rc<RefCell<HashMap<String, Vec<(RegistryKey, bool)>>>>,
     ace: AceRegistry,
     db_callbacks: Rc<RefCell<HashMap<u64, RegistryKey>>>,
-    db_counter: Rc<RefCell<u64>>,
-    local_stats: Option<LocalPlayerStats>,
     thread_pool: ThreadPool,
     elapsed_ms: u64,
 }
@@ -700,8 +698,6 @@ impl LuaSandbox {
             command_handlers,
             ace: ace_registry,
             db_callbacks,
-            db_counter,
-            local_stats,
             thread_pool,
             elapsed_ms: 0,
         })

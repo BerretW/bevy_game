@@ -1374,6 +1374,7 @@ fn animation_track_matches_flags(track_flags: u32, animation_flags: u32) -> bool
     (track_flags & animation_flags) != 0
 }
 
+#[allow(dead_code)]
 fn resolve_clip_index(scene: &AdmScene, selector: &str) -> Option<usize> {
     // dict:dict_name:clip_name — animation dictionary lookuplet
     if let Some(rest) = selector.strip_prefix("dict:") {

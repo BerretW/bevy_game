@@ -24,6 +24,7 @@ struct LoadedMapFiles {
     loaded: Vec<PathBuf>,
 }
 
+#[allow(dead_code)]
 #[derive(Component, Debug, Clone)]
 pub struct MapObjectInstance {
     pub map_file: String,

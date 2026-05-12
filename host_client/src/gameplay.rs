@@ -1,5 +1,10 @@
-/// Maximální vzdálenost od země, kdy se ještě počítá ground kontakt (v metrech)
-const GROUND_CONTACT_MAX_DIST: f32 = 0.05;
+/// Hysteréze pro detekci ground kontaktu (v metrech).
+/// Enter je mírně nad klidovou mezerou capsule-vs-ground (~0.047), aby se stav neflikal na hraně 0.05.
+const GROUND_CONTACT_DIST_ENTER: f32 = 0.06; // pro přechod do grounded
+const GROUND_CONTACT_DIST_EXIT: f32 = 0.11;  // pro ztrátu grounded
+const ANIM_GROUND_CONTACT_DIST_ENTER: f32 = 0.07;
+const ANIM_GROUND_CONTACT_DIST_EXIT: f32 = 0.14;
+const ANIM_GROUNDED_GRACE_SECS: f32 = 0.18;
 // Phase 3 — klientska gameplay vrstva.
 //
 // Phase 3.7: `RaycastBridge` se aktualizuje kazdy frame z pozice mysi.
@@ -163,7 +168,6 @@ struct AdaptiveIkSampleCache {
 struct FootIkBoneState {
     smooth_target_y: f32,
     blend_weight: f32, // 0 = no IK (animation drives), 1 = full IK
-    initialized: bool,
 }
 
 #[derive(Resource, Default)]
@@ -311,7 +315,6 @@ const GROUND_VEL_THRESHOLD: f32 = 0.25;
 /// Small sphere radius so the shape cast only hits things directly underfoot,
 /// not walls or steep terrain edges that a larger sphere would catch.
 const GROUND_CASTER_RADIUS: f32 = 0.14;
-const GROUND_CASTER_MAX_DISTANCE: f32 = 0.20;
 /// cos(~49°) — surfaces steeper than this are not walkable and do not count as ground.
 /// Matches the ped profile's slope_max_angle (46°) with a small margin.
 const GROUND_NORMAL_Y_MIN: f32 = 0.65;
@@ -390,7 +393,8 @@ fn apply_player_movement(
     for (marker, mut vel, shape_hits) in players.iter_mut() {
         if marker.client_id != lid.0 { continue; }
 
-        let raw_grounded = has_ground_contact(shape_hits);
+        let was_grounded = (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
+        let raw_grounded = has_ground_contact_with_state(shape_hits, was_grounded);
         if raw_grounded {
             ground_state.last_grounded_time = now;
         }
@@ -453,12 +457,37 @@ fn apply_player_movement(
     }
 }
 
+/// Základní ground kontakt bez znalosti předchozího stavu (ENTER threshold).
 fn has_ground_contact(shape_hits: Option<&ShapeHits>) -> bool {
+    has_ground_contact_with_state(shape_hits, false)
+}
+
+/// Detekuje ground kontakt s hysterézí podle předchozího stavu.
+fn has_ground_contact_with_state(shape_hits: Option<&ShapeHits>, was_grounded: bool) -> bool {
+    has_ground_contact_with_thresholds(
+        shape_hits,
+        was_grounded,
+        GROUND_CONTACT_DIST_ENTER,
+        GROUND_CONTACT_DIST_EXIT,
+    )
+}
+
+fn has_ground_contact_with_thresholds(
+    shape_hits: Option<&ShapeHits>,
+    was_grounded: bool,
+    enter_dist: f32,
+    exit_dist: f32,
+) -> bool {
+    let dist_threshold = if was_grounded {
+        exit_dist
+    } else {
+        enter_dist
+    };
     shape_hits
         .map(|hits| {
             hits.iter().any(|hit| {
                 ((-hit.normal2).dot(Vec3::Y) > GROUND_NORMAL_Y_MIN)
-                    && (hit.distance <= GROUND_CONTACT_MAX_DIST)
+                    && (hit.distance <= dist_threshold)
             })
         })
         .unwrap_or(false)
@@ -499,7 +528,8 @@ fn post_physics_vel_y_damp(
     for (marker, mut vel, shape_hits) in players.iter_mut() {
         if marker.client_id != lid.0 { continue; }
 
-        let raw_grounded = has_ground_contact(shape_hits);
+        let was_grounded = (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
+        let raw_grounded = has_ground_contact_with_state(shape_hits, was_grounded);
         if raw_grounded { ground_state.last_grounded_time = now; }
         let recently_grounded = (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
 
@@ -523,7 +553,7 @@ fn log_terrain_diag(
 
     diag.frame = diag.frame.wrapping_add(1);
 
-    let grounded = has_ground_contact(shape_hits);
+    let grounded = has_ground_contact_with_state(shape_hits, diag.was_grounded);
     let normal = get_ground_normal(shape_hits);
     let hit_count = shape_hits.map(|h| h.iter().count()).unwrap_or(0);
     let slope_deg = normal.y.clamp(-1.0, 1.0).acos().to_degrees();
@@ -883,7 +913,7 @@ fn update_player_state_driven_animations(
             || keys.pressed(bindings.move_left)
             || keys.pressed(bindings.move_right);
 
-    for (model_entity, adm_root, model_name, child_of, anim_state) in &mut model_roots {
+    for (model_entity, _adm_root, model_name, child_of, anim_state) in &mut model_roots {
         let parent = child_of.parent();
         let Ok((marker, handle, vel, shape_hits, mut memory)) = players.get_mut(parent) else {
             continue;
@@ -893,7 +923,14 @@ fn update_player_state_driven_animations(
             continue;
         };
 
-        let raw_grounded = has_ground_contact(shape_hits);
+        // Animace používají volnější grounded profil než fyzika,
+        // aby krátké odlepení od podlahy nespouštělo slide/fall spam.
+        let raw_grounded = has_ground_contact_with_thresholds(
+            shape_hits,
+            memory.was_grounded,
+            ANIM_GROUND_CONTACT_DIST_ENTER,
+            ANIM_GROUND_CONTACT_DIST_EXIT,
+        );
         if raw_grounded {
             memory.airborne_since = None;
         } else if memory.airborne_since.is_none() {
@@ -901,7 +938,7 @@ fn update_player_state_driven_animations(
         }
 
         // Ground grace okno tlumí 1-2 frame výpadky ShapeCaster kontaktu.
-        let grounded_grace = 0.10;
+        let grounded_grace = ANIM_GROUNDED_GRACE_SECS;
         let grounded = raw_grounded
             || memory
                 .airborne_since
@@ -1549,7 +1586,6 @@ fn apply_local_stairs_foot_ik(
             commands.entity(thigh_e).insert(FootIkBoneState {
                 smooth_target_y: foot_pos_y,
                 blend_weight: 0.0,
-                initialized: true,
             });
             return true;
         }
@@ -2292,8 +2328,9 @@ fn terrain_snap_kinematic(
         let blend = ik_enabled.blend_weight;
         if blend < 0.01 { continue; }
 
-        // Terrain snap je aktivní pouze pokud hráč stojí na zemi
-        if !has_ground_contact(shape_hits) { continue; }
+        // Terrain snap gate používá relaxed (EXIT) threshold, aby se snap nevypínal
+        // při hraničních framech kolem ENTER thresholdu.
+        if !has_ground_contact_with_state(shape_hits, true) { continue; }
 
         // Vezmi výšky obou nohou z raycastu
         let left_h  = stairs.left_foot_height;
