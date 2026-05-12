@@ -26,8 +26,8 @@ use bevy::asset::UnapprovedPathMode;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::gltf::{Gltf, GltfLoaderSettings};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
-use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
+use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use rfd::FileDialog;
 
@@ -37,21 +37,24 @@ use core_drawable::{
     CollisionShape, DrawableCollision,
     LodGroup,
     DrawableManifest, DrawableManifestRegistry, DrawablePlugin, EntityDef,
-    GltfHandleCache, TextureSource,
+    TextureSource,
     StandardPbrMaterial, LayeredEnvMaterial,
 };
 use core_resources::{AnimationState, AttachedAnimSets, ModelName, ModelRegistry};
 
 mod camera;
+mod state;
+mod scene;
+mod loader;
+mod animation;
 mod textures;
 mod vertex_painter;
 
-// ─── Spuštění ─────────────────────────────────────────────────────────────────
+pub use state::GltfHandleCache;
+
+use state::*;
 
 fn main() {
-    // Přeskočíme první arg (název exe) a filtrujeme cargo/OS flagy.
-    // Když někdo omylem spustí binárku s `--features dynamic_linking`,
-    // ignorujeme i následující hodnotu, aby se nebrala jako cesta modelu.
     let mut model_paths: Vec<PathBuf> = Vec::new();
     let mut skip_next = false;
     for arg in std::env::args().skip(1) {
@@ -92,9 +95,7 @@ fn main() {
                     ..default()
                 })
                 .set(AssetPlugin {
-                    // Dev: sdílíme shadery z host_client/assets.
-                    // Produkce: assets/ vedle exe musí obsahovat adresář shaders/.
-                    file_path: viewer_asset_root(),
+                    file_path: scene::viewer_asset_root(),
                     unapproved_path_mode: UnapprovedPathMode::Allow,
                     ..default()
                 }),
@@ -110,7 +111,7 @@ fn main() {
         .init_resource::<AnimDebugState>()
         .insert_resource(ViewerState::default())
         .insert_resource(ModelPaths(model_paths))
-        .add_systems(Startup, (setup_scene, load_models.after(setup_scene)))
+        .add_systems(Startup, (scene::setup_scene, load_models.after(scene::setup_scene)))
         .add_systems(
             Update,
             (
@@ -137,417 +138,13 @@ fn main() {
             ),
         )
         .add_systems(
-            Update,
+            PostUpdate,
             (
-                textures::init_texture_browser,
-                textures::handle_texture_keys,
-                textures::rebuild_panel,
-                textures::show_extract_status,
+                apply_forced_lod,
+                update_lod_panel.after(apply_forced_lod),
             ),
         )
-        // apply_forced_lod must run AFTER update_lod_visibility (which lives in Update via DrawablePlugin).
-        // PostUpdate is always after Update, so this ordering is guaranteed without ambiguous SystemTypeSet.
-        .add_systems(PostUpdate, (
-            apply_forced_lod,
-            update_lod_panel.after(apply_forced_lod),
-        ))
         .run();
-}
-
-// ─── Resources ────────────────────────────────────────────────────────────────
-
-#[derive(Resource)]
-struct ModelPaths(Vec<PathBuf>);
-
-#[derive(Resource, Default)]
-struct LodViewerState {
-    forced: Option<u8>,
-    panel_active: bool,
-}
-
-#[derive(Resource)]
-struct ViewerState {
-    grid_visible:      bool,
-    overlay_visible:   bool,
-    colliders_visible: bool,
-    skeleton_visible:  bool,
-}
-
-#[derive(Resource, Default)]
-struct RigViewerState {
-    ik_mode: bool,
-    ik_targets: Vec<Entity>,
-    ik_names: Vec<String>,
-    selected_ik: usize,
-    move_step: f32,
-}
-
-#[derive(Resource, Default)]
-struct AdmAnimationBrowser {
-    root: Option<Entity>,
-    model_name: Option<String>,
-    dictionaries: Vec<String>,
-    selected_dict_idx: usize,
-    clips: Vec<String>,
-    selected_idx: usize,
-    flags: u32,
-    speed: f32,
-    looping: bool,
-    paused: bool,
-    /// Notifies aktuálně vybraného klipu: (čas_sec, název)
-    notifies: Vec<(f32, String)>,
-}
-
-#[derive(Resource, Default)]
-struct ViewerSessionAnimHandles {
-    handles: HashMap<String, Handle<AnimationSet>>,
-}
-
-impl Default for ViewerState {
-    fn default() -> Self {
-        Self { grid_visible: true, overlay_visible: true, colliders_visible: false, skeleton_visible: false }
-    }
-}
-
-/// Presety pro weather efekty (snow, dirt, wetness, porosity).
-const WEATHER_PRESETS: &[(f32, f32, f32, f32, &str)] = &[
-    (0.0, 0.0, 0.0, 0.0, "clean"),
-    (0.0, 1.0, 0.0, 0.5, "dirty"),
-    (0.0, 0.0, 1.0, 0.8, "wet"),
-    (1.0, 0.0, 0.0, 0.0, "snowy"),
-    (0.2, 0.6, 0.3, 0.5, "combined"),
-];
-
-/// Debug kanály pro vertex color visualizaci (tiling.y kódování pro shader).
-/// 0.0 = normální render; záporné hodnoty → debug mode.
-const VCOL_DEBUG_MODES: &[(f32, &str)] = &[
-    ( 1.0, "normal"),
-    (-1.0, "vcol RGB"),
-    (-2.0, "vcol R (normal suppress)"),
-    (-3.0, "vcol G (dirt)"),
-    (-4.0, "vcol B (wet)"),
-    (-5.0, "vcol A (palette)"),
-];
-
-const ADM_ANIM_MASK_ALL: u32 = 1;
-const ADM_ANIM_MASK_RIGHT_UPPER_LIMB: u32 = 14;
-const ADM_ANIM_MASK_LEFT_UPPER_LIMB: u32 = 112;
-const ADM_ANIM_MASK_LOWER_BODY: u32 = 8064;
-const ADM_ANIM_MASK_UPPER_BODY: u32 = 24576;
-
-#[derive(Resource, Default)]
-struct WeatherState {
-    preset_idx: usize,
-    vcol_idx:   usize,
-}
-
-// ─── Asset root ───────────────────────────────────────────────────────────────
-
-/// Dev:  CARGO_MANIFEST_DIR = model_viewer/ → sdílíme host_client/assets.
-/// Prod: assets/ vedle exe.
-fn viewer_asset_root() -> String {
-    if let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let workspace = PathBuf::from(&dir)
-            .parent()
-            .map(|p| p.to_owned())
-            .unwrap_or_else(|| PathBuf::from(&dir));
-        let client_assets = workspace.join("host_client").join("assets");
-        if client_assets.exists() {
-            return client_assets.to_string_lossy().into_owned();
-        }
-        let local = PathBuf::from(&dir).join("assets");
-        if local.exists() {
-            return local.to_string_lossy().into_owned();
-        }
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|d| d.join("assets")))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "assets".to_string())
-}
-
-// ─── Scene setup ──────────────────────────────────────────────────────────────
-
-fn setup_scene(mut commands: Commands) {
-    // Kamera
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_translation(Vec3::new(0.0, 2.0, 5.0)).looking_at(Vec3::ZERO, Vec3::Y),
-        camera::OrbitCamera,
-    ));
-
-    // Hlavní světlo (key light — zleva shora)
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 10_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.8, 0.5, 0.0)),
-    ));
-
-    // Fill light (zprava zdola, bez stínů — eliminuje černé stěny)
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 3_500.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, 0.5, 0.5 + std::f32::consts::PI, 0.0)),
-    ));
-
-    // Rim light (zezadu shora — oddělí model od pozadí)
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 1_500.0,
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.4, 0.5 + std::f32::consts::PI * 0.5, 0.0)),
-    ));
-
-    // Ambientní složka — v Bevy 0.18 je Component, ne Resource
-    commands.spawn(AmbientLight {
-        color: Color::WHITE,
-        brightness: 600.0,
-        ..default()
-    });
-
-    // Help text (dole vlevo)
-    commands.spawn((
-        Text::new(
-            "Pravé drag: orbit  |  Střední drag: pan  |  Kolečko: zoom  \
-             |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export\n\
-               W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  X: kostra  |  Z: IK edit  |  L: LOD úroveň",
-        ),
-        TextFont { font_size: 13.0, ..default() },
-        TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(8.0),
-            left: Val::Px(8.0),
-            ..default()
-        },
-    ));
-
-    // Info overlay (nahoře vlevo)
-    commands.spawn((
-        Text::new("Načítám model…"),
-        TextFont { font_size: 14.0, ..default() },
-        TextColor(Color::srgba(0.9, 0.9, 0.9, 0.85)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            left: Val::Px(8.0),
-            ..default()
-        },
-        InfoOverlay,
-    ));
-
-    // Debug status (nahoře vpravo) — weather preset + vcol debug
-    let (_, _, _, _, w_name) = WEATHER_PRESETS[0];
-    let (_, v_name)          = VCOL_DEBUG_MODES[0];
-    commands.spawn((
-        Text::new(format!("Weather: {}  |  VCol: {}", w_name, v_name)),
-        TextFont { font_size: 13.0, ..default() },
-        TextColor(Color::srgba(1.0, 1.0, 0.6, 0.80)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            right: Val::Px(8.0),
-            ..default()
-        },
-        DebugStatus,
-    ));
-
-    // Collider info panel (nahoře vpravo, pod debug status) — skrytý dokud se nestiskne C
-    commands.spawn((
-        Text::new(""),
-        TextFont { font_size: 12.5, ..default() },
-        TextColor(Color::srgba(0.3, 1.0, 0.6, 0.90)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(30.0),
-            right: Val::Px(8.0),
-            max_width: Val::Px(440.0),
-            ..default()
-        },
-        Visibility::Hidden,
-        ColliderPanel,
-    ));
-
-    // LOD info panel (dole vpravo) — zobrazí se pokud model má LOD skupiny
-    commands.spawn((
-        Text::new(""),
-        TextFont { font_size: 12.5, ..default() },
-        TextColor(Color::srgba(0.4, 0.9, 1.0, 0.90)),
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(50.0),
-            right: Val::Px(8.0),
-            max_width: Val::Px(500.0),
-            ..default()
-        },
-        Visibility::Hidden,
-        LodPanel,
-    ));
-
-    // Animation panel (vpravo nahoře pod debug stavem)
-    commands.spawn((
-        Text::new(""),
-        TextFont { font_size: 12.5, ..default() },
-        TextColor(Color::srgba(1.0, 0.88, 0.55, 0.95)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(52.0),
-            right: Val::Px(8.0),
-            max_width: Val::Px(500.0),
-            ..default()
-        },
-        Visibility::Hidden,
-        AnimPanel,
-    ));
-
-    commands.spawn((
-        Text::new(""),
-        TextFont { font_size: 12.5, ..default() },
-        TextColor(Color::srgba(0.75, 0.95, 1.0, 0.95)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(52.0),
-            left: Val::Px(8.0),
-            max_width: Val::Px(460.0),
-            ..default()
-        },
-        Visibility::Hidden,
-        RigPanel,
-    ));
-
-    commands.spawn((
-        Text::new(""),
-        TextFont { font_size: 12.0, ..default() },
-        TextColor(Color::srgba(0.95, 0.80, 0.95, 0.95)),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(185.0),
-            right: Val::Px(8.0),
-            max_width: Val::Px(560.0),
-            ..default()
-        },
-        Visibility::Hidden,
-        AnimDebugPanel,
-    ));
-
-    // Top bar with file-loading shortcuts
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(6.0),
-                left: Val::Px(6.0),
-                right: Val::Px(6.0),
-                height: Val::Px(34.0),
-                display: Display::Flex,
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                column_gap: Val::Px(8.0),
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.06, 0.07, 0.10, 0.88)),
-        ))
-        .with_children(|parent| {
-            let button_style = Node {
-                min_width: Val::Px(128.0),
-                height: Val::Px(24.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            };
-
-            parent
-                .spawn((
-                    Button,
-                    button_style.clone(),
-                    BackgroundColor(Color::srgba(0.15, 0.18, 0.25, 0.95)),
-                    UiLoadAdmButton,
-                ))
-                .with_children(|btn| {
-                    btn.spawn((
-                        Text::new("Open ADM/GLB"),
-                        TextFont { font_size: 12.0, ..default() },
-                        TextColor(Color::srgba(0.96, 0.96, 0.98, 1.0)),
-                    ));
-                });
-
-            parent
-                .spawn((
-                    Button,
-                    button_style.clone(),
-                    BackgroundColor(Color::srgba(0.15, 0.18, 0.25, 0.95)),
-                    UiLoadAnimButton,
-                ))
-                .with_children(|btn| {
-                    btn.spawn((
-                        Text::new("Open ADS_ANIM"),
-                        TextFont { font_size: 12.0, ..default() },
-                        TextColor(Color::srgba(0.96, 0.96, 0.98, 1.0)),
-                    ));
-                });
-
-            parent
-                .spawn((
-                    Button,
-                    button_style,
-                    BackgroundColor(Color::srgba(0.18, 0.15, 0.28, 0.95)),
-                    UiDiagAnimButton,
-                ))
-                .with_children(|btn| {
-                    btn.spawn((
-                        Text::new("Diag ADS_ANIM"),
-                        TextFont { font_size: 12.0, ..default() },
-                        TextColor(Color::srgba(0.98, 0.96, 1.0, 1.0)),
-                    ));
-                });
-        });
-}
-
-// ─── Markery ──────────────────────────────────────────────────────────────────
-
-#[derive(Component)]
-struct InfoOverlay;
-
-#[derive(Component)]
-struct DebugStatus;
-
-#[derive(Component)]
-struct ColliderPanel;
-
-#[derive(Component)]
-struct LodPanel;
-
-#[derive(Component)]
-struct AnimPanel;
-
-#[derive(Component)]
-struct RigPanel;
-
-#[derive(Component)]
-struct AnimDebugPanel;
-
-#[derive(Component)]
-struct UiLoadAdmButton;
-
-#[derive(Component)]
-struct UiLoadAnimButton;
-
-#[derive(Component)]
-struct UiDiagAnimButton;
-
-#[derive(Resource, Default)]
-struct AnimDebugState {
-    text: String,
 }
 
 fn handle_loader_buttons(
