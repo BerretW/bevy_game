@@ -361,63 +361,16 @@ pub(crate) fn update_animation_overlay(
 
 pub(crate) fn update_anim_debug_overlay(
     debug: Res<AnimDebugState>,
-    roots: Query<(Entity, &ModelName, Option<&AttachedAnimSets>), With<AnimationState>>,
-    asset_server: Res<AssetServer>,
-    anim_set_assets: Res<Assets<AnimationSet>>,
-    anim_handles: Res<ViewerSessionAnimHandles>,
     mut panel: Query<(&mut Text, &mut Visibility), With<AnimDebugPanel>>,
 ) {
     let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
 
-    *vis = Visibility::Visible;
-    if !debug.text.trim().is_empty() {
-        txt.0 = debug.text.clone();
+    if debug.text.trim().is_empty() {
+        *vis = Visibility::Hidden;
+        txt.0.clear();
         return;
     }
 
-    let mut lines = vec!["── Runtime anim debug ──".to_string()];
-    lines.push(format!("AnimationState roots: {}", roots.iter().count()));
-
-    let mut any_runtime_clip = false;
-    for (entity, model_name, attached_sets) in &roots {
-        match attached_sets {
-            Some(attached_sets) => {
-                let (clips, dicts, _, _) = collect_anim_set_data(
-                    Some(attached_sets),
-                    &asset_server,
-                    &anim_set_assets,
-                    &anim_handles,
-                );
-                if clips.is_empty() {
-                    lines.push(format!(
-                        "root {:?} model:{} sets:{} clips:0 (not loaded or parse mismatch)",
-                        entity,
-                        model_name.0,
-                        attached_sets.sets.len()
-                    ));
-                } else {
-                    any_runtime_clip = true;
-                    lines.push(format!(
-                        "root {:?} model:{} sets:{} clips:{} dicts:{}",
-                        entity,
-                        model_name.0,
-                        attached_sets.sets.len(),
-                        clips.len(),
-                        dicts.len()
-                    ));
-                }
-            }
-            None => {
-                lines.push(format!("root {:?} model:{} sets:0", entity, model_name.0));
-            }
-        }
-    }
-
-    if any_runtime_clip {
-        lines.push("Runtime clips found. Use N/B/Space or top-bar Play/Pause.".to_string());
-    } else {
-        lines.push("No runtime clips found. Check whether AttachedAnimSets is populated.".to_string());
-    }
-
-    txt.0 = lines.join("\n");
+    *vis = Visibility::Visible;
+    txt.0 = debug.text.clone();
 }

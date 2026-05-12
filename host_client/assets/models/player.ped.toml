@@ -6,27 +6,27 @@
 
 [identity]
 display_name = "Default Player"
-model        = "mutant"
+model        = "player"
 
 # ---------------------------------------------------------------------------
 # Animace: abstraktní akce -> konkrétní klip z ADM modelu
-# Pozn.: názvy klipů musí odpovídat tomu, co vrací Engine.GetModelClipNames("mutant").
+# Pozn.: názvy klipů musí odpovídat tomu, co vrací Engine.GetModelClipNames("player").
 # ---------------------------------------------------------------------------
 [animations]
-idle        = "mutant_breathing_idle"
-walk        = "mutant_walking"
-run         = "mutant_walking"
-sprint      = "mutant_run_fast"
-crouch_idle = "mutant_crouch_idle"
-crouch_move = "mutant_crouch_walk"
-prone_idle  = "mutant_prone_idle"
-prone_move  = "mutant_prone_move"
-jump_start  = "mutant_jumping"
-jump_loop   = "mutant_jump_loop"
-fall_loop   = "mutant_fall"
-land        = "mutant_land"
-vault       = "mutant_vault"
-reload      = "mutant_reload"
+idle        = "player_breathing_idle"
+walk        = "player_walking"
+run         = "player_walking"
+sprint      = "player_run_fast"
+crouch_idle = "player_crouch_idle"
+crouch_move = "player_crouch_walk"
+prone_idle  = "player_prone_idle"
+prone_move  = "player_prone_move"
+jump_start  = "player_jumping"
+jump_loop   = "player_jump_loop"
+fall_loop   = "player_fall"
+land        = "player_land"
+vault       = "player_vault"
+reload      = "player_reload"
 
 # ---------------------------------------------------------------------------
 # Fyzikální tvar kapsle (Avian RigidBody)
