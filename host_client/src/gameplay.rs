@@ -6,7 +6,7 @@
 use bevy::input::mouse::MouseMotion;
 use bevy::ecs::message::MessageReader;
 use bevy::prelude::*;
-use bevy::transform::components::TransformTreeChanged;
+use bevy::transform::{components::TransformTreeChanged, TransformSystems};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use avian3d::prelude::*;
 use core_net::{ClientHandshakeState, HandshakeStatus};
@@ -22,6 +22,7 @@ use bevy_gltf::{
     GltfMeshName,
     GltfSceneExtras,
 };
+use core_drawable::TwoBoneIkSolver;
 use core_net::{player_action, InputChannel, PlayerInput};
 use core_resources::{
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
@@ -158,8 +159,8 @@ struct AdaptiveIkSampleCache {
 
 #[derive(Component, Debug, Default)]
 struct FootIkBoneState {
-    rest_y: f32,
-    offset_y: f32,
+    smooth_target_y: f32,
+    blend_weight: f32, // 0 = no IK (animation drives), 1 = full IK
     initialized: bool,
 }
 
@@ -223,10 +224,12 @@ impl Plugin for ClientGameplayPlugin {
                 .chain()
                 .run_if(in_state(AppState::InGame)),
         );
+        // IK foot placement: PostUpdate před propagací, aby animace (Update) kosti nastavila
+        // a IK je přepsal dřív než se počítají GlobalTransforms pro render → žádný frame-lag.
         app.add_systems(
-            Update,
+            PostUpdate,
             apply_local_stairs_foot_ik
-                .after(apply_lua_animation_state)
+                .before(TransformSystems::Propagate)
                 .run_if(in_state(AppState::InGame)),
         );
         app.add_systems(
@@ -1348,6 +1351,7 @@ fn apply_local_stairs_foot_ik(
     children_q: Query<&Children>,
     name_q: Query<&Name>,
     globals_q: Query<&GlobalTransform>,
+    parent_q: Query<&bevy::ecs::hierarchy::ChildOf>,
     mut transforms_q: Query<&mut Transform>,
     mut bone_state_q: Query<&mut FootIkBoneState>,
     mut commands: Commands,
@@ -1374,63 +1378,143 @@ fn apply_local_stairs_foot_ik(
         None
     };
 
-    let left_bone = resolve_bone(&["DEF_foot_l", "DEF-foot_l", "DEF_foot.L"]);
-    let right_bone = resolve_bone(&["DEF_foot_r", "DEF-foot_r", "DEF_foot.R"]);
+    let left_thigh  = resolve_bone(&["DEF_thigh_l",  "DEF-thigh_l",  "DEF_thigh.L"]);
+    let left_shin   = resolve_bone(&["DEF_shin_l",   "DEF-shin_l",   "DEF_shin.L"]);
+    let left_foot   = resolve_bone(&["DEF_foot_l",   "DEF-foot_l",   "DEF_foot.L"]);
+    let right_thigh = resolve_bone(&["DEF_thigh_r",  "DEF-thigh_r",  "DEF_thigh.R"]);
+    let right_shin  = resolve_bone(&["DEF_shin_r",   "DEF-shin_r",   "DEF_shin.R"]);
+    let right_foot  = resolve_bone(&["DEF_foot_r",   "DEF-foot_r",   "DEF_foot.R"]);
 
-    let apply_foot = |bone: Option<Entity>, target_world_y: f32,
-                      ik_cache: &AdaptiveIkSampleCache,
-                      globals_q: &Query<&GlobalTransform>,
-                      transforms_q: &mut Query<&mut Transform>,
-                      bone_state_q: &mut Query<&mut FootIkBoneState>,
-                      commands: &mut Commands| {
-        let Some(bone_entity) = bone else { return; };
-        let Ok(world_tf) = globals_q.get(bone_entity) else { return; };
-        let Ok(mut local_tf) = transforms_q.get_mut(bone_entity) else { return; };
-
-        if bone_state_q.get(bone_entity).is_err() {
-            commands.entity(bone_entity).insert(FootIkBoneState {
-                rest_y: local_tf.translation.y,
-                offset_y: 0.0,
+    // Returns true when state was freshly inserted (caller should skip this frame and wait for propagation)
+    let ensure_state = |thigh_e: Entity,
+                        foot_pos_y: f32,
+                        bone_state_q: &mut Query<&mut FootIkBoneState>,
+                        commands: &mut Commands| -> bool {
+        if bone_state_q.get(thigh_e).is_err() {
+            commands.entity(thigh_e).insert(FootIkBoneState {
+                smooth_target_y: foot_pos_y,
+                blend_weight: 0.0,
                 initialized: true,
             });
+            return true;
         }
-        let Ok(mut state) = bone_state_q.get_mut(bone_entity) else { return; };
-        if !state.initialized {
-            state.rest_y = local_tf.translation.y;
-            state.offset_y = 0.0;
-            state.initialized = true;
-        }
-
-        let target_offset = if ik_cache.on_stairs {
-            let current_world_y = world_tf.translation().y;
-            let world_delta = (target_world_y - current_world_y).clamp(-0.20, 0.20);
-            (state.offset_y + world_delta).clamp(-0.25, 0.25)
-        } else {
-            0.0
-        };
-
-        let alpha = if ik_cache.on_stairs { 0.35 } else { 0.08 };
-        state.offset_y += (target_offset - state.offset_y) * alpha;
-        local_tf.translation.y = state.rest_y + state.offset_y;
+        false
     };
 
-    apply_foot(
-        left_bone,
+    let apply_leg_ik = |thigh: Option<Entity>, shin: Option<Entity>, foot: Option<Entity>,
+                        target_world_y: f32,
+                        ik_cache: &AdaptiveIkSampleCache,
+                        globals_q: &Query<&GlobalTransform>,
+                        parent_q: &Query<&bevy::ecs::hierarchy::ChildOf>,
+                        transforms_q: &mut Query<&mut Transform>,
+                        bone_state_q: &mut Query<&mut FootIkBoneState>,
+                        commands: &mut Commands| {
+        let (Some(thigh_e), Some(shin_e), Some(foot_e)) = (thigh, shin, foot) else { return; };
+
+        let Ok(thigh_gt) = globals_q.get(thigh_e) else { return; };
+        let Ok(shin_gt)  = globals_q.get(shin_e)  else { return; };
+        let Ok(foot_gt)  = globals_q.get(foot_e)  else { return; };
+
+        let thigh_pos = thigh_gt.translation();
+        let shin_pos  = shin_gt.translation();
+        let foot_pos  = foot_gt.translation();
+
+        let len_a = thigh_pos.distance(shin_pos);
+        let len_b = shin_pos.distance(foot_pos);
+        if len_a < 0.001 || len_b < 0.001 { return; }
+
+        if ensure_state(thigh_e, foot_pos.y, bone_state_q, commands) { return; }
+        let Ok(mut state) = bone_state_q.get_mut(thigh_e) else { return; };
+
+        if ik_cache.on_stairs {
+            // Snap IK target to current foot on first entry so there's no pop
+            if state.blend_weight < 0.01 {
+                state.smooth_target_y = foot_pos.y;
+            }
+            state.smooth_target_y += (target_world_y - state.smooth_target_y) * 0.20;
+            state.blend_weight = (state.blend_weight + 0.15).min(1.0);
+        } else {
+            // Ramp out — never update smooth_target_y here (avoids chasing walk-anim oscillation)
+            state.blend_weight = (state.blend_weight - 0.06).max(0.0);
+        }
+
+        if state.blend_weight < 0.01 { return; }
+
+        let ik_target = Vec3::new(foot_pos.x, state.smooth_target_y, foot_pos.z);
+
+        // Derive pole hint from current knee direction (shin offset from thigh-foot midpoint)
+        let midpoint = (thigh_pos + foot_pos) * 0.5;
+        let pole_hint = if (shin_pos - midpoint).length_squared() > 0.0001 {
+            (shin_pos - midpoint).normalize()
+        } else {
+            Vec3::Z
+        };
+
+        let (new_shin_pos, new_foot_pos) = TwoBoneIkSolver::solve(
+            thigh_pos, ik_target, len_a, len_b, pole_hint,
+        );
+
+        // Read current local transforms (values copied immediately so borrows drop)
+        let thigh_local_rot = transforms_q.get(thigh_e).map(|t| t.rotation).unwrap_or(Quat::IDENTITY);
+        let shin_local_rot  = transforms_q.get(shin_e).map(|t| t.rotation).unwrap_or(Quat::IDENTITY);
+        let foot_local_t    = transforms_q.get(foot_e).map(|t| t.translation).unwrap_or(Vec3::NEG_Y * len_b);
+
+        let thigh_parent_rot = parent_q.get(thigh_e).ok()
+            .and_then(|c| globals_q.get(c.parent()).ok())
+            .map(|gt| gt.to_scale_rotation_translation().1)
+            .unwrap_or(Quat::IDENTITY);
+
+        let thigh_world_rot = thigh_parent_rot * thigh_local_rot;
+
+        // Rotate thigh: arc from old shin direction to new shin direction
+        let old_dir_sq = (shin_pos     - thigh_pos).length_squared();
+        let new_dir_sq = (new_shin_pos - thigh_pos).length_squared();
+        if old_dir_sq < 0.000001 || new_dir_sq < 0.000001 { return; }
+        let old_thigh_dir = (shin_pos     - thigh_pos) / old_dir_sq.sqrt();
+        let new_thigh_dir = (new_shin_pos - thigh_pos) / new_dir_sq.sqrt();
+
+        let delta_thigh = if old_thigh_dir.dot(new_thigh_dir) < 0.99999 {
+            Quat::from_rotation_arc(old_thigh_dir, new_thigh_dir)
+        } else {
+            Quat::IDENTITY
+        };
+
+        let new_thigh_world_rot = delta_thigh * thigh_world_rot;
+        let new_thigh_local     = thigh_parent_rot.inverse() * new_thigh_world_rot;
+
+        // Rotate shin: arc from old shin→foot direction to new shin→foot direction, in thigh space
+        let foot_local_len_sq = foot_local_t.length_squared();
+        let new_foot_vec_sq   = (new_foot_pos - new_shin_pos).length_squared();
+        let new_shin_local = if foot_local_len_sq > 0.000001 && new_foot_vec_sq > 0.000001 {
+            let foot_local_dir = foot_local_t / foot_local_len_sq.sqrt();
+            let v = (shin_local_rot * foot_local_dir).normalize();
+            let u = (new_thigh_world_rot.inverse() * (new_foot_pos - new_shin_pos)).normalize();
+            if v.dot(u) < 0.99999 {
+                Quat::from_rotation_arc(v, u) * shin_local_rot
+            } else {
+                shin_local_rot
+            }
+        } else {
+            shin_local_rot
+        };
+
+        // Blend between animation-driven rotation and IK rotation
+        let final_thigh = thigh_local_rot.slerp(new_thigh_local, state.blend_weight);
+        let final_shin  = shin_local_rot.slerp(new_shin_local, state.blend_weight);
+
+        if let Ok(mut t) = transforms_q.get_mut(thigh_e) { t.rotation = final_thigh; }
+        if let Ok(mut t) = transforms_q.get_mut(shin_e)  { t.rotation = final_shin; }
+    };
+
+    apply_leg_ik(
+        left_thigh, left_shin, left_foot,
         ik_cache.left_foot_y + 0.015,
-        &ik_cache,
-        &globals_q,
-        &mut transforms_q,
-        &mut bone_state_q,
-        &mut commands,
+        &ik_cache, &globals_q, &parent_q, &mut transforms_q, &mut bone_state_q, &mut commands,
     );
-    apply_foot(
-        right_bone,
+    apply_leg_ik(
+        right_thigh, right_shin, right_foot,
         ik_cache.right_foot_y + 0.015,
-        &ik_cache,
-        &globals_q,
-        &mut transforms_q,
-        &mut bone_state_q,
-        &mut commands,
+        &ik_cache, &globals_q, &parent_q, &mut transforms_q, &mut bone_state_q, &mut commands,
     );
 }
 

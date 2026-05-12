@@ -6,7 +6,7 @@
 
 [identity]
 display_name = "Default Player"
-model        = "player"
+model        = "zombie"
 
 # ---------------------------------------------------------------------------
 # Animace: abstraktní akce -> konkrétní klip z ADM modelu

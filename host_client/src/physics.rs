@@ -671,7 +671,9 @@ fn raycast_stairs_under_player(
             true,
             &SpatialQueryFilter::default(),
         ) {
-            stairs.left_foot_height = hit.distance;
+            // Ukládáme world Y pozici povrchu, NE vzdálenost paprsku.
+            // apply_ik_to_skeleton ji používá jako cílovou Y pro nohu.
+            stairs.left_foot_height = left_foot_origin.y - hit.distance;
         } else {
             stairs.left_foot_height = 0.0;
         }
@@ -685,7 +687,7 @@ fn raycast_stairs_under_player(
             true,
             &SpatialQueryFilter::default(),
         ) {
-            stairs.right_foot_height = hit.distance;
+            stairs.right_foot_height = right_foot_origin.y - hit.distance;
         } else {
             stairs.right_foot_height = 0.0;
         }
