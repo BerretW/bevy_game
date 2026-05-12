@@ -27,7 +27,7 @@ use core_resources::{
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
     DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
     LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
-    ModelRegistry, process_lua_commands, sync_entity_state_cache,
+    ModelRegistry, StairsCollider, process_lua_commands, sync_entity_state_cache,
 };
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
@@ -194,6 +194,7 @@ impl Plugin for ClientGameplayPlugin {
                 update_connection_bridge,
                 update_local_player_visibility,
                 publish_input_state_to_lua,
+                publish_stairs_state_to_lua,
                 attach_mesh_to_local_objects,
                 attach_mesh_to_dummy_objects,
                 update_player_state_driven_animations,
@@ -1098,6 +1099,71 @@ fn publish_input_state_to_lua(
     .unwrap_or_default();
 
     local_bus.push("input:state".to_string(), payload);
+}
+
+/// Publikuje stav detekce STAIRS trigger collideru pod lokálním hráčem.
+/// Event: `stairs:state`
+fn publish_stairs_state_to_lua(
+    local_bus: Res<LocalEventBus>,
+    local_client_id: Option<Res<LocalClientId>>,
+    players: Query<(&PlayerMarker, &Transform, Option<&LinearVelocity>, Option<&ShapeHits>), With<Predicted>>,
+    stairs_q: Query<(), With<StairsCollider>>,
+    child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
+    spatial_query: SpatialQuery,
+) {
+    let Some(lid) = local_client_id.as_ref() else { return; };
+
+    let Some((_, tf, vel, shape_hits)) = players.iter().find(|(marker, _, _, _)| marker.client_id == lid.0) else {
+        return;
+    };
+
+    let is_stairs_or_parent = |entity: Entity| -> bool {
+        let mut current = entity;
+        loop {
+            if stairs_q.get(current).is_ok() {
+                return true;
+            }
+            match child_of_q.get(current) {
+                Ok(co) => current = co.parent(),
+                Err(_) => return false,
+            }
+        }
+    };
+
+    let origin = tf.translation + Vec3::new(0.0, 0.20, 0.0);
+    let dir = Dir3::NEG_Y;
+    let max_dist = 2.2;
+    let filter = SpatialQueryFilter::default();
+    let hit = spatial_query.cast_ray(origin, dir, max_dist, true, &filter);
+
+    let on_stairs = hit.as_ref().map(|h| is_stairs_or_parent(h.entity)).unwrap_or(false);
+    let hit_distance = hit.as_ref().map(|h| h.distance).unwrap_or(-1.0);
+    let hit_pos = hit
+        .as_ref()
+        .map(|h| origin + Vec3::new(0.0, -h.distance, 0.0));
+    let grounded = has_ground_contact(shape_hits);
+    let vy = vel.map(|v| v.y).unwrap_or(0.0);
+
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "on_stairs": on_stairs,
+        "reacting": on_stairs && grounded,
+        "grounded": grounded,
+        "hit_distance": hit_distance,
+        "hit_pos": hit_pos.map(|p| serde_json::json!({
+            "x": p.x,
+            "y": p.y,
+            "z": p.z,
+        })),
+        "player": {
+            "x": tf.translation.x,
+            "y": tf.translation.y,
+            "z": tf.translation.z,
+            "vy": vy,
+        }
+    }))
+    .unwrap_or_default();
+
+    local_bus.push("stairs:state".to_string(), payload);
 }
 
 // ---------------------------------------------------------------------------

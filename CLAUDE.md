@@ -458,6 +458,8 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 
 **input:state** (client-only local event): `{ move={x,y}, keys={...} }` — emitován každý frame přes `LocalEventBus`.
 
+**stairs:state** (client-only local event): `{ on_stairs, reacting, grounded, hit_distance, hit_pos={x,y,z}|nil, player={x,y,z,vy} }` — emitován každý frame pro debug detekce `StairsCollider` pod lokálním hráčem.
+
 `payload` = libovolná Lua hodnota, serializována jako JSON. `TriggerClientEvent` target podporuje integer i string.
 
 ---
