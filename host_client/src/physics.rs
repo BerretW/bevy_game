@@ -663,13 +663,16 @@ fn raycast_stairs_under_player(
 ) {
     for (global_tf, mut stairs) in &mut on_stairs_q {
         // Raycast pod levou nohou (-X offset)
+        // Filtrujeme LayerMask::DEFAULT (0b01) — vylučujeme player capsule (0b10),
+        // jinak by paprsek zasáhl vlastní tělo a vrátil nesmyslné výšky.
+        let foot_filter = SpatialQueryFilter::from_mask(LayerMask::DEFAULT);
         let left_foot_origin = global_tf.translation() + Vec3::new(-0.10, 0.05, 0.0);
         if let Some(hit) = spatial_query.cast_ray(
             left_foot_origin,
             Dir3::NEG_Y,
             1.5,  // max distance [m]
             true,
-            &SpatialQueryFilter::default(),
+            &foot_filter,
         ) {
             // Ukládáme world Y pozici povrchu, NE vzdálenost paprsku.
             // apply_ik_to_skeleton ji používá jako cílovou Y pro nohu.
@@ -685,7 +688,7 @@ fn raycast_stairs_under_player(
             Dir3::NEG_Y,
             1.5,
             true,
-            &SpatialQueryFilter::default(),
+            &foot_filter,
         ) {
             stairs.right_foot_height = right_foot_origin.y - hit.distance;
         } else {

@@ -26,7 +26,7 @@ pub use cmd_queue::{
     ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider,
     EntityStateCache, IkEnabledComponent, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, PendingDamageEvent,
-    PlayerEntityMap, PlayerStatsCache, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
+    PlayerEntityMap, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
     process_lua_commands, sync_entity_state_cache,
 };
 pub use db_bridge::{

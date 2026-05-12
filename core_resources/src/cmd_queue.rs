@@ -143,6 +143,18 @@ pub enum LuaCommand {
     DisableIk {
         handle: u64,
     },
+    /// Phase 4.3 — Zapne Root Motion na ADM entitě.
+    EnableRootMotion {
+        handle: u64,
+        /// Jméno root bonu. Pokud None, použije výchozí "DEF_hips".
+        root_bone_name: Option<String>,
+        /// Pokud true, ignoruj Y-složku delty (hráč používá gravitaci/fyziku pro Y).
+        lock_y: bool,
+    },
+    /// Phase 4.3 — Vypne Root Motion na ADM entitě.
+    DisableRootMotion {
+        handle: u64,
+    },
     /// Připojí child entitu k parent entitě přes dvojici socketů.
     Attach {
         child_handle: u64,
@@ -455,6 +467,33 @@ impl Default for IkEnabledComponent {
     fn default() -> Self {
         Self {
             blend_weight: 1.0,
+        }
+    }
+}
+
+/// Phase 4.3 — Root Motion stav pro ADM entity.
+/// Sleduje předchozí pozici root bonu a extrahuje delta pohyb z animace.
+/// Typicky se vkládá na `AdmSceneRoot` entitu; systém `extract_root_motion`
+/// pak aplikuje delta na parent entity (hráč, vozidlo, …).
+#[derive(Component, Debug, Clone)]
+pub struct RootMotionState {
+    /// Jméno root bonu v `AdmNodeEntityMap`. Typicky "DEF_hips", "Root" nebo "Armature".
+    pub root_bone_name: String,
+    /// Světová pozice root bonu z minulého framu (None = první frame).
+    pub prev_root_world_pos: Option<Vec3>,
+    /// Delta pohybu vypočítaná v aktuálním framu — připravená k aplikaci na parent.
+    pub accumulated_delta: Vec3,
+    /// Pokud `true`, ignoruj Y-složku delty (gravitace řídí výšku hráče).
+    pub lock_y: bool,
+}
+
+impl Default for RootMotionState {
+    fn default() -> Self {
+        Self {
+            root_bone_name: "DEF_hips".to_string(),
+            prev_root_world_pos: None,
+            accumulated_delta: Vec3::ZERO,
+            lock_y: true,
         }
     }
 }
@@ -975,6 +1014,29 @@ pub fn process_lua_commands(
                     debug!("[cmd_queue] DisableIk handle={}", handle);
                 } else {
                     warn!("[cmd_queue] DisableIk: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::EnableRootMotion { handle, root_bone_name, lock_y } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    commands.entity(entity).insert(RootMotionState {
+                        root_bone_name: root_bone_name.unwrap_or_else(|| "DEF_hips".to_string()),
+                        prev_root_world_pos: None,
+                        accumulated_delta: Vec3::ZERO,
+                        lock_y,
+                    });
+                    debug!("[cmd_queue] EnableRootMotion handle={} lock_y={}", handle, lock_y);
+                } else {
+                    warn!("[cmd_queue] EnableRootMotion: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::DisableRootMotion { handle } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    commands.entity(entity).remove::<RootMotionState>();
+                    debug!("[cmd_queue] DisableRootMotion handle={}", handle);
+                } else {
+                    warn!("[cmd_queue] DisableRootMotion: unknown handle {}", handle);
                 }
             }
 

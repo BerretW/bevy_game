@@ -14,6 +14,7 @@ pub use adm::{
     AdmBlendSpace, AdmBlendSpaceClip, AdmBlendSpaceKind,
     AdmLoader, AnimSetLoader, AnimationSet, AnimationSetDictionary,
     AdmNode, AdmNodeEntityMap, AdmNodeType, AdmScene, AdmSceneRoot, AdmSceneSpawned,
+    extract_root_motion,
 };
 pub use ped::{PedPhysicsDef, PedPhysicsLoader, PedPhysicsRegistry,
     PedCapsule, PedMovement, PedStances, StanceDef,
@@ -116,6 +117,7 @@ impl Plugin for DrawablePlugin {
                     hook_drawable_scenes.after(attach_drawable_intent),
                     adm::spawn_adm_scenes.after(hook_drawable_scenes),
                     adm::apply_adm_animations.after(adm::spawn_adm_scenes),
+                    adm::extract_root_motion.after(adm::apply_adm_animations),
                     adm::forward_adm_anim_notifies_to_local_bus.after(adm::apply_adm_animations),
                     update_lod_visibility.after(hook_drawable_scenes),
                     apply_skeletal_pruning.after(update_lod_visibility),

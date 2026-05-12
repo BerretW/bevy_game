@@ -1856,6 +1856,30 @@ fn install_runtime_api_inner(
         Ok(())
     })?)?;
 
+    // World.EnableRootMotion(handle, opts?) — Phase 4.3 — zapne Root Motion
+    // opts: { root_bone = "DEF_hips", lock_y = true }
+    let cq = cmd_queue.clone();
+    world.set("EnableRootMotion", lua.create_function(
+        move |_, (handle, opts): (u64, mlua::Value)| {
+            let (root_bone_name, lock_y) = if let mlua::Value::Table(t) = opts {
+                let bone: Option<String> = t.get("root_bone").ok();
+                let ly: bool = t.get("lock_y").unwrap_or(true);
+                (bone, ly)
+            } else {
+                (None, true)
+            };
+            cq.push(LuaCommand::EnableRootMotion { handle, root_bone_name, lock_y });
+            Ok(())
+        },
+    )?)?;
+
+    // World.DisableRootMotion(handle) — Phase 4.3 — vypne Root Motion
+    let cq = cmd_queue.clone();
+    world.set("DisableRootMotion", lua.create_function(move |_, handle: u64| {
+        cq.push(LuaCommand::DisableRootMotion { handle });
+        Ok(())
+    })?)?;
+
     globals.set("World", world)?;
 
     // Engine namespace — Model Registry + Anim Set Registry

@@ -22,12 +22,12 @@ use bevy_gltf::{
     GltfMeshName,
     GltfSceneExtras,
 };
-use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver};
+use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver, OnStairs};
 use core_net::{player_action, InputChannel, PlayerInput};
 use core_resources::{
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
     DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
-    LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
+    IkEnabledComponent, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
     ModelRegistry, StairsCollider, process_lua_commands, sync_entity_state_cache,
 };
 use core_shared::{NetTransform, PlayerMarker};
@@ -255,6 +255,7 @@ impl Plugin for ClientGameplayPlugin {
             FixedUpdate,
             (
                 apply_player_movement,
+                terrain_snap_kinematic,
                 collect_and_send_input,
             ).chain().run_if(in_state(AppState::InGame)),
         );
@@ -380,6 +381,8 @@ fn apply_player_movement(
         (world_x, world_z)
     };
 
+    let max_fall_speed = ped.map(|p| p.jump.max_fall_speed).unwrap_or(28.0_f32);
+    let dt = time.delta_secs();
     let now = time.elapsed_secs();
 
     for (marker, mut vel, shape_hits) in players.iter_mut() {
@@ -389,17 +392,38 @@ fn apply_player_movement(
         if raw_grounded {
             ground_state.last_grounded_time = now;
         }
-        // Coyote time: treat the player as grounded for COYOTE_TIME_SECS after
-        // the last real ground contact. This absorbs single-frame contact gaps
-        // (physics jitter / dynamic-body bounce) so projection and bounce-damping
-        // stay active across the gap instead of turning off for one frame.
         let grounded = raw_grounded || (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
 
         let ground_normal = get_ground_normal(shape_hits);
 
-        // Project desired movement onto the ground surface normal.
-        // On slopes and uneven terrain this prevents velocity from fighting
-        // the contact constraint, which is the main cause of "sticking" on bumps.
+        // ── Vertikální pohyb ────────────────────────────────────────────────
+        // Avian gravitaci jsme vypnuli (GravityScale(0.0)) — aplikujeme ji sami,
+        // aby vel.y nikdy nenakumulovalo velkou zápornou hodnotu před dopadem.
+        // Velký dopad = velký Baumgarte spike = postava skáče. Viz AAA přístup.
+        if grounded {
+            // Na zemi: velký záporný vel.y v dalším ticku by způsobil penetraci
+            // a velký opravný impulz. Nastavíme malý "lepící" tlak k terénu.
+            if vel.y < 0.0 {
+                // Absorbuj přistávací rychlost — jeden frame gravitace stačí.
+                vel.y = -(9.81_f32 * dt);
+            }
+            // Velký pozitivní vel.y (Baumgarte spike z minulého ticku) zahubí post_physics_damp.
+            // Malý pozitivní (< 0.5) necháme projít — potřebujeme ho pro výstup ze schodů.
+        } else {
+            vel.y = (vel.y - 9.81_f32 * dt).max(-max_fall_speed);
+        }
+
+        // ── Skok ────────────────────────────────────────────────────────────
+        let can_jump = if double_jump_enabled {
+            grounded || vel.y.abs() < grounded_thresh
+        } else {
+            grounded
+        };
+        if jump && can_jump {
+            vel.y = jump_impulse;
+        }
+
+        // ── Horizontální pohyb ──────────────────────────────────────────────
         let desired = Vec3::new(world_x * speed, 0.0, world_z * speed);
         let projected = if grounded && ground_normal.y < 0.9999 {
             desired - ground_normal * desired.dot(ground_normal)
@@ -411,19 +435,18 @@ fn apply_player_movement(
             vel.x = projected.x;
             vel.z = projected.z;
         } else {
-            let alpha = (1.0 - (-movement_smoothing * time.delta_secs()).exp()).clamp(0.0, 1.0);
+            let alpha = (1.0 - (-movement_smoothing * dt).exp()).clamp(0.0, 1.0);
             vel.x = vel.x + (projected.x - vel.x) * alpha;
             vel.z = vel.z + (projected.z - vel.z) * alpha;
         }
 
-        let can_jump = if double_jump_enabled {
-            grounded || vel.y.abs() < grounded_thresh
-        } else {
-            grounded
-        };
-
-        if jump && can_jump {
-            vel.y = jump_impulse;
+        // Slope Y follow: na svazitém terénu (slope > ~4°) nastav vel.y z projekce
+        // pohybu na povrch — i při stání klidně (desired=0 → projected.y=0 → vel.y=0).
+        // Klíčový efekt: ŽÁDNÝ záporný vel.y na svahu → žádné klouzání dolů s malým
+        // třením. Na rovném terénu (normal.y≥0.997) zůstane -dt*g pro udržení kontaktu.
+        // Nesmí přebíjet skok.
+        if grounded && ground_normal.y < 0.997 && !jump {
+            vel.y = projected.y;
         }
     }
 }
@@ -452,10 +475,9 @@ fn get_ground_normal(shape_hits: Option<&ShapeHits>) -> Vec3 {
 
 /// Runs in FixedPostUpdate — AFTER Avian's physics step for that fixed tick.
 /// Damps the upward velocity that Avian's contact-response solver added,
-/// Damps contact-response vel.y spikes after Avian's Writeback.
-/// Uses "recently grounded" (coyote window) because the spike itself causes
-/// ShapeHits=0 in the same tick — plain "grounded" check would always miss it.
-/// Real jump impulse (jump_impulse) is above the 0.90 threshold and passes through.
+/// Safety net: pokud Avian's contact-response přidá pozitivní vel.y po naší manuální
+/// gravitaci (jsme nastavili vel.y = -dt*g), zlikviduje ho. S GravityScale(0.0) jsou
+/// spiky malinké (< 0.5 m/s), ale lepší je je chytit než nechat nakumulovat.
 fn post_physics_vel_y_damp(
     mut ground_state: ResMut<MovementGroundState>,
     time: Res<Time>,
@@ -475,19 +497,15 @@ fn post_physics_vel_y_damp(
         if marker.client_id != lid.0 { continue; }
 
         let raw_grounded = has_ground_contact(shape_hits);
-        if raw_grounded {
-            ground_state.last_grounded_time = now;
-        }
+        if raw_grounded { ground_state.last_grounded_time = now; }
         let recently_grounded = (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
 
-        // Threshold: below 90% of jump impulse — contact-response spikes never reach jump level.
-        let spike_threshold = jump_impulse * 0.90;
-        if recently_grounded && vel.y > 0.15 && vel.y < spike_threshold {
-            // Hard-zero the spike: contact response vel_y has no place on the ground.
+        // Nuluj Baumgarte upward spike pod úrovní skoku.
+        // Na svahu (slope > ~4°) vel.y je záměrné (slope Y follow) — nedampujeme.
+        let ground_normal = get_ground_normal(shape_hits);
+        let on_slope = ground_normal.y < 0.997;
+        if recently_grounded && !on_slope && vel.y > 0.05 && vel.y < jump_impulse * 0.90 {
             vel.y = 0.0;
-        } else if recently_grounded && vel.y > 0.0 && vel.y <= 0.15 {
-            // Small residual: gentle damp (uphill projection artefacts).
-            vel.y *= 0.1;
         }
     }
 }
@@ -722,7 +740,13 @@ fn attach_player_model_to_new_players(
                 ViewVisibility::default(),
                 PlayerVisualAttached,
                 AutoPlayerAnimMemory::default(),
+                // Phase 4.2 — Inverse Kinematics (foot placement na schodech).
+                OnStairs::default(),
+                IkEnabledComponent::default(),
                 RigidBody::Dynamic,
+                // Gravity disabled — applied manually in apply_player_movement so we can
+                // zero vel.y each frame when grounded (eliminates Baumgarte bounce spikes).
+                GravityScale(0.0),
                 LockedAxes::new()
                     .lock_rotation_x()
                     .lock_rotation_y()
@@ -2205,6 +2229,84 @@ fn apply_lua_animation_state(
                 // Placeholder: opětovné přehrání vyvolá blend path v default playeru.
                 let _ = Duration::from_secs_f32(state.blend_time);
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Terrain Snap — přímé přichycení hráče k terénu (Phase 4.2 IK základ)
+// ---------------------------------------------------------------------------
+
+/// Smoothly snaps the local player's vertical velocity toward the terrain surface
+/// detected by `raycast_stairs_under_player`. Runs in FixedUpdate after
+/// `apply_player_movement` so the snapping force feeds into the same physics tick.
+///
+/// Mechanismus:
+/// - Čte `OnStairs.left/right_foot_height` z raycastu pod nohama
+/// - Pokud je hráč příliš vysoko nebo nízko od terénní plochy, upraví `LinearVelocity.y`
+/// - Snap síla škáluje s `IkEnabledComponent.blend_weight` (0 = žádný snap)
+fn terrain_snap_kinematic(
+    local_client_id: Option<Res<LocalClientId>>,
+    mut players: Query<(
+        &PlayerMarker,
+        &GlobalTransform,
+        &OnStairs,
+        &IkEnabledComponent,
+        &mut LinearVelocity,
+        Option<&ShapeHits>,
+    ), With<Predicted>>,
+) {
+    let Some(lid) = local_client_id else { return; };
+
+    for (marker, global_tf, stairs, ik_enabled, mut vel, shape_hits) in players.iter_mut() {
+        if marker.client_id != lid.0 { continue; }
+
+        let blend = ik_enabled.blend_weight;
+        if blend < 0.01 { continue; }
+
+        // Terrain snap je aktivní pouze pokud hráč stojí na zemi
+        if !has_ground_contact(shape_hits) { continue; }
+
+        // Vezmi výšky obou nohou z raycastu
+        let left_h  = stairs.left_foot_height;
+        let right_h = stairs.right_foot_height;
+
+        // Přeskoč pokud žádný hit (nulové hodnoty = raycast minul terén)
+        if left_h < 0.01 && right_h < 0.01 { continue; }
+
+        // Cílová Y = průměr výšek, nebo jen ta která dostala hit
+        let target_y = match (left_h > 0.01, right_h > 0.01) {
+            (true, true)  => (left_h + right_h) * 0.5,
+            (true, false) => left_h,
+            (false, true) => right_h,
+            (false, false) => continue,
+        };
+
+        let current_y = global_tf.translation().y;
+        let diff = target_y - current_y;
+
+        // Snap tolerance: ignoruj rozdíly pod 3mm (eliminuje jitter)
+        if diff.abs() < 0.003 { continue; }
+
+        // Maximální snap rychlost (m/s) závisí na blend_weight
+        // blend_weight=1.0 → max 4 m/s snap, 0.5 → max 2 m/s snap
+        const SNAP_SPEED_MAX: f32 = 4.0;
+        // Terrain snap: pouze DOLŮ — přilep hráče k svažitému terénu, ale nikdy
+        // netlač nahoru (to by bojovalo s fyzikální kontaktní odezvou a způsobilo
+        // bounce oscilaci). Vzestupný pohyb na schodech řeší ramp-helper collider.
+        if diff >= 0.0 {
+            continue; // terrain is at or above player — let physics handle it
+        }
+
+        // Hráč je lehce nad terénem — snap dolů spring silou.
+        // Spring: v = k * |diff|, max SNAP_SPEED_MAX.
+        // Spring koeficient 12 m/s/m: diff=-0.05 → 0.6 m/s dolů (plynule).
+        const SNAP_SPRING_K: f32 = 12.0;
+        let snap_vel = (diff.abs() * SNAP_SPRING_K).min(SNAP_SPEED_MAX) * blend;
+
+        // Aplikuj snap (dolů) pouze pokud vel.y je malá (stojíme/kráčíme, ne skáčeme/padáme)
+        if vel.y > -1.5 {
+            vel.y = -(snap_vel);
         }
     }
 }

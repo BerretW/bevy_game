@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 
-use core_resources::{AdsSocketMap, AnimationState, AttachedAnimSets, EntityHandle, LocalEventBus, ModelName};
+use core_resources::{AdsSocketMap, AnimationState, AttachedAnimSets, EntityHandle, LocalEventBus, ModelName, RootMotionState};
 
 use crate::manifest::DrawableManifest;
 use crate::material::{LayeredEnvMaterial, StandardPbrMaterial, VehicleGlassMaterial};
@@ -1241,6 +1241,90 @@ pub fn forward_adm_anim_notifies_to_local_bus(
         local_bus.push("onAnimNotify".to_string(), payload);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4.3 — Root Motion extrakce a aplikace
+// ---------------------------------------------------------------------------
+
+/// Extrahuje root motion deltu z ADM animačního root bonu a aplikuje ji na parent entitu.
+///
+/// Mechanismus:
+/// 1. Projde `AdmSceneRoot` entity s `RootMotionState`.
+/// 2. V `AdmNodeEntityMap` najde root bone (dle `root_bone_name`).
+/// 3. Porovná světovou pozici root bonu s předchozím framem — delta je XZ (Y se ignoruje pokud `lock_y=true`).
+/// 4. Přesune parent entitu (ChildOf parent hráče) o tuto deltu.
+/// 5. Resetuje root bone lokální pozici na Vec3::ZERO aby se zabránilo double-translation.
+pub fn extract_root_motion(
+    mut roots: Query<(Entity, &AdmNodeEntityMap, &mut RootMotionState, &bevy::ecs::hierarchy::ChildOf), With<AdmSceneSpawned>>,
+    globals: Query<&GlobalTransform>,
+    mut transforms: Query<&mut Transform>,
+) {
+    for (_root_entity, node_map, mut rm_state, child_of) in &mut roots {
+        // Najdi root bone entitu v node mapě
+        let Some(root_bone_entity) = node_map.0.get(&rm_state.root_bone_name) else {
+            // Zkus alternativní jména pokud nastavené nenajde
+            let fallback_names = ["Root", "Armature", "DEF_spine", "DEF_spine001"];
+            let found = fallback_names.iter()
+                .find_map(|name| node_map.0.get(*name))
+                .copied();
+            let Some(entity) = found else { continue };
+            // Pokračuj s nalezenou entitou
+            let parent_entity = child_of.parent();
+            apply_root_bone_delta(entity, parent_entity, &globals, &mut transforms, &mut rm_state);
+            continue;
+        };
+
+        let parent_entity = child_of.parent();
+        apply_root_bone_delta(*root_bone_entity, parent_entity, &globals, &mut transforms, &mut rm_state);
+    }
+}
+
+fn apply_root_bone_delta(
+    root_bone_entity: Entity,
+    parent_entity: Entity,
+    globals: &Query<&GlobalTransform>,
+    transforms: &mut Query<&mut Transform>,
+    rm_state: &mut RootMotionState,
+) {
+    // Získej světovou pozici root bonu
+    let Ok(root_global) = globals.get(root_bone_entity) else { return };
+    let current_world_pos = root_global.translation();
+
+    // Vypočítej delta oproti minulému framu
+    if let Some(prev_pos) = rm_state.prev_root_world_pos {
+        let mut delta = current_world_pos - prev_pos;
+
+        // Pokud lock_y=true, ignoruj vertikální složku (gravitace/physics řídí Y)
+        if rm_state.lock_y {
+            delta.y = 0.0;
+        }
+
+        // Aplikuj deltu na parent entity (hráč) pokud je dostatečně velká
+        if delta.length_squared() > 0.0001 {
+            if let Ok(mut parent_transform) = transforms.get_mut(parent_entity) {
+                parent_transform.translation += delta;
+                rm_state.accumulated_delta = delta;
+            }
+
+            // Resetuj root bone lokální pozici na XZ=0 (neutralizace pohybu z animace)
+            // Y se zachová aby animace mohla ovlivňovat výšku postoje
+            if let Ok(mut root_local) = transforms.get_mut(root_bone_entity) {
+                if rm_state.lock_y {
+                    root_local.translation.x = 0.0;
+                    root_local.translation.z = 0.0;
+                } else {
+                    root_local.translation = Vec3::ZERO;
+                }
+            }
+        } else {
+            rm_state.accumulated_delta = Vec3::ZERO;
+        }
+    }
+
+    // Ulož aktuální pozici pro příští frame
+    rm_state.prev_root_world_pos = Some(current_world_pos);
+}
+
 
 fn emit_animation_notifies(
     notify_events: &mut MessageWriter<AdmAnimNotifyEvent>,

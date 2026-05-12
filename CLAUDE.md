@@ -70,7 +70,7 @@ files { 'assets/ui_icons.png' }
 
 - [x] **2026-05-12**: Model Viewer texture browser/export tool — Registrace chybějících systémů `init_texture_browser`, `handle_texture_keys`, `rebuild_panel`, `show_extract_status` do `Update` scheduling. Nástroj na zobrazení a export textur (T pro toggle, E pro export) znovu plně funkční.
 - [x] **2026-05-12 (oprava)**: Export textur — Oprava cest: ADM cesty byly relativní. Přidán `ModelSourcePaths` Resource, který si pamatuje absolutní cestu na disk pro každý načtený model. Export teď používá absolutní cesty namísto relativních bevy paths.
-- [x] **2026-05-12**: Model Viewer IK edit rozšíření — IK režim přepnut na klávese I (místo Z), přidán mouse pick+drag IK targetů (LMB, hover highlight, výběr nejbližšího cíle pod kurzorem), overlay rozšířen o hover/drag stav a aktualizovány help texty.
+- [x] **2026-05-12**: Kinematic pohybový refaktor — IK/Terrain Snap/Root Motion — Přidány `OnStairs` + `IkEnabledComponent` do player spawnu; nový systém `terrain_snap_kinematic` v FixedUpdate po `apply_player_movement` (snappuje Y velocitu hráče k terén height z raycastu); root motion plně implementováno: `RootMotionState` komponent, `extract_root_motion` systém, Lua API `World.EnableRootMotion/DisableRootMotion`.
 
 ### Fáze 1–4 ✅ Dokončeno
 
@@ -153,11 +153,20 @@ Implementováno:
 
 ---
 
-### Phase 4.3 — Root Motion (Infrastruktura) [⏳ Začato]
+### Phase 4.3 — Root Motion (Infrastruktura) [✅ HOTOVO]
 
-Implementováno: Test resource `resources/example/root_motion_test/` s monitoringem pohybu.
+Implementováno:
+- `RootMotionState` komponent v `core_resources/src/cmd_queue.rs` (root_bone_name, prev_root_world_pos, accumulated_delta, lock_y)
+- `extract_root_motion` systém v `core_drawable/src/adm.rs` — extrahuje XZ-deltu z root bonu po animačním framu, aplikuje na parent entitu, resetuje bone na origin
+- Lua API: `World.EnableRootMotion(handle, opts?)` / `World.DisableRootMotion(handle)`, kde opts = `{ root_bone = "DEF_hips", lock_y = true }`
+- `LuaCommand::EnableRootMotion` / `DisableRootMotion` v cmd_queue
+- Systém registrován v `DrawablePlugin.build()` s ordering `.after(apply_adm_animations)`
+- Test resource: `resources/example/root_motion_test/`
 
-**Zbývá:** `RootMotionExtractor`, extrakce delty z animace, `RootMotionDelta` aplikace na `Transform`/`LinearVelocity`, Lua API.
+**Architektura:**
+- `RootMotionState` na `AdmSceneRoot` entitě; `extract_root_motion` v `core_drawable` Update
+- Systém porovnává `GlobalTransform` root bonu mezi framy → delta → přesune ChildOf parent
+- `lock_y=true` (výchozí) → pouze XZ delta, Y řídí fyzika/gravitace
 
 ---
 
