@@ -228,7 +228,9 @@ class BEVY_PT_Panel(bpy.types.Panel):
         if mixamo_open:
             mixamo_box.operator("ads.rename_mixamo_rig", text="Auto Rename Mixamo Rig", icon="SORTALPHA")
             mixamo_box.operator("ads.import_mixamo_animations", text="Import Mixamo Animations", icon="IMPORT")
-            mixamo_box.operator("ads.export_adm", text="Export ADM (Bones + Clips)", icon="EXPORT")
+            mixamo_box.operator("ads.import_anim_set", text="Import Animation Set (.ads_anim)", icon="ACTION")
+            mixamo_box.operator("ads.export_adm", text="Export Geometry (.adm)", icon="EXPORT")
+            mixamo_box.operator("ads.export_anim_set", text="Export Animation Set (.ads_anim)", icon="ACTION")
 
             dict_box, dict_open = _collapsible_box(mixamo_box, settings, "ui_show_animation_dictionaries", "Animation Dictionaries", "ACTION")
             if dict_open:

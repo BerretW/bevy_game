@@ -11,7 +11,8 @@ mod ped;
 pub use adm::{
     AdmAnimNotifyEvent, AdmAnimationClip, AdmAnimationNotify, AdmAnimationPlayback, AdmAnimationTrack, AdmKeyframe,
     AdmBlendSpace, AdmBlendSpaceClip, AdmBlendSpaceKind,
-    AdmLoader, AdmNode, AdmNodeEntityMap, AdmNodeType, AdmScene, AdmSceneRoot, AdmSceneSpawned,
+    AdmLoader, AnimSetLoader, AnimationSet, AnimationSetDictionary,
+    AdmNode, AdmNodeEntityMap, AdmNodeType, AdmScene, AdmSceneRoot, AdmSceneSpawned,
 };
 pub use ped::{PedPhysicsDef, PedPhysicsLoader, PedPhysicsRegistry,
     PedCapsule, PedMovement, PedStances, StanceDef,
@@ -78,6 +79,8 @@ impl Plugin for DrawablePlugin {
         app.init_asset::<AdmScene>()
             .add_message::<adm::AdmAnimNotifyEvent>()
             .register_asset_loader(AdmLoader)
+            .init_asset::<AnimationSet>()
+            .register_asset_loader(AnimSetLoader)
             .init_asset::<DrawableManifest>()
             .register_asset_loader(DrawableManifestLoader)
                         .init_asset::<PedPhysicsDef>()

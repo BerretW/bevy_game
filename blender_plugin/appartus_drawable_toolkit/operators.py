@@ -47,6 +47,18 @@ def _resolve_export_asset_name(context, objects):
     return "Drawable"
 
 
+def _resolve_anim_export_asset_name(context, armature=None, objects=None):
+    if armature is not None and getattr(armature, 'name', ''):
+        return bpy.path.clean_name(armature.name)
+    return _resolve_export_asset_name(context, objects or [])
+
+
+def _gather_anim_export_objects(context, use_selection):
+    if use_selection:
+        return [o for o in context.selected_objects if o.type in {"MESH", "ARMATURE"}]
+    return [o for o in context.scene.objects if o.type in {"MESH", "ARMATURE"}]
+
+
 def _prefill_export_name(obj):
     if not obj or obj.type != "MESH":
         return
@@ -1308,6 +1320,40 @@ class BEVY_OT_ImportMixamoAnimations(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ADS_OT_import_anim_set(bpy.types.Operator):
+    bl_idname = "ads.import_anim_set"
+    bl_label = "Import ADS Anim Set"
+    bl_description = "Import a standalone .ads_anim file and apply its clips to the active armature"
+
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.ads_anim", options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        from .adm_import import import_ads_anim
+
+        if not os.path.isfile(self.filepath):
+            self.report({'ERROR'}, f"File not found: {self.filepath}")
+            return {'CANCELLED'}
+
+        armature = _find_target_armature(context)
+        if armature is None:
+            self.report({'WARNING'}, "No armature selected for animation import")
+            return {'CANCELLED'}
+
+        try:
+            clips = import_ads_anim(self.filepath, armature_object=armature, apply_to_target=True, assign_dictionaries=True)
+        except Exception as e:
+            self.report({'ERROR'}, f"ADS_ANIM import selhal: {e}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Imported {len(clips)} animation clip(s) from {os.path.basename(self.filepath)}")
+        return {'FINISHED'}
+
+
 class ADS_OT_export_adm(bpy.types.Operator):
     bl_idname  = "ads.export_adm"
     bl_label   = "Export ADM"
@@ -1366,6 +1412,45 @@ class ADS_OT_export_adm(bpy.types.Operator):
             self.report({'WARNING'}, f".drawable selhal: {e}")
 
         self.report({'INFO'}, f"ADM: {meshes} meshů, {nodes} uzlů → {os.path.basename(adm_path)} + {os.path.basename(drawable_path)}")
+        return {'FINISHED'}
+
+
+class ADS_OT_export_anim_set(bpy.types.Operator):
+    bl_idname = "ads.export_anim_set"
+    bl_label = "Export ADS Anim Set"
+    bl_description = "Exportuje animační klipy do samostatného .ads_anim souboru"
+
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+    use_selection: bpy.props.BoolProperty(name="Pouze výběr", default=False)
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        from .adm_export import export_ads_anim
+        import os
+
+        objects = _gather_anim_export_objects(context, self.use_selection)
+        armature = _find_target_armature(context, objects)
+
+        if armature is None:
+            self.report({'WARNING'}, "Nenašla se žádná armatura pro export animací")
+            return {'CANCELLED'}
+
+        export_name = _resolve_anim_export_asset_name(context, armature, objects)
+        anim_path = os.path.join(self.directory, f"{export_name}.ads_anim")
+
+        try:
+            clip_count, dict_count = export_ads_anim(anim_path, objects=objects, armature_object=armature)
+        except Exception as e:
+            self.report({'ERROR'}, f"ADS anim export selhal: {e}")
+            return {'CANCELLED'}
+
+        self.report(
+            {'INFO'},
+            f"ADS_ANIM: {clip_count} clipů, {dict_count} dictionary → {os.path.basename(anim_path)}",
+        )
         return {'FINISHED'}
 
 

@@ -20,6 +20,8 @@ use bevy::prelude::*;
 use core_shared::{Health, PlayerMarker};
 use serde::{Deserialize, Serialize};
 
+use crate::model_registry::AnimSetCommandQueue;
+
 // ---------------------------------------------------------------------------
 // LuaCommand — záměry, které Lua enqueuje přes World.* API
 // ---------------------------------------------------------------------------
@@ -85,6 +87,11 @@ pub enum LuaCommand {
         speed: f32,
         blend_time: f32,
         flags: u32,
+    },
+    /// Přidá nebo nastaví anim-set pro entitu.
+    ApplyAnimSet {
+        handle: u64,
+        path: String,
     },
     /// Zastaví aktuální animaci entity.
     StopAnimation {
@@ -236,6 +243,13 @@ pub struct EntityHandle(pub u64);
 /// Replikované klientům, aby věděli, jaký model načíst.
 #[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelName(pub String);
+
+/// Seznam anim-setů připojených k entitě.
+/// Runtime v core_drawable z nich bude později vyhledávat clipy podle názvu.
+#[derive(Component, Debug, Clone, Default)]
+pub struct AttachedAnimSets {
+    pub sets: Vec<String>,
+}
 
 /// Lua-řízené zapnutí/vypnutí kolizí entity.
 /// Fyzikální backend (Avian) reaguje na `Changed<CollisionEnabled>` a
@@ -474,6 +488,8 @@ pub fn process_lua_commands(
     transforms: Query<&Transform>,
     globals: Query<&GlobalTransform>,
     socket_maps: Query<&AdsSocketMap>,
+    anim_set_cmds: Res<AnimSetCommandQueue>,
+    mut attached_anim_sets: Query<&mut AttachedAnimSets>,
     mut player_stats: Query<(&PlayerMarker, &mut Stats, &mut Inventory)>,
     mut mat_overrides: Query<&mut LuaMaterialOverride>,
 ) {
@@ -642,6 +658,21 @@ pub fn process_lua_commands(
                     });
                 } else {
                     warn!("[cmd_queue] PlayAnimation: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::ApplyAnimSet { handle, path } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    anim_set_cmds.push(crate::model_registry::AnimSetCommand::Request(path.clone()));
+                    if let Ok(mut attached) = attached_anim_sets.get_mut(entity) {
+                        if !attached.sets.iter().any(|existing| existing == &path) {
+                            attached.sets.push(path);
+                        }
+                    } else {
+                        commands.entity(entity).insert(AttachedAnimSets { sets: vec![path] });
+                    }
+                } else {
+                    warn!("[cmd_queue] ApplyAnimSet: unknown handle {}", handle);
                 }
             }
 

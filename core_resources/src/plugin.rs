@@ -12,7 +12,8 @@ use crate::cmd_queue::{
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
 use crate::model_registry::{
-    process_model_commands, refresh_model_load_states,
+    process_anim_set_commands, process_model_commands, refresh_anim_set_load_states,
+    refresh_model_load_states, AnimSetCommandQueue, AnimSetRegistry,
     ModelAnimationRegistry, ModelCommandQueue, ModelRegistry,
 };
 use crate::resolver::resolve_load_order;
@@ -27,7 +28,9 @@ struct RebuildParams<'w> {
     cmd_queue:     Res<'w, CommandQueue>,
     local_bus:     Res<'w, LocalEventBus>,
     model_cmds:    Res<'w, ModelCommandQueue>,
+    anim_set_cmds: Res<'w, AnimSetCommandQueue>,
     model_anims:   Res<'w, ModelAnimationRegistry>,
+    anim_set_reg:  Res<'w, AnimSetRegistry>,
     stats_cache:   Res<'w, PlayerStatsCache>,
     entity_cache:  Res<'w, EntityStateCache>,
     db_bridge_res: Res<'w, DatabaseBridgeResource>,
@@ -104,7 +107,18 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<ModelRegistry>();
         app.init_resource::<ModelCommandQueue>();
         app.init_resource::<ModelAnimationRegistry>();
-        app.add_systems(PostUpdate, (process_model_commands, refresh_model_load_states).chain());
+        app.init_resource::<AnimSetRegistry>();
+        app.init_resource::<AnimSetCommandQueue>();
+        app.add_systems(
+            PostUpdate,
+            (
+                process_model_commands,
+                refresh_model_load_states,
+                process_anim_set_commands,
+                refresh_anim_set_load_states,
+            )
+                .chain(),
+        );
 
         // Phase 3.8 - Cross-sandbox local event bus
         app.init_resource::<LocalEventBus>();
@@ -338,6 +352,8 @@ fn rebuild(
             bridges.auth.clone(),
             bridges.crosshair.clone(),
             bridges.camera.clone(),
+            p.anim_set_cmds.clone(),
+            p.anim_set_reg.clone(),
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);

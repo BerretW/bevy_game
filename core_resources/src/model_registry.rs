@@ -284,6 +284,140 @@ impl ModelAnimationRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// AnimSetRegistry — samostatné animace pro late binding
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct AnimSetEntry {
+    pub path: PathBuf,
+    pub ref_count: usize,
+    pub native: bool,
+    pub preload: Option<Handle<LoadedUntypedAsset>>,
+    pub loaded: bool,
+}
+
+#[derive(Resource, Default, Debug, Clone)]
+pub struct AnimSetRegistry {
+    sets: Arc<Mutex<HashMap<String, AnimSetEntry>>>,
+}
+
+fn normalize_anim_set_path(path: &str) -> String {
+    if path.ends_with(".ads_anim") {
+        path.to_string()
+    } else {
+        format!("{path}.ads_anim")
+    }
+}
+
+impl AnimSetRegistry {
+    pub fn register(&self, name: String, path: PathBuf) {
+        let mut sets = self.sets.lock().unwrap_or_else(|p| p.into_inner());
+        if sets.contains_key(&name) {
+            return;
+        }
+        sets.insert(name, AnimSetEntry { path, ref_count: 0, native: false, preload: None, loaded: false });
+    }
+
+    pub fn request(&self, name: &str, asset_server: Option<&AssetServer>) -> bool {
+        let mut sets = self.sets.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = sets.get_mut(name) {
+            entry.ref_count += 1;
+            if !entry.loaded && entry.preload.is_none() {
+                if let Some(asset_server) = asset_server {
+                    let bevy_path = normalize_anim_set_path(&entry.path.to_string_lossy().replace('\\', "/"));
+                    entry.preload = Some(asset_server.load_untyped(bevy_path));
+                } else {
+                    entry.loaded = true;
+                }
+            }
+            true
+        } else {
+            warn!("[anim_set_registry] request '{}' — anim set not found", name);
+            false
+        }
+    }
+
+    pub fn has_loaded(&self, name: &str) -> bool {
+        self.sets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(name)
+            .map(|entry| entry.loaded)
+            .unwrap_or(false)
+    }
+
+    pub fn release(&self, name: &str) {
+        let mut sets = self.sets.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = sets.get_mut(name) {
+            entry.ref_count = entry.ref_count.saturating_sub(1);
+        }
+    }
+
+    pub fn path(&self, name: &str) -> Option<PathBuf> {
+        self.sets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(name)
+            .map(|entry| entry.path.clone())
+    }
+
+    pub fn rebuild_from_scan(&self, new_sets: HashMap<String, PathBuf>) {
+        let mut sets = self.sets.lock().unwrap_or_else(|p| p.into_inner());
+        sets.retain(|_, entry| entry.native);
+        for (name, path) in new_sets {
+            sets.entry(name).or_insert(AnimSetEntry {
+                path,
+                ref_count: 0,
+                native: false,
+                preload: None,
+                loaded: false,
+            });
+        }
+    }
+
+    pub fn refresh_load_states(&self, asset_server: &AssetServer) {
+        let mut sets = self.sets.lock().unwrap_or_else(|p| p.into_inner());
+        for (name, entry) in sets.iter_mut() {
+            let Some(handle) = entry.preload.as_ref() else { continue };
+            let Some(state) = asset_server.get_load_state(handle.id()) else { continue };
+            match state {
+                LoadState::Loaded => {
+                    entry.loaded = true;
+                }
+                LoadState::Failed(_) => {
+                    entry.loaded = false;
+                    entry.preload = None;
+                    warn!("[anim_set_registry] '{}' preload failed", name);
+                }
+                LoadState::Loading | LoadState::NotLoaded => {}
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum AnimSetCommand {
+    Request(String),
+    Release(String),
+}
+
+#[derive(Clone, Resource, Default)]
+pub struct AnimSetCommandQueue(pub Arc<Mutex<Vec<AnimSetCommand>>>);
+
+impl AnimSetCommandQueue {
+    pub fn push(&self, cmd: AnimSetCommand) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(cmd);
+    }
+
+    pub fn drain(&self) -> Vec<AnimSetCommand> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ModelCommandQueue — thread-safe bridge pro Lua closures
 // ---------------------------------------------------------------------------
 
@@ -334,6 +468,34 @@ pub fn process_model_commands(
             }
         }
     }
+}
+
+/// Zpracuje všechny pending `AnimSetCommand`y z Lua sandboxů.
+pub fn process_anim_set_commands(
+    queue: Res<AnimSetCommandQueue>,
+    registry: Res<AnimSetRegistry>,
+    asset_server: Option<Res<AssetServer>>,
+) {
+    let asset_server = asset_server.as_deref();
+    for cmd in queue.drain() {
+        match cmd {
+            AnimSetCommand::Request(name) => {
+                registry.request(&name, asset_server);
+            }
+            AnimSetCommand::Release(name) => {
+                registry.release(&name);
+            }
+        }
+    }
+}
+
+/// Aktualizuje stav preloadovaných anim-setů podle AssetServer `LoadState`.
+pub fn refresh_anim_set_load_states(
+    registry: Res<AnimSetRegistry>,
+    asset_server: Option<Res<AssetServer>>,
+) {
+    let Some(asset_server) = asset_server else { return };
+    registry.refresh_load_states(asset_server.as_ref());
 }
 
 /// Aktualizuje stav preloadovaných modelů podle AssetServer `LoadState`.

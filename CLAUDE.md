@@ -90,9 +90,16 @@ files { 'assets/ui_icons.png' }
 - [X] ADM runtime crossfade: `apply_adm_animations` respektuje `AnimationState.blend_time` a plynule blenduje předchozí/aktuální klip (`lerp` pozice/scale, `slerp` rotace)
 - [X] ADM v4 animation notifies: loader/export/import podporuje `notify_count`, runtime emituje `onAnimNotify { handle, clip_name, notify_name }` přes `LocalEventBus`
 - [X] ADM v5 animation dictionaries: export/import/loader podporují sekci dictionary (`dict_name -> clip indices`), runtime podporuje selector `dict:<dict_name>:<clip_name>` a Lua API `Engine.RequestAnimDict/HasAnimDictLoaded/GetAnimDictNames/GetAnimDictClips`
+- [X] Blender export split: `.adm` je geometrie a `.ads_anim` je samostatný animační set
+- [X] Blender import split: `.adm` importuje geometrii, `.ads_anim` importuje samostatné animace do armatury
 - [ ] Blend Spaces infrastruktura: `BlendSpaceState` komponenta, `PlayBlendSpace` command, Lua API, ale runtime evaluace vah zatím není (TODO pro Phase 4.x)
 - [ ] Integrovat `sqlx` (stub `Database.*` API přítomen)
 - [ ] Vlastní WGSL shadery z Lua resources
+
+**ADM v6 migration policy:**
+- V5 kompatibilita se dál neudržuje jako cíl.
+- Nový formát je `*.adm` pro geometrii a `*.ads_anim` pro animace.
+- Runtime má preferovat late binding přes připojené anim-sety, ne embedded klipy v modelu.
 
 ---
 

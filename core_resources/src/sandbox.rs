@@ -27,6 +27,7 @@ use crate::cmd_queue::{CommandQueue, EntityStateCache, LocalPlayerStats, LuaComm
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
 use crate::model_registry::{
+    AnimSetCommand, AnimSetCommandQueue, AnimSetRegistry,
     ModelAnimationRegistry,
     ModelCommand, ModelCommandQueue, ModelRegistry,
 };
@@ -626,6 +627,8 @@ impl LuaSandbox {
         auth_bridge: AuthBridge,
         crosshair: CrosshairBridge,
         camera_bridge: CameraBridge,
+        anim_set_cmds: AnimSetCommandQueue,
+        anim_set_registry: AnimSetRegistry,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -671,6 +674,8 @@ impl LuaSandbox {
             &auth_bridge,
             &crosshair,
             &camera_bridge,
+            &anim_set_cmds,
+            &anim_set_registry,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -976,8 +981,10 @@ fn install_runtime_api(
     auth_bridge: &AuthBridge,
     crosshair: &CrosshairBridge,
     camera_bridge: &CameraBridge,
+    anim_set_cmds: &AnimSetCommandQueue,
+    anim_set_registry: &AnimSetRegistry,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge)
+    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge, anim_set_cmds, anim_set_registry)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -1461,6 +1468,12 @@ fn install_runtime_api_inner(
     )?)?;
 
     let cq = cmd_queue.clone();
+    world.set("ApplyAnimSet", lua.create_function(move |_, (handle, path): (u64, String)| {
+        cq.push(LuaCommand::ApplyAnimSet { handle, path });
+        Ok(())
+    })?)?;
+
+    let cq = cmd_queue.clone();
     world.set("StopAnimation", lua.create_function(move |_, handle: u64| {
         cq.push(LuaCommand::StopAnimation { handle });
         Ok(())
@@ -1608,7 +1621,7 @@ fn install_runtime_api_inner(
 
     globals.set("World", world)?;
 
-    // Engine namespace — Model Registry (Phase 3.4)
+    // Engine namespace — Model Registry + Anim Set Registry
     let engine = lua.create_table()?;
 
     let mc = model_cmds.clone();
@@ -1635,6 +1648,23 @@ fn install_runtime_api_inner(
             out.set(idx + 1, clip_name.clone())?;
         }
         Ok(out)
+    })?)?;
+
+    let anim_set_cmds = anim_set_cmds.clone();
+    engine.set("RequestAnimSet", lua.create_function(move |_, path: String| {
+        anim_set_cmds.push(AnimSetCommand::Request(path));
+        Ok(())
+    })?)?;
+
+    let anim_set_cmds = anim_set_cmds.clone();
+    engine.set("SetAnimSetAsNoLongerNeeded", lua.create_function(move |_, path: String| {
+        anim_set_cmds.push(AnimSetCommand::Release(path));
+        Ok(())
+    })?)?;
+
+    let anim_set_registry = anim_set_registry.clone();
+    engine.set("HasAnimSetLoaded", lua.create_function(move |_, path: String| -> mlua::Result<bool> {
+        Ok(anim_set_registry.has_loaded(&path))
     })?)?;
 
     // Engine.RequestAnimDict(model_name, dict_name) — požádej o load animation dictionary

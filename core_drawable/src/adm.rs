@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 
-use core_resources::{AdsSocketMap, AnimationState, EntityHandle, LocalEventBus, ModelName};
+use core_resources::{AdsSocketMap, AnimationState, AttachedAnimSets, EntityHandle, LocalEventBus, ModelName};
 
 use crate::manifest::DrawableManifest;
 use crate::material::{LayeredEnvMaterial, StandardPbrMaterial, VehicleGlassMaterial};
@@ -33,11 +33,13 @@ use crate::hook::{
 // ---------------------------------------------------------------------------
 
 const MAGIC: [u8; 4] = *b"ADM\0";
+const MAGIC_ANIM: [u8; 4] = *b"ADS\0";
 const VERSION_V1: u32 = 1;
 const VERSION_V2: u32 = 2;
 const VERSION_V3: u32 = 3;
 const VERSION_V4: u32 = 4;
 const VERSION_V5: u32 = 5;
+const VERSION_ANIM_V1: u32 = 1;
 
 const ATTR_POS:    u32 = 1 << 0;
 const ATTR_NRM:    u32 = 1 << 1;
@@ -96,6 +98,14 @@ pub struct AdmScene {
     pub source_path: String,
 }
 
+#[derive(Asset, TypePath, Debug)]
+pub struct AnimationSet {
+    pub clips: Vec<AdmAnimationClip>,
+    pub blend_spaces: Vec<AdmBlendSpace>,
+    pub dictionaries: Vec<AnimationSetDictionary>,
+    pub source_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdmAnimationClip {
     pub name: String,
@@ -118,6 +128,12 @@ pub struct AdmAnimationDictionary {
     pub name: String,
     /// Indexy do `AdmScene.animations` — každý clip v tomto dictionary.
     pub clip_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimationSetDictionary {
+    pub name: String,
+    pub clip_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +228,8 @@ pub enum AdmError {
     Io,
     #[error("Bad magic — not an ADM file")]
     BadMagic,
+    #[error("Bad magic — not an ADS anim file")]
+    BadAnimMagic,
     #[error("Unsupported ADM version: {0}")]
     BadVersion(u32),
     #[error("Invalid UTF-8 in string")]
@@ -228,6 +246,9 @@ pub enum AdmError {
 
 #[derive(Default, TypePath)]
 pub struct AdmLoader;
+
+#[derive(Default, TypePath)]
+pub struct AnimSetLoader;
 
 impl AssetLoader for AdmLoader {
     type Asset  = AdmScene;
@@ -248,6 +269,28 @@ impl AssetLoader for AdmLoader {
 
     fn extensions(&self) -> &[&str] {
         &["adm"]
+    }
+}
+
+impl AssetLoader for AnimSetLoader {
+    type Asset = AnimationSet;
+    type Settings = ();
+    type Error = AdmError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn bevy::asset::io::Reader,
+        _settings: &Self::Settings,
+        ctx: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.map_err(|_| AdmError::Io)?;
+        let source_path = ctx.path().to_string();
+        parse_anim_set(&bytes, source_path)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["ads_anim"]
     }
 }
 
@@ -357,6 +400,41 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
     })
 }
 
+fn parse_anim_set(bytes: &[u8], source_path: String) -> Result<AnimationSet, AdmError> {
+    let mut cur = Cursor::new(bytes);
+
+    let magic = read_u8_vec(&mut cur, 4)?;
+    if magic.as_slice() != MAGIC_ANIM {
+        return Err(AdmError::BadAnimMagic);
+    }
+
+    let version = read_u32(&mut cur)?;
+    if version != VERSION_ANIM_V1 {
+        return Err(AdmError::BadVersion(version));
+    }
+
+    let clips = parse_animations(&mut cur, version)?;
+
+    let blend_spaces = if (cur.position() as usize) < bytes.len() {
+        parse_blend_spaces(&mut cur)?
+    } else {
+        Vec::new()
+    };
+
+    let dictionaries = if (cur.position() as usize) < bytes.len() {
+        parse_animation_set_dictionaries(&mut cur)?
+    } else {
+        Vec::new()
+    };
+
+    Ok(AnimationSet {
+        clips,
+        blend_spaces,
+        dictionaries,
+        source_path,
+    })
+}
+
 fn parse_animations(cur: &mut Cursor<&[u8]>, version: u32) -> Result<Vec<AdmAnimationClip>, AdmError> {
     let clip_count = read_u32(cur)? as usize;
     let mut clips = Vec::with_capacity(clip_count);
@@ -427,6 +505,54 @@ fn parse_animation_dictionaries(cur: &mut Cursor<&[u8]>) -> Result<Vec<AdmAnimat
             name,
             clip_indices,
         });
+    }
+
+    Ok(dictionaries)
+}
+
+fn parse_blend_spaces(cur: &mut Cursor<&[u8]>) -> Result<Vec<AdmBlendSpace>, AdmError> {
+    let blend_space_count = read_u32(cur)? as usize;
+    let mut blend_spaces = Vec::with_capacity(blend_space_count);
+
+    for _ in 0..blend_space_count {
+        let name = read_string(cur)?;
+        let kind_raw = read_u8(cur)?;
+        let kind = match kind_raw {
+            1 => AdmBlendSpaceKind::OneD,
+            2 => AdmBlendSpaceKind::TwoD,
+            _ => AdmBlendSpaceKind::TwoD,
+        };
+        let clip_count = read_u32(cur)? as usize;
+        let mut clips = Vec::with_capacity(clip_count);
+        for _ in 0..clip_count {
+            let clip_name = read_string(cur)?;
+            let x = read_f32(cur)?;
+            let y = read_f32(cur)?;
+            clips.push(AdmBlendSpaceClip {
+                name: clip_name,
+                position: Vec2::new(x, y),
+            });
+        }
+        blend_spaces.push(AdmBlendSpace { name, kind, clips });
+    }
+
+    Ok(blend_spaces)
+}
+
+fn parse_animation_set_dictionaries(cur: &mut Cursor<&[u8]>) -> Result<Vec<AnimationSetDictionary>, AdmError> {
+    let dict_count = read_u32(cur)? as usize;
+    let mut dictionaries = Vec::with_capacity(dict_count);
+
+    for _ in 0..dict_count {
+        let name = read_string(cur)?;
+        let clip_count = read_u32(cur)? as usize;
+        let mut clip_names = Vec::with_capacity(clip_count);
+
+        for _ in 0..clip_count {
+            clip_names.push(read_string(cur)?);
+        }
+
+        dictionaries.push(AnimationSetDictionary { name, clip_names });
     }
 
     Ok(dictionaries)
@@ -935,26 +1061,27 @@ pub fn spawn_adm_scenes(
 
 pub fn apply_adm_animations(
     time: Res<Time>,
+    asset_server: Res<AssetServer>,
+    anim_set_assets: Res<Assets<AnimationSet>>,
     mut roots: Query<(
         Entity,
         &AdmSceneRoot,
         Option<&EntityHandle>,
         &AnimationState,
+        Option<&AttachedAnimSets>,
         &AdmNodeEntityMap,
         &mut AdmAnimationPlayback,
     ), With<AdmSceneSpawned>>,
-    adm_assets: Res<Assets<AdmScene>>,
     mut notify_events: MessageWriter<AdmAnimNotifyEvent>,
     mut transforms: Query<&mut Transform>,
 ) {
-    for (root_entity, scene_root, entity_handle, anim_state, node_map, mut playback) in &mut roots {
+    for (root_entity, _scene_root, entity_handle, anim_state, attached_sets, node_map, mut playback) in &mut roots {
         let Some(clip_name) = anim_state.current.as_ref() else { continue };
-        let Some(scene) = adm_assets.get(&scene_root.0) else { continue };
-        if scene.animations.is_empty() { continue; }
+        let Some(attached_sets) = attached_sets else { continue };
 
-        let clip_idx = resolve_clip_index(scene, clip_name);
-        let Some(clip_idx) = clip_idx else { continue };
-        let clip = &scene.animations[clip_idx];
+        let Some(clip) = resolve_anim_set_clip(clip_name, Some(attached_sets), &asset_server, &anim_set_assets) else {
+            continue;
+        };
 
         let clip_prev_time = if playback.active_clip.as_deref() == Some(&clip.name) {
             playback.time
@@ -966,24 +1093,20 @@ pub fn apply_adm_animations(
             let prev_clip_name = playback.active_clip.clone();
             let prev_time = playback.time;
 
-            // Při přechodu zachovej fázi (0..1) předchozího klipu, aby blend fungoval
-            // plynule i při přepnutí uprostřed kroku/běhu.
-            let phase_aligned_time = prev_clip_name
-                .as_deref()
-                .and_then(|prev_name| resolve_clip_index(scene, prev_name))
-                .and_then(|prev_idx| {
-                    let prev_duration = scene.animations[prev_idx].duration;
-                    if prev_duration <= 0.0 || clip.duration <= 0.0 {
+            let phase_aligned_time = prev_clip_name.as_deref().and_then(|prev_name| {
+                resolve_anim_set_clip(prev_name, Some(attached_sets), &asset_server, &anim_set_assets).and_then(|prev_clip| {
+                    if prev_clip.duration <= 0.0 || clip.duration <= 0.0 {
                         return None;
                     }
 
                     let phase = if anim_state.looping {
-                        (prev_time / prev_duration).rem_euclid(1.0)
+                        (prev_time / prev_clip.duration).rem_euclid(1.0)
                     } else {
-                        (prev_time / prev_duration).clamp(0.0, 1.0)
+                        (prev_time / prev_clip.duration).clamp(0.0, 1.0)
                     };
                     Some(phase * clip.duration)
-                });
+                })
+            });
 
             playback.previous_clip = prev_clip_name;
             playback.previous_time = prev_time;
@@ -1009,8 +1132,7 @@ pub fn apply_adm_animations(
             if playback.previous_clip.is_some() && playback.total_blend_time > 0.0 {
                 playback.blend_timer += time.delta_secs();
                 if let Some(prev_name) = playback.previous_clip.as_deref() {
-                    if let Some(prev_idx) = resolve_clip_index(scene, prev_name) {
-                        let prev_clip = &scene.animations[prev_idx];
+                    if let Some(prev_clip) = resolve_anim_set_clip(prev_name, Some(attached_sets), &asset_server, &anim_set_assets) {
                         playback.previous_time += time.delta_secs() * anim_state.speed.max(0.0);
                         if prev_clip.duration > 0.0 {
                             if anim_state.looping {
@@ -1053,10 +1175,10 @@ pub fn apply_adm_animations(
             playback
                 .previous_clip
                 .as_deref()
-                .and_then(|prev_name| resolve_clip_index(scene, prev_name))
-                .map(|prev_idx| {
+                .and_then(|prev_name| resolve_anim_set_clip(prev_name, Some(attached_sets), &asset_server, &anim_set_assets))
+                .map(|prev_clip| {
                     let mut map: HashMap<&str, &AdmAnimationTrack> = HashMap::new();
-                    for track in &scene.animations[prev_idx].tracks {
+                    for track in &prev_clip.tracks {
                         if animation_track_matches_flags(track.flags, anim_state.flags) {
                             map.insert(track.node_name.as_str(), track);
                         }
@@ -1213,6 +1335,32 @@ fn resolve_clip_index(scene: &AdmScene, selector: &str) -> Option<usize> {
     }
 
     scene.animations.iter().position(|c| c.name == selector)
+}
+
+fn normalize_anim_set_path(path: &str) -> String {
+    if path.ends_with(".ads_anim") {
+        path.to_string()
+    } else {
+        format!("{path}.ads_anim")
+    }
+}
+
+fn resolve_anim_set_clip<'a>(
+    clip_name: &str,
+    attached_sets: Option<&'a AttachedAnimSets>,
+    asset_server: &AssetServer,
+    anim_set_assets: &'a Assets<AnimationSet>,
+) -> Option<&'a AdmAnimationClip> {
+    let attached_sets = attached_sets?;
+    for set_path in &attached_sets.sets {
+        let bevy_path = normalize_anim_set_path(set_path);
+        let handle: Handle<AnimationSet> = asset_server.load(bevy_path);
+        let Some(anim_set) = anim_set_assets.get(&handle) else { continue };
+        if let Some(clip) = anim_set.clips.iter().find(|clip| clip.name == clip_name) {
+            return Some(clip);
+        }
+    }
+    None
 }
 
 fn sample_track(track: &AdmAnimationTrack, time: f32) -> Option<AdmKeyframe> {

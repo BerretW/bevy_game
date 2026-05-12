@@ -22,7 +22,7 @@ mod vfs;
 mod watcher;
 
 pub use cmd_queue::{
-    AdsSocketMap, AnimationState, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
+    AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
     EntityStateCache, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, PendingDamageEvent,
     PlayerEntityMap, PlayerStatsCache, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
@@ -35,8 +35,11 @@ pub use db_bridge::{
 pub use gui::{DrawCommand, FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest, SpriteFit};
 pub use manifest::{FontDef, ImageDef, Manifest, ManifestError, ResourceKind};
 pub use model_registry::{
+    AnimSetCommand, AnimSetCommandQueue, AnimSetRegistry,
     ModelAnimationDictionary, ModelAnimationDictionaries, ModelAnimationInfo, ModelAnimationRegistry,
-    ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands,
+    ModelCommand, ModelCommandQueue, ModelRegistry,
+    process_anim_set_commands, process_model_commands, refresh_anim_set_load_states,
+    refresh_model_load_states,
 };
 pub use ace::AceRegistry;
 pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry, ServerResourceAllowlist};

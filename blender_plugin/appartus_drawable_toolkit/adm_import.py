@@ -247,6 +247,35 @@ def _parse_animation_dictionaries_v5(f):
     return dictionaries
 
 
+def _parse_animation_set_v1(f):
+    clips = _parse_animations_v2(f, version=2)
+    blend_spaces = []
+    dictionaries = []
+
+    # Optional blend-space section.
+    if f.tell() < os.fstat(f.fileno()).st_size:
+        blend_space_count = _u32(f)
+        for _ in range(blend_space_count):
+            blend_name = _str(f)
+            kind_raw = _u8(f)
+            clip_count = _u32(f)
+            for _ in range(clip_count):
+                _ = _str(f)
+                _ = _f32(f)
+                _ = _f32(f)
+            blend_spaces.append((blend_name, kind_raw))
+
+    if f.tell() < os.fstat(f.fileno()).st_size:
+        dict_count = _u32(f)
+        for _ in range(dict_count):
+            dict_name = _str(f)
+            clip_count = _u32(f)
+            clip_names = [_str(f) for _ in range(clip_count)]
+            dictionaries.append((dict_name, clip_names))
+
+    return clips, blend_spaces, dictionaries
+
+
 def _apply_animation_dictionaries_to_scene(dictionaries, animations):
     scene = getattr(bpy.context, 'scene', None)
     if scene is None:
@@ -265,6 +294,28 @@ def _apply_animation_dictionaries_to_scene(dictionaries, animations):
             if 0 <= clip_index < len(clip_names):
                 clip = item.clips.add()
                 clip.clip_name = clip_names[clip_index]
+
+    settings.active_anim_dict_index = 0
+
+
+def _apply_animation_set_dictionaries_to_scene(dictionaries):
+    scene = getattr(bpy.context, 'scene', None)
+    if scene is None:
+        return
+    settings = getattr(scene, 'bevy_toolkit_export', None)
+    if settings is None or not hasattr(settings, 'animation_dictionaries'):
+        return
+
+    settings.animation_dictionaries.clear()
+    for dict_name, clip_names in dictionaries:
+        item = settings.animation_dictionaries.add()
+        item.name = bpy.path.clean_name((dict_name or '').strip()) or 'default'
+        for clip_name in clip_names:
+            clip_name = (clip_name or '').strip()
+            if not clip_name:
+                continue
+            clip = item.clips.add()
+            clip.clip_name = clip_name
 
     settings.active_anim_dict_index = 0
 
@@ -629,6 +680,39 @@ def _import_armature_animations(clips, arm_obj):
 
     if arm_obj.animation_data.nla_tracks:
         arm_obj.animation_data.action = None
+
+
+def _find_target_armature(context):
+    active = getattr(context, 'active_object', None)
+    if active and active.type == 'ARMATURE':
+        return active
+    for obj in getattr(context.scene, 'objects', []):
+        if obj.type == 'ARMATURE':
+            return obj
+    return None
+
+
+def import_ads_anim(filepath, armature_object=None, apply_to_target=True, assign_dictionaries=True):
+    with open(filepath, 'rb') as f:
+        if f.read(4) != b'ADS\x00':
+            raise ValueError("Neplatný soubor: špatné magic bytes (očekáváno ADS\0)")
+
+        version = _u32(f)
+        if version != 1:
+            raise ValueError(f"Nepodporovaná verze ADS_ANIM: {version}")
+
+        clips, _blend_spaces, dictionaries = _parse_animation_set_v1(f)
+
+    if assign_dictionaries and dictionaries:
+        _apply_animation_set_dictionaries_to_scene(dictionaries)
+
+    if apply_to_target:
+        if armature_object is None:
+            armature_object = _find_target_armature(bpy.context)
+        if armature_object is not None:
+            _import_armature_animations(clips, armature_object)
+
+    return clips
 
 
 def _load_image_from_bytes(img_name, is_srgb, ext, data):
