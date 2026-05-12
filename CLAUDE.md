@@ -128,6 +128,8 @@ Implementováno:
 - `detect_stairs_on_collision` systém - detekuje přítomnost na schodech
 - `raycaster_ground_height` placeholder - raycast pod nohami pro výšku podlahy (připraveno k integraci s avian3d)
 - `apply_ik_to_skeleton` placeholder - aplikace IK transformů na kosti (připraveno k integraci)
+- Client stairs locomotion assist: při kontaktu se `StairsCollider` se pohyb projektuje do roviny sklonu a stabilizuje `LinearVelocity.y` pro plynulý výstup
+- Client adaptive IK sampling: na schodech full-rate sampling, mimo schody decimovaný sampling; `stairs:state` nese `ik.quality/sample_hz/left_foot_y/right_foot_y`
 - Test resource `resources/example/stairs_test/` s demo schodiště a IK monitoring
 
 **Zbývá:** Plná integrace raycastu s avian3d spatial_query, dynamická aplikace IK na kosti v ADM hierarchii, Lua API pro IK kontrolu.

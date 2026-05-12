@@ -150,9 +150,17 @@ struct ModelAnimationDiscoveryCache {
 #[derive(Resource, Default)]
 struct AdaptiveIkSampleCache {
     frame: u64,
+    on_stairs: bool,
     left_foot_y: f32,
     right_foot_y: f32,
     sampled_this_frame: bool,
+}
+
+#[derive(Component, Debug, Default)]
+struct FootIkBoneState {
+    rest_y: f32,
+    offset_y: f32,
+    initialized: bool,
 }
 
 pub struct ClientGameplayPlugin;
@@ -216,6 +224,12 @@ impl Plugin for ClientGameplayPlugin {
                 .run_if(in_state(AppState::InGame)),
         );
         app.add_systems(
+            Update,
+            apply_local_stairs_foot_ik
+                .after(apply_lua_animation_state)
+                .run_if(in_state(AppState::InGame)),
+        );
+        app.add_systems(
             FixedUpdate,
             (
                 apply_player_movement,
@@ -270,6 +284,8 @@ fn apply_player_movement(
     ped_reg: Res<PedPhysicsRegistry>,
     ped_assets: Res<Assets<PedPhysicsDef>>,
     mut players: Query<(&PlayerMarker, &mut LinearVelocity, Option<&ShapeHits>), With<Predicted>>,
+    stairs_q: Query<(), With<StairsCollider>>,
+    child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
 ) {
     let Some(lid) = local_client_id else { return };
     let bindings = &cfg.0.input.keys;
@@ -328,8 +344,17 @@ fn apply_player_movement(
 
     for (marker, mut vel, shape_hits) in players.iter_mut() {
         if marker.client_id != lid.0 { continue; }
-        let target_x = world_x * speed;
-        let target_z = world_z * speed;
+        let mut target_x = world_x * speed;
+        let mut target_z = world_z * speed;
+
+        let (on_stairs_contact, stairs_normal) = stairs_contact(shape_hits, &stairs_q, &child_of_q);
+        if on_stairs_contact {
+            let n = stairs_normal.unwrap_or(Vec3::Y);
+            let desired = Vec3::new(target_x, 0.0, target_z);
+            let tangent = desired - n * desired.dot(n);
+            target_x = tangent.x;
+            target_z = tangent.z;
+        }
 
         if movement_smoothing <= 0.0 {
             vel.x = target_x;
@@ -343,6 +368,15 @@ fn apply_player_movement(
 
         let has_ground_contact = has_ground_contact(shape_hits);
 
+        if on_stairs_contact && has_ground_contact {
+            let n = stairs_normal.unwrap_or(Vec3::Y);
+            let desired = Vec3::new(target_x, 0.0, target_z);
+            let tangent = desired - n * desired.dot(n);
+            let climb_y = tangent.y.max(0.0);
+            vel.y = vel.y.max(climb_y * 1.05);
+            vel.y = vel.y.max(-0.20);
+        }
+
         let can_jump = if double_jump_enabled {
             // Legacy fallback: když je double-jump zapnutý, ponecháme i velocity gate.
             has_ground_contact || vel.y.abs() < grounded_thresh
@@ -355,6 +389,45 @@ fn apply_player_movement(
             vel.y = jump_impulse;
         }
     }
+}
+
+fn stairs_contact(
+    shape_hits: Option<&ShapeHits>,
+    stairs_q: &Query<(), With<StairsCollider>>,
+    child_of_q: &Query<&bevy::ecs::hierarchy::ChildOf>,
+) -> (bool, Option<Vec3>) {
+    let Some(hits) = shape_hits else {
+        return (false, None);
+    };
+
+    let mut best_normal: Option<Vec3> = None;
+    for hit in hits.iter() {
+        let mut current = hit.entity;
+        let mut on_stairs = false;
+        loop {
+            if stairs_q.get(current).is_ok() {
+                on_stairs = true;
+                break;
+            }
+            match child_of_q.get(current) {
+                Ok(co) => current = co.parent(),
+                Err(_) => break,
+            }
+        }
+        if !on_stairs {
+            continue;
+        }
+
+        let n = (-hit.normal2).normalize_or_zero();
+        if n.length_squared() > 0.0001 {
+            best_normal = Some(n);
+            if n.y > 0.35 {
+                break;
+            }
+        }
+    }
+
+    (best_normal.is_some(), best_normal)
 }
 
 fn has_ground_contact(shape_hits: Option<&ShapeHits>) -> bool {
@@ -1163,6 +1236,7 @@ fn publish_stairs_state_to_lua(
     let hit = spatial_query.cast_ray_predicate(origin, dir, max_dist, true, &filter, &not_player);
 
     let on_stairs = hit.as_ref().map(|h| is_stairs_or_parent(h.entity)).unwrap_or(false);
+    ik_cache.on_stairs = on_stairs;
     let hit_distance = hit.as_ref().map(|h| h.distance).unwrap_or(-1.0);
     let hit_pos = hit
         .as_ref()
@@ -1264,6 +1338,100 @@ fn publish_stairs_state_to_lua(
     .unwrap_or_default();
 
     local_bus.push("stairs:state".to_string(), payload);
+}
+
+fn apply_local_stairs_foot_ik(
+    local_client_id: Option<Res<LocalClientId>>,
+    ik_cache: Res<AdaptiveIkSampleCache>,
+    players: Query<(Entity, &PlayerMarker), With<Predicted>>,
+    model_roots: Query<(Entity, &bevy::ecs::hierarchy::ChildOf), With<AdmSceneRoot>>,
+    children_q: Query<&Children>,
+    name_q: Query<&Name>,
+    globals_q: Query<&GlobalTransform>,
+    mut transforms_q: Query<&mut Transform>,
+    mut bone_state_q: Query<&mut FootIkBoneState>,
+    mut commands: Commands,
+) {
+    let Some(lid) = local_client_id.as_ref() else { return; };
+
+    let Some((player_entity, _)) = players.iter().find(|(_, marker)| marker.client_id == lid.0) else {
+        return;
+    };
+
+    let Some((model_root, _)) = model_roots
+        .iter()
+        .find(|(_, child_of)| child_of.parent() == player_entity)
+    else {
+        return;
+    };
+
+    let resolve_bone = |names: &[&str]| -> Option<Entity> {
+        for n in names {
+            if let Some(e) = find_bone_entity(model_root, n, &children_q, &name_q, 10) {
+                return Some(e);
+            }
+        }
+        None
+    };
+
+    let left_bone = resolve_bone(&["DEF_foot_l", "DEF-foot_l", "DEF_foot.L"]);
+    let right_bone = resolve_bone(&["DEF_foot_r", "DEF-foot_r", "DEF_foot.R"]);
+
+    let apply_foot = |bone: Option<Entity>, target_world_y: f32,
+                      ik_cache: &AdaptiveIkSampleCache,
+                      globals_q: &Query<&GlobalTransform>,
+                      transforms_q: &mut Query<&mut Transform>,
+                      bone_state_q: &mut Query<&mut FootIkBoneState>,
+                      commands: &mut Commands| {
+        let Some(bone_entity) = bone else { return; };
+        let Ok(world_tf) = globals_q.get(bone_entity) else { return; };
+        let Ok(mut local_tf) = transforms_q.get_mut(bone_entity) else { return; };
+
+        if bone_state_q.get(bone_entity).is_err() {
+            commands.entity(bone_entity).insert(FootIkBoneState {
+                rest_y: local_tf.translation.y,
+                offset_y: 0.0,
+                initialized: true,
+            });
+        }
+        let Ok(mut state) = bone_state_q.get_mut(bone_entity) else { return; };
+        if !state.initialized {
+            state.rest_y = local_tf.translation.y;
+            state.offset_y = 0.0;
+            state.initialized = true;
+        }
+
+        let target_offset = if ik_cache.on_stairs {
+            let current_world_y = world_tf.translation().y;
+            let world_delta = (target_world_y - current_world_y).clamp(-0.20, 0.20);
+            (state.offset_y + world_delta).clamp(-0.25, 0.25)
+        } else {
+            0.0
+        };
+
+        let alpha = if ik_cache.on_stairs { 0.35 } else { 0.08 };
+        state.offset_y += (target_offset - state.offset_y) * alpha;
+        local_tf.translation.y = state.rest_y + state.offset_y;
+    };
+
+    apply_foot(
+        left_bone,
+        ik_cache.left_foot_y + 0.015,
+        &ik_cache,
+        &globals_q,
+        &mut transforms_q,
+        &mut bone_state_q,
+        &mut commands,
+    );
+    apply_foot(
+        right_bone,
+        ik_cache.right_foot_y + 0.015,
+        &ik_cache,
+        &globals_q,
+        &mut transforms_q,
+        &mut bone_state_q,
+        &mut commands,
+    );
 }
 
 // ---------------------------------------------------------------------------
