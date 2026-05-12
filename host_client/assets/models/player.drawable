@@ -1,15 +1,9 @@
 asset_name = "player"
 version = "1.1"
 
-[lod]
-distances = [15.0]
-cull_beyond_last = false
-
 [materials]
-"standard" = { template = "standard_pbr", textures = { albedo = { name = "agu_cs_copper01_ab", source = "embedded" }, mrao = { name = "agu_cs_copper01_ma", source = "embedded" }, normal = { name = "agu_cs_copper01_nm", source = "embedded" }, ma = { name = "agu_cs_copper01_ma", source = "embedded" }, mb = { name = "blank_mb", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
-"standard.002" = { template = "standard_pbr", textures = { albedo = { name = "pro_cs_beamends01_ab", source = "embedded" }, normal = { name = "pro_cs_beamends01_nm", source = "embedded" }, ma = { name = "pro_cs_beamends01_ma", source = "embedded" }, mb = { name = "pro_cs_beamends01_mb", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
+"VanguardBodyMat" = { template = "standard_pbr", textures = { albedo = { name = "Texture", source = "embedded" }, normal = { name = "file2", source = "shared" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
 
 [entities]
-"player" = { type = "MESH", cast_shadows = true }
-"COL_player" = { type = "COLLISION", shape = "MESH", half_extents = [1.0, 1.89807, 1.0], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.2, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, true, true] }
-"player_LOD1" = { type = "MESH", cast_shadows = true }
+"vanguard_Mesh" = { type = "MESH", cast_shadows = true }
+"COL_vanguard_Mesh" = { type = "COLLISION", shape = "CONVEX", half_extents = [36.5688, 24.5838, 89.9717], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, false, false] }

@@ -6,7 +6,7 @@
 .vscode/
 *.log
 __pycache__/
-
+*.zip
 # Phase 2 — klient stahuje resources sem přes handshake.
 # Cache je per-machine a deterministická vůči server digestu, nepatří do repa.
 /cache/

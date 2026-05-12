@@ -92,6 +92,7 @@ files { 'assets/ui_icons.png' }
 - [X] ADM v5 animation dictionaries: export/import/loader podporují sekci dictionary (`dict_name -> clip indices`), runtime podporuje selector `dict:<dict_name>:<clip_name>` a Lua API `Engine.RequestAnimDict/HasAnimDictLoaded/GetAnimDictNames/GetAnimDictClips`
 - [X] Blender export split: `.adm` je geometrie a `.ads_anim` je samostatný animační set
 - [X] Blender import split: `.adm` importuje geometrii, `.ads_anim` importuje samostatné animace do armatury
+- [X] model_viewer ADMv6 path: `.adm` rooty auto-attachují sibling/CLI `.ads_anim`, animation browser čte klipy/dictionaries/notifies z `AnimationSet`
 - [ ] Blend Spaces infrastruktura: `BlendSpaceState` komponenta, `PlayBlendSpace` command, Lua API, ale runtime evaluace vah zatím není (TODO pro Phase 4.x)
 - [ ] Integrovat `sqlx` (stub `Database.*` API přítomen)
 - [ ] Vlastní WGSL shadery z Lua resources

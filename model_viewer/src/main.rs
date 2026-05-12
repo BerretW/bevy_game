@@ -17,6 +17,7 @@
 //!   W                     → cyklovat weather presety (clean → dirty → wet → snowy)
 //!   V                     → cyklovat vertex color debug kanály (off → RGB → R → G → B → A)
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use bevy::asset::UnapprovedPathMode;
@@ -28,7 +29,7 @@ use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::window::WindowResolution;
 
 use core_drawable::{
-    AdmScene, AdmSceneRoot,
+    AdmScene, AdmSceneRoot, AnimationSet,
     AdsNodeKind,
     CollisionShape, DrawableCollision,
     LodGroup,
@@ -36,7 +37,7 @@ use core_drawable::{
     GltfHandleCache, TextureSource,
     StandardPbrMaterial, LayeredEnvMaterial,
 };
-use core_resources::{AnimationState, ModelName, ModelRegistry};
+use core_resources::{AnimationState, AttachedAnimSets, ModelName, ModelRegistry};
 
 mod camera;
 mod textures;
@@ -443,14 +444,31 @@ fn load_models(
     mut commands: Commands,
     mut overlay: Query<&mut Text, With<InfoOverlay>>,
 ) {
-    if paths.0.is_empty() {
+    let mut model_paths: Vec<PathBuf> = Vec::new();
+    let mut explicit_anim_sets: Vec<String> = Vec::new();
+
+    for path in &paths.0 {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if ext == "ads_anim" {
+            if let Some(bevy_path) = canonical_bevy_path(path) {
+                if !explicit_anim_sets.iter().any(|p| p == &bevy_path) {
+                    let _handle: Handle<AnimationSet> = asset_server.load(bevy_path.clone());
+                    explicit_anim_sets.push(bevy_path);
+                }
+            }
+            continue;
+        }
+        model_paths.push(path.clone());
+    }
+
+    if model_paths.is_empty() {
         if let Ok(mut txt) = overlay.single_mut() {
-            txt.0 = "Žádný model.\nSpusť: model_viewer cesta/k/modelu.glb".to_string();
+            txt.0 = "Žádný model.\nSpusť: model_viewer cesta/k/modelu.adm [cesta/k/setu.ads_anim]".to_string();
         }
         return;
     }
 
-    for path in &paths.0 {
+    for path in &model_paths {
         load_one_model(
             path,
             &asset_server,
@@ -458,17 +476,27 @@ fn load_models(
             &mut gltf_cache,
             &mut model_reg,
             &mut commands,
+            &explicit_anim_sets,
         );
     }
 
     if let Ok(mut txt) = overlay.single_mut() {
-        let names: Vec<_> = paths
-            .0
+        let names: Vec<_> = model_paths
             .iter()
             .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
             .collect();
-        txt.0 = format!("Modely: {}", names.join(", "));
+        if explicit_anim_sets.is_empty() {
+            txt.0 = format!("Modely: {}", names.join(", "));
+        } else {
+            txt.0 = format!("Modely: {}\nAnimSety: {}", names.join(", "), explicit_anim_sets.len());
+        }
     }
+}
+
+fn canonical_bevy_path(path: &PathBuf) -> Option<String> {
+    path.canonicalize()
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
 fn load_one_model(
@@ -478,6 +506,7 @@ fn load_one_model(
     gltf_cache: &mut GltfHandleCache,
     model_reg: &mut ModelRegistry,
     commands: &mut Commands,
+    explicit_anim_sets: &[String],
 ) {
     let path = match path.canonicalize() {
         Ok(p) => p,
@@ -503,6 +532,21 @@ fn load_one_model(
         let adm_handle: Handle<AdmScene> = asset_server.load(bevy_path.clone());
         model_reg.register_native(stem.clone(), bevy_path.clone());
 
+        let mut attached_sets: Vec<String> = explicit_anim_sets.to_vec();
+
+        let sibling_anim = path.with_extension("ads_anim");
+        if sibling_anim.exists() {
+            if let Some(anim_path) = canonical_bevy_path(&sibling_anim) {
+                if !attached_sets.iter().any(|p| p == &anim_path) {
+                    attached_sets.push(anim_path);
+                }
+            }
+        }
+
+        for set_path in &attached_sets {
+            let _handle: Handle<AnimationSet> = asset_server.load(set_path.clone());
+        }
+
         // Auto-detect .drawable manifest beside .adm
         let drawable_path = path.with_extension("drawable");
         if drawable_path.exists() {
@@ -514,7 +558,17 @@ fn load_one_model(
             info!("[viewer] žádný .drawable pro '{}', použijí se výchozí materiály", stem);
         }
 
-        commands.spawn((AdmSceneRoot(adm_handle), Transform::default(), ModelName(stem), AnimationState::default()));
+        if attached_sets.is_empty() {
+            commands.spawn((AdmSceneRoot(adm_handle), Transform::default(), ModelName(stem), AnimationState::default()));
+        } else {
+            commands.spawn((
+                AdmSceneRoot(adm_handle),
+                Transform::default(),
+                ModelName(stem),
+                AnimationState::default(),
+                AttachedAnimSets { sets: attached_sets },
+            ));
+        }
     } else {
         // GLB / GLTF path
         let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
@@ -860,29 +914,73 @@ fn selected_dict_name(browser: &AdmAnimationBrowser) -> Option<&str> {
     browser.dictionaries.get(browser.selected_dict_idx).map(String::as_str)
 }
 
-fn collect_animation_clip_names(
-    scene: &AdmScene,
-    selected_dict_idx: Option<usize>,
-) -> Vec<String> {
-    if let Some(dict_idx) = selected_dict_idx {
-        if let Some(dict) = scene.animation_dictionaries.get(dict_idx) {
-            let mut names = Vec::new();
-            for &clip_idx in &dict.clip_indices {
-                if let Some(clip) = scene.animations.get(clip_idx) {
-                    names.push(clip.name.clone());
+fn normalize_anim_set_path(path: &str) -> String {
+    if path.ends_with(".ads_anim") {
+        path.to_string()
+    } else {
+        format!("{path}.ads_anim")
+    }
+}
+
+fn collect_anim_set_data(
+    attached_sets: Option<&AttachedAnimSets>,
+    asset_server: &AssetServer,
+    anim_set_assets: &Assets<AnimationSet>,
+) -> (
+    Vec<String>,
+    Vec<String>,
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<(f32, String)>>,
+) {
+    let mut all_clips: Vec<String> = Vec::new();
+    let mut dictionaries: Vec<String> = Vec::new();
+    let mut dict_to_clips: HashMap<String, Vec<String>> = HashMap::new();
+    let mut notifies_by_clip: HashMap<String, Vec<(f32, String)>> = HashMap::new();
+    let mut seen_clips: HashSet<String> = HashSet::new();
+
+    let Some(attached_sets) = attached_sets else {
+        return (all_clips, dictionaries, dict_to_clips, notifies_by_clip);
+    };
+
+    for set_path in &attached_sets.sets {
+        let normalized = normalize_anim_set_path(set_path);
+        let handle: Handle<AnimationSet> = asset_server.load(normalized);
+        let Some(anim_set) = anim_set_assets.get(&handle) else { continue };
+
+        for clip in &anim_set.clips {
+            if seen_clips.insert(clip.name.clone()) {
+                all_clips.push(clip.name.clone());
+                notifies_by_clip.insert(
+                    clip.name.clone(),
+                    clip.notifies
+                        .iter()
+                        .map(|n| (n.time, n.name.clone()))
+                        .collect(),
+                );
+            }
+        }
+
+        for dict in &anim_set.dictionaries {
+            if !dictionaries.iter().any(|name| name == &dict.name) {
+                dictionaries.push(dict.name.clone());
+            }
+            let entry = dict_to_clips.entry(dict.name.clone()).or_default();
+            for clip_name in &dict.clip_names {
+                if !entry.iter().any(|name| name == clip_name) {
+                    entry.push(clip_name.clone());
                 }
             }
-            return names;
         }
     }
 
-    scene.animations.iter().map(|clip| clip.name.clone()).collect()
+    (all_clips, dictionaries, dict_to_clips, notifies_by_clip)
 }
 
 fn sync_adm_animation_browser(
     mut browser: ResMut<AdmAnimationBrowser>,
-    roots: Query<(Entity, &AdmSceneRoot, &ModelName), With<AnimationState>>,
-    adm_assets: Res<Assets<AdmScene>>,
+    roots: Query<(Entity, &ModelName, Option<&AttachedAnimSets>), With<AnimationState>>,
+    asset_server: Res<AssetServer>,
+    anim_set_assets: Res<Assets<AnimationSet>>,
 ) {
     if let Some(root) = browser.root {
         if roots.get(root).is_err() {
@@ -892,74 +990,79 @@ fn sync_adm_animation_browser(
     }
 
     if browser.root.is_none() {
-        for (entity, adm_root, model_name) in &roots {
-            let Some(scene) = adm_assets.get(&adm_root.0) else { continue };
-            if scene.animations.is_empty() {
+        for (entity, model_name, attached_sets) in &roots {
+            let (all_clips, dictionaries, dict_to_clips, notifies_by_clip) = collect_anim_set_data(
+                attached_sets,
+                &asset_server,
+                &anim_set_assets,
+            );
+            if all_clips.is_empty() {
                 continue;
             }
 
             browser.root = Some(entity);
             browser.model_name = Some(model_name.0.clone());
-            browser.dictionaries = scene
-                .animation_dictionaries
-                .iter()
-                .map(|dict| dict.name.clone())
-                .collect();
+            browser.dictionaries = dictionaries;
             if browser.selected_dict_idx >= browser.dictionaries.len() {
                 browser.selected_dict_idx = 0;
             }
-            browser.clips = collect_animation_clip_names(
-                scene,
-                (!browser.dictionaries.is_empty()).then_some(browser.selected_dict_idx),
-            );
+            browser.clips = if let Some(dict_name) = selected_dict_name(&browser) {
+                dict_to_clips.get(dict_name).cloned().unwrap_or_else(|| all_clips.clone())
+            } else {
+                all_clips
+            };
             browser.selected_idx = 0;
             browser.flags = ADM_ANIM_MASK_ALL;
             browser.speed = 1.0;
             browser.looping = true;
             browser.paused = false;
+            browser.notifies = browser
+                .clips
+                .get(browser.selected_idx)
+                .and_then(|name| notifies_by_clip.get(name))
+                .cloned()
+                .unwrap_or_default();
             break;
         }
     }
 
     if let Some(root) = browser.root {
-        if let Ok((_, adm_root, model_name)) = roots.get(root) {
+        if let Ok((_, model_name, attached_sets)) = roots.get(root) {
             browser.model_name = Some(model_name.0.clone());
-            if let Some(scene) = adm_assets.get(&adm_root.0) {
-                let dictionaries: Vec<String> = scene
-                    .animation_dictionaries
-                    .iter()
-                    .map(|dict| dict.name.clone())
-                    .collect();
-                if dictionaries != browser.dictionaries {
-                    browser.dictionaries = dictionaries;
-                    if browser.selected_dict_idx >= browser.dictionaries.len() {
-                        browser.selected_dict_idx = 0;
-                    }
+
+            let (all_clips, dictionaries, dict_to_clips, notifies_by_clip) = collect_anim_set_data(
+                attached_sets,
+                &asset_server,
+                &anim_set_assets,
+            );
+
+            if dictionaries != browser.dictionaries {
+                browser.dictionaries = dictionaries;
+                if browser.selected_dict_idx >= browser.dictionaries.len() {
+                    browser.selected_dict_idx = 0;
+                }
+                browser.selected_idx = 0;
+            }
+
+            let clips = if let Some(dict_name) = selected_dict_name(&browser) {
+                dict_to_clips.get(dict_name).cloned().unwrap_or_else(|| all_clips.clone())
+            } else {
+                all_clips
+            };
+
+            if clips != browser.clips {
+                browser.clips = clips;
+                if browser.selected_idx >= browser.clips.len() {
                     browser.selected_idx = 0;
                 }
-
-                let clips = collect_animation_clip_names(
-                    scene,
-                    (!browser.dictionaries.is_empty()).then_some(browser.selected_dict_idx),
-                );
-                if clips != browser.clips {
-                    browser.clips = clips;
-                    if browser.selected_idx >= browser.clips.len() {
-                        browser.selected_idx = 0;
-                    }
-                }
-                // Sync notifies aktuálně vybraného klipu.
-                browser.notifies = scene
-                    .animations
-                    .get(browser.selected_idx)
-                    .map(|clip| {
-                        clip.notifies
-                            .iter()
-                            .map(|n| (n.time, n.name.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
             }
+
+            browser.notifies = browser
+                .clips
+                .get(browser.selected_idx)
+                .and_then(|name| notifies_by_clip.get(name))
+                .cloned()
+                .unwrap_or_default();
         }
     }
 }
@@ -1016,7 +1119,7 @@ fn update_animation_overlay(
 
     // Notifies aktuálního klipu
     if browser.notifies.is_empty() {
-        lines.push("Notifies: žádné (ADM v3/v5 nebo žádné pose markery)".to_string());
+        lines.push("Notifies: žádné (ADS_ANIM bez markerů)".to_string());
     } else {
         lines.push(format!("Notifies: {}x", browser.notifies.len()));
         for (t, name) in &browser.notifies {
