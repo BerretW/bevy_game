@@ -156,7 +156,7 @@ Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, 
 
 #### 5.0 — Collision Foundation ✅
 
-Implementováno: `DrawableCollision` → Avian `Collider` pipeline, axis-lock flagy (`lock_translation/rotation`), `DisableDrawableCollisions` marker, `StaticWorldCollider` filter pro movement gate, `NAVMESH` shape → `NavMeshSurfaceCache`, `ClientMapPlugin` (`assets/maps/*.map.toml`), Blender toolkit NAVMESH + map TOML workflow, pravidlo RB ownership: hierarchické (child) drawable collidery nedostávají vlastní `RigidBody` (prevence mesh/collider desync), `DummyPrimitiveKind::Stairs` nyní generuje samostatné child collidery: fyzické step-volume collidery + oddělený `StairsCollider` trigger jako svažitá plošina.
+Implementováno: `DrawableCollision` → Avian `Collider` pipeline, axis-lock flagy (`lock_translation/rotation`), `DisableDrawableCollisions` marker, `StaticWorldCollider` filter pro movement gate, `NAVMESH` shape → `NavMeshSurfaceCache`, `ClientMapPlugin` (`assets/maps/*.map.toml`), Blender toolkit NAVMESH + map TOML workflow, pravidlo RB ownership: hierarchické (child) drawable collidery nedostávají vlastní `RigidBody` (prevence mesh/collider desync), `DummyPrimitiveKind::Stairs` nyní generuje samostatné child collidery: plynulý ramp helper collider pro pohyb, oddělený `StairsCollider` trigger jako svažitá plošina a tenké step-top IK surface sensory pro budoucí foot-placement.
 
 `material` enum: `CONCRETE`, `STONE`, `BRICK`, `WOOD`, `METAL`, `GLASS`, `DIRT`, `GRASS`, `SAND`, `GRAVEL`, `MUD`, `SNOW`, `ICE`, `WATER`, `RUBBER`, `PLASTIC`, `CERAMIC`, `CARPET`, `ASPHALT`, `LADDER_METAL`.
 
@@ -458,7 +458,7 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 
 **input:state** (client-only local event): `{ move={x,y}, keys={...} }` — emitován každý frame přes `LocalEventBus`.
 
-**stairs:state** (client-only local event): `{ on_stairs, reacting, grounded, hit_distance, hit_pos={x,y,z}|nil, player={x,y,z,vy} }` — emitován každý frame pro debug detekce `StairsCollider` pod lokálním hráčem.
+**stairs:state** (client-only local event): `{ on_stairs, reacting, grounded, hit_distance, hit_pos={x,y,z}|nil, ik={quality,sample_hz,sampled_this_frame,left_foot_y,right_foot_y}, player={x,y,z,vy} }` — emitován každý frame pro debug detekce `StairsCollider` pod lokálním hráčem a adaptivní IK sampling.
 
 `payload` = libovolná Lua hodnota, serializována jako JSON. `TriggerClientEvent` target podporuje integer i string.
 

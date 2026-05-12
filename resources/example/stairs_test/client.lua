@@ -7,6 +7,13 @@ local stairs_state = {
     grounded = false,
     hit_distance = -1.0,
     hit_pos = nil,
+    ik = {
+        quality = 'low',
+        sample_hz = 0.0,
+        sampled_this_frame = false,
+        left_foot_y = 0.0,
+        right_foot_y = 0.0,
+    },
     player = { x = 0.0, y = 0.0, z = 0.0, vy = 0.0 },
 }
 
@@ -57,6 +64,14 @@ RegisterEvent('stairs:state', function(payload)
         stairs_state.hit_pos = nil
     end
 
+    if type(payload.ik) == 'table' then
+        stairs_state.ik.quality = tostring(payload.ik.quality or 'low')
+        stairs_state.ik.sample_hz = tonumber(payload.ik.sample_hz) or 0.0
+        stairs_state.ik.sampled_this_frame = payload.ik.sampled_this_frame == true
+        stairs_state.ik.left_foot_y = tonumber(payload.ik.left_foot_y) or 0.0
+        stairs_state.ik.right_foot_y = tonumber(payload.ik.right_foot_y) or 0.0
+    end
+
     if type(payload.player) == 'table' then
         stairs_state.player.x = tonumber(payload.player.x) or 0.0
         stairs_state.player.y = tonumber(payload.player.y) or 0.0
@@ -86,8 +101,8 @@ CreateThread(function()
             panel_r, panel_g, panel_b = 30, 110, 40
         end
 
-        Gui.DrawRect(0.185, 0.155, 0.34, 0.16, panel_r, panel_g, panel_b, 170)
-        Gui.DrawBorder(0.185, 0.155, 0.34, 0.16, 0.002, 255, 255, 255, 210)
+        Gui.DrawRect(0.185, 0.170, 0.34, 0.19, panel_r, panel_g, panel_b, 170)
+        Gui.DrawBorder(0.185, 0.170, 0.34, 0.19, 0.002, 255, 255, 255, 210)
 
         Gui.DrawText('[stairs_test] STAIRS DEBUG', 0.03, 0.095, 0.42, 230, 230, 230, 240)
 
@@ -105,6 +120,8 @@ CreateThread(function()
 
         Gui.DrawText(string.format('hit_distance: %.3f m', stairs_state.hit_distance), 0.03, 0.166, 0.34, 210, 210, 210, 220)
         Gui.DrawText(string.format('player y: %.3f   vy: %.3f', stairs_state.player.y, stairs_state.player.vy), 0.03, 0.188, 0.34, 210, 210, 210, 220)
+        Gui.DrawText(string.format('IK mode: %s  %.1f Hz  sampled=%s', stairs_state.ik.quality, stairs_state.ik.sample_hz, tostring(stairs_state.ik.sampled_this_frame)), 0.03, 0.210, 0.32, 180, 220, 255, 220)
+        Gui.DrawText(string.format('foot_y L/R: %.3f / %.3f', stairs_state.ik.left_foot_y, stairs_state.ik.right_foot_y), 0.03, 0.230, 0.32, 180, 220, 255, 220)
 
         local marker = ensure_hit_marker()
         if stairs_state.hit_pos then

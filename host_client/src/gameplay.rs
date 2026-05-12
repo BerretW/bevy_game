@@ -45,6 +45,7 @@ const MAX_PITCH_RAD: f32 = 1.25;
 const MOUSE_SENS_SCALE: f32 = 0.0025;
 const POSITION_SMOOTHING_RATE: f32 = 14.0;
 const ROTATION_SMOOTHING_RATE: f32 = 18.0;
+const IK_OFF_STAIRS_DECIMATION_FRAMES: u64 = 6;
 /// Výchozí FOV kamery v radiánech (60°) — Bevy default.
 const DEFAULT_CAMERA_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
@@ -146,6 +147,14 @@ struct ModelAnimationDiscoveryCache {
     gltf: HashMap<String, Handle<bevy::gltf::Gltf>>,
 }
 
+#[derive(Resource, Default)]
+struct AdaptiveIkSampleCache {
+    frame: u64,
+    left_foot_y: f32,
+    right_foot_y: f32,
+    sampled_this_frame: bool,
+}
+
 pub struct ClientGameplayPlugin;
 
 impl Plugin for ClientGameplayPlugin {
@@ -175,6 +184,7 @@ impl Plugin for ClientGameplayPlugin {
         app.init_resource::<CameraLookState>();
         app.init_resource::<LuaAnimationGraphCache>();
         app.init_resource::<ModelAnimationDiscoveryCache>();
+        app.init_resource::<AdaptiveIkSampleCache>();
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
         app.add_systems(OnExit(AppState::InGame), reset_connection_bridge);
@@ -1104,10 +1114,14 @@ fn publish_input_state_to_lua(
 /// Publikuje stav detekce STAIRS trigger collideru pod lokálním hráčem.
 /// Event: `stairs:state`
 fn publish_stairs_state_to_lua(
+    time: Res<Time>,
     local_bus: Res<LocalEventBus>,
+    mut ik_cache: ResMut<AdaptiveIkSampleCache>,
     local_client_id: Option<Res<LocalClientId>>,
     players: Query<(&PlayerMarker, &Transform, Option<&LinearVelocity>, Option<&ShapeHits>), With<Predicted>>,
+    player_q: Query<Has<PlayerMarker>>,
     stairs_q: Query<(), With<StairsCollider>>,
+    ik_surface_q: Query<(), With<crate::physics::DummyStairsIkSurface>>,
     child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
     spatial_query: SpatialQuery,
 ) {
@@ -1134,7 +1148,19 @@ fn publish_stairs_state_to_lua(
     let dir = Dir3::NEG_Y;
     let max_dist = 2.2;
     let filter = SpatialQueryFilter::default();
-    let hit = spatial_query.cast_ray(origin, dir, max_dist, true, &filter);
+    let not_player = |entity: Entity| -> bool {
+        let mut current = entity;
+        loop {
+            if player_q.get(current).unwrap_or(false) {
+                return false;
+            }
+            match child_of_q.get(current) {
+                Ok(co) => current = co.parent(),
+                Err(_) => return true,
+            }
+        }
+    };
+    let hit = spatial_query.cast_ray_predicate(origin, dir, max_dist, true, &filter, &not_player);
 
     let on_stairs = hit.as_ref().map(|h| is_stairs_or_parent(h.entity)).unwrap_or(false);
     let hit_distance = hit.as_ref().map(|h| h.distance).unwrap_or(-1.0);
@@ -1143,6 +1169,73 @@ fn publish_stairs_state_to_lua(
         .map(|h| origin + Vec3::new(0.0, -h.distance, 0.0));
     let grounded = has_ground_contact(shape_hits);
     let vy = vel.map(|v| v.y).unwrap_or(0.0);
+
+    ik_cache.frame = ik_cache.frame.wrapping_add(1);
+    let sample_now = on_stairs || (ik_cache.frame % IK_OFF_STAIRS_DECIMATION_FRAMES == 0);
+    ik_cache.sampled_this_frame = sample_now;
+
+    if sample_now {
+        let right = tf.rotation * Vec3::X;
+        let forward = tf.rotation * Vec3::Z;
+        let foot_height_origin_y = tf.translation.y + 0.35;
+        let max_foot_dist = 1.5;
+
+        let is_ik_surface_or_parent = |entity: Entity| -> bool {
+            let mut current = entity;
+            loop {
+                if ik_surface_q.get(current).is_ok() {
+                    return true;
+                }
+                match child_of_q.get(current) {
+                    Ok(co) => current = co.parent(),
+                    Err(_) => return false,
+                }
+            }
+        };
+
+        let cast_foot_y = |foot_origin: Vec3| -> Option<f32> {
+            let hit_ik = spatial_query.cast_ray_predicate(
+                foot_origin,
+                Dir3::NEG_Y,
+                max_foot_dist,
+                true,
+                &filter,
+                &is_ik_surface_or_parent,
+            );
+
+            if let Some(h) = hit_ik {
+                return Some(foot_origin.y - h.distance);
+            }
+
+            let hit_any = spatial_query.cast_ray_predicate(
+                foot_origin,
+                Dir3::NEG_Y,
+                max_foot_dist,
+                true,
+                &filter,
+                &not_player,
+            );
+
+            hit_any.map(|h| foot_origin.y - h.distance)
+        };
+
+        let left_origin = tf.translation - right * 0.14 + forward * 0.05 + Vec3::Y * (foot_height_origin_y - tf.translation.y);
+        let right_origin = tf.translation + right * 0.14 + forward * 0.05 + Vec3::Y * (foot_height_origin_y - tf.translation.y);
+
+        if let Some(v) = cast_foot_y(left_origin) {
+            ik_cache.left_foot_y = v;
+        }
+        if let Some(v) = cast_foot_y(right_origin) {
+            ik_cache.right_foot_y = v;
+        }
+    }
+
+    let ik_sample_hz = if on_stairs {
+        (1.0 / time.delta_secs()).max(1.0)
+    } else {
+        (1.0 / (time.delta_secs() * IK_OFF_STAIRS_DECIMATION_FRAMES as f32)).max(1.0)
+    };
+    let ik_quality = if on_stairs { "high" } else { "low" };
 
     let payload = serde_json::to_vec(&serde_json::json!({
         "on_stairs": on_stairs,
@@ -1154,6 +1247,13 @@ fn publish_stairs_state_to_lua(
             "y": p.y,
             "z": p.z,
         })),
+        "ik": {
+            "quality": ik_quality,
+            "sample_hz": ik_sample_hz,
+            "sampled_this_frame": ik_cache.sampled_this_frame,
+            "left_foot_y": ik_cache.left_foot_y,
+            "right_foot_y": ik_cache.right_foot_y,
+        },
         "player": {
             "x": tf.translation.x,
             "y": tf.translation.y,

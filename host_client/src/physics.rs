@@ -64,6 +64,9 @@ pub struct StaticWorldCollider;
 #[derive(Component, Debug)]
 struct DummyGeneratedCollider;
 
+#[derive(Component, Debug)]
+pub(crate) struct DummyStairsIkSurface;
+
 /// Projde řetěz ChildOf nahoru a vrátí `true` pokud nějaký předek má `RigidBody`.
 /// Zabraňuje tomu, aby child COL_* entity (compound colliders) dostávaly vlastní RigidBody.
 fn has_rigidbody_ancestor(
@@ -339,7 +342,11 @@ fn attach_stairs_dummy_colliders(
     let total_depth = marker.size[2].max(0.05);
     let steps = marker.steps.max(1);
     let step_h = total_height / steps as f32;
-    let step_d = total_depth / steps as f32;
+    let mut slope_angle = -(total_height / total_depth.max(0.001)).atan();
+    if marker.collider.stairs_slope_invert {
+        slope_angle = -slope_angle;
+    }
+    let slope_length = (total_height * total_height + total_depth * total_depth).sqrt();
 
     let mut parent_cmd = commands.entity(entity);
     parent_cmd.remove::<Collider>();
@@ -353,31 +360,50 @@ fn attach_stairs_dummy_colliders(
     }
 
     commands.entity(entity).with_children(|p| {
-        for i in 0..steps {
-            let y = -total_height * 0.5 + step_h * (i as f32 + 0.5);
-            let z = -total_depth * 0.5 + step_d * (i as f32 + 0.5);
+        // Fyzický helper: plynulá rampa místo zubatých stupňů.
+        // Umožní kapsli hráče plynule vystoupat bez zasekávání o hrany stupňů.
+        let ramp_thickness = step_h.clamp(0.06, 0.24);
+        let ramp_clearance_y = (ramp_thickness * 0.5).min(step_h * 0.6);
+        let mut ramp = p.spawn((
+            DummyGeneratedCollider,
+            Collider::cuboid(width, ramp_thickness, slope_length.max(0.01)),
+            Transform {
+                translation: Vec3::new(0.0, ramp_clearance_y, 0.0),
+                rotation: Quat::from_rotation_x(slope_angle),
+                scale: Vec3::ONE,
+            },
+            GlobalTransform::default(),
+        ));
 
-            let mut step = p.spawn((
+        if marker.collider.friction > 0.0 {
+            ramp.insert(Friction::new(marker.collider.friction));
+        }
+        if marker.collider.restitution > 0.0 {
+            ramp.insert(Restitution::new(marker.collider.restitution));
+        }
+
+        // IK helper: top plochy jednotlivých stupňů jako tenké sensory.
+        // Neovlivňují pohyb hráče, ale poskytují přesný "stupňový" profil
+        // pro budoucí foot-placement raycasty.
+        for i in 0..steps {
+            let y_top = -total_height * 0.5 + step_h * (i as f32 + 1.0);
+            let z_center = -total_depth * 0.5 + (total_depth / steps as f32) * (i as f32 + 0.5);
+
+            p.spawn((
                 DummyGeneratedCollider,
-                Collider::cuboid(width, step_h.max(0.01), step_d.max(0.01)),
-                Transform::from_xyz(0.0, y, z),
+                DummyStairsIkSurface,
+                Sensor,
+                Collider::cuboid(
+                    (width * 0.98).max(0.02),
+                    0.01,
+                    ((total_depth / steps as f32) * 0.96).max(0.02),
+                ),
+                Transform::from_xyz(0.0, y_top + 0.01, z_center),
                 GlobalTransform::default(),
             ));
-
-            if marker.collider.friction > 0.0 {
-                step.insert(Friction::new(marker.collider.friction));
-            }
-            if marker.collider.restitution > 0.0 {
-                step.insert(Restitution::new(marker.collider.restitution));
-            }
         }
 
         if marker.collider.stairs {
-            let mut slope_angle = -(total_height / total_depth.max(0.001)).atan();
-            if marker.collider.stairs_slope_invert {
-                slope_angle = -slope_angle;
-            }
-            let slope_length = (total_height * total_height + total_depth * total_depth).sqrt();
             let trigger_thickness = (step_h * 0.2).clamp(0.02, 0.08);
             // Trigger chceme mít nad hranou schodů po celé délce, ne uvnitř mesh objemu.
             let trigger_clearance_y = if marker.collider.stairs_clearance_y > 0.0 {
