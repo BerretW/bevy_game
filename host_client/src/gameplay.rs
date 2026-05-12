@@ -1407,12 +1407,10 @@ fn attach_mesh_to_dummy_objects(
 
                 commands.entity(entity).with_children(|p| {
                     for i in 0..steps {
-                        let h = step_h * (i as f32 + 1.0);
-                        let d = step_d * (i as f32 + 1.0);
-                        let y = h * 0.5 - total_height * 0.5;
-                        let z = -total_depth * 0.5 + d * 0.5;
+                        let y = -total_height * 0.5 + step_h * (i as f32 + 0.5);
+                        let z = -total_depth * 0.5 + step_d * (i as f32 + 0.5);
                         p.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(width, h.max(0.01), d.max(0.01)))),
+                            Mesh3d(meshes.add(Cuboid::new(width, step_h.max(0.01), step_d.max(0.01)))),
                             MeshMaterial3d(base_material.clone()),
                             Transform::from_xyz(0.0, y, z),
                             GlobalTransform::default(),
