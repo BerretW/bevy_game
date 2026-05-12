@@ -322,6 +322,73 @@ end
 
 ---
 
+### 4.8 Parametric Dummy Objects
+
+Engine umí vytvořit runtime generovanou geometrii bez model assetu.
+Podporované tvary: `cuboid`, `sphere`, `cube`, `stairs`, `arch`.
+
+#### `World.SpawnLocalDummy(shape, params, pos, rot)`
+
+Lokální dummy objekt (nereplikuje se po síti).
+
+#### `World.SpawnNetworkedDummy(shape, params, pos, rot)` *(server only)*
+
+Síťová varianta — server spawne dummy a klienti dostanou stejnou parametrickou definici.
+
+```lua
+-- Lokální debug koule
+local local_ball = World.SpawnLocalDummy(
+    'sphere',
+    {
+        radius = 0.5,
+        r = 0.2, g = 0.8, b = 1.0, a = 1.0,
+        collider = {
+            enabled = true,
+            shape = 'sphere',
+            is_static = true,
+            is_trigger = false,
+        }
+    },
+    { x = 0.0, y = 1.0, z = 0.0 },
+    { x = 0.0, y = 0.0, z = 0.0 }
+)
+
+-- Síťové schody pro IK trigger (neblokující collider)
+local stairs = World.SpawnNetworkedDummy(
+    'stairs',
+    {
+        size = { x = 2.0, y = 1.2, z = 3.0 },
+        height = 1.2,
+        steps = 6,
+        collider = {
+            enabled = true,
+            shape = 'box',
+            is_static = true,
+            is_trigger = true,
+            stairs = true,
+            size = { x = 2.0, y = 1.2, z = 3.0 },
+        }
+    },
+    { x = 0.0, y = 0.6, z = 0.0 },
+    { x = 0.0, y = 0.0, z = 0.0 }
+)
+```
+
+`params` podporuje klíče:
+- `size = {x,y,z}` nebo `size = number` (uniform)
+- `radius`, `height`, `steps`, `segments`
+- `r,g,b,a` pro barvu (0..1)
+- `collider` table:
+  - `enabled` (bool)
+  - `shape` (`auto|none|box|sphere|capsule|cylinder`)
+  - `is_static` (bool)
+  - `is_trigger` (bool; neblokující trigger collider)
+    - `stairs` (bool; označí collider jako schody pro IK detekci)
+  - `size = {x,y,z}`, `radius`, `height`
+  - `friction`, `restitution`
+
+---
+
 ## 5. Player
 
 Přístup ke statistikám a inventáři hráčů.

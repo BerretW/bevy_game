@@ -23,7 +23,12 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
+use core_resources::{
+    AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
+    DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
+    LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
+    ModelRegistry, process_lua_commands, sync_entity_state_cache,
+};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
@@ -69,6 +74,9 @@ struct PlayerVisualAttached;
 
 #[derive(Component)]
 struct LocalObjectVisualAttached;
+
+#[derive(Component)]
+struct DummyObjectVisualAttached;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocomotionState {
@@ -187,6 +195,7 @@ impl Plugin for ClientGameplayPlugin {
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 attach_mesh_to_local_objects,
+                attach_mesh_to_dummy_objects,
                 update_player_state_driven_animations,
                 update_model_animation_registry,
                 apply_lua_animation_state,
@@ -1333,6 +1342,122 @@ fn attach_mesh_to_local_objects(
             "[gameplay/client] LocalObject '{}' not found in ModelRegistry; using fallback cube",
             marker.model
         );
+    }
+}
+
+fn attach_mesh_to_dummy_objects(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    new_objs: Query<
+        (Entity, &DummyObjectMarker),
+        (With<DummyObjectMarker>, Without<DummyObjectVisualAttached>),
+    >,
+) {
+    for (entity, marker) in new_objs.iter() {
+        commands.entity(entity).insert((
+            GlobalTransform::default(),
+            Visibility::Visible,
+            InheritedVisibility::default(),
+            ViewVisibility::default(),
+            DummyObjectVisualAttached,
+        ));
+
+        let base_material = materials.add(StandardMaterial {
+            base_color: Color::srgba(
+                marker.color[0].clamp(0.0, 1.0),
+                marker.color[1].clamp(0.0, 1.0),
+                marker.color[2].clamp(0.0, 1.0),
+                marker.color[3].clamp(0.0, 1.0),
+            ),
+            ..default()
+        });
+
+        match marker.kind {
+            DummyPrimitiveKind::Cuboid => {
+                let sx = marker.size[0].max(0.01);
+                let sy = marker.size[1].max(0.01);
+                let sz = marker.size[2].max(0.01);
+                commands.entity(entity).insert((
+                    Mesh3d(meshes.add(Cuboid::new(sx, sy, sz))),
+                    MeshMaterial3d(base_material.clone()),
+                ));
+            }
+            DummyPrimitiveKind::Cube => {
+                let s = marker.size[0].max(0.01);
+                commands.entity(entity).insert((
+                    Mesh3d(meshes.add(Cuboid::new(s, s, s))),
+                    MeshMaterial3d(base_material.clone()),
+                ));
+            }
+            DummyPrimitiveKind::Sphere => {
+                let r = marker.radius.max(0.01);
+                commands.entity(entity).insert((
+                    Mesh3d(meshes.add(Sphere::new(r))),
+                    MeshMaterial3d(base_material.clone()),
+                ));
+            }
+            DummyPrimitiveKind::Stairs => {
+                let width = marker.size[0].max(0.05);
+                let total_height = marker.height.max(0.05);
+                let total_depth = marker.size[2].max(0.05);
+                let steps = marker.steps.max(1);
+                let step_h = total_height / steps as f32;
+                let step_d = total_depth / steps as f32;
+
+                commands.entity(entity).with_children(|p| {
+                    for i in 0..steps {
+                        let h = step_h * (i as f32 + 1.0);
+                        let d = step_d * (i as f32 + 1.0);
+                        let y = h * 0.5 - total_height * 0.5;
+                        let z = -total_depth * 0.5 + d * 0.5;
+                        p.spawn((
+                            Mesh3d(meshes.add(Cuboid::new(width, h.max(0.01), d.max(0.01)))),
+                            MeshMaterial3d(base_material.clone()),
+                            Transform::from_xyz(0.0, y, z),
+                            GlobalTransform::default(),
+                            Visibility::Visible,
+                            InheritedVisibility::default(),
+                            ViewVisibility::default(),
+                        ));
+                    }
+                });
+            }
+            DummyPrimitiveKind::Arch => {
+                let width = marker.size[0].max(0.05);
+                let outer_r = marker.radius.max(0.1);
+                let thickness = marker.size[2].max(0.05);
+                let segments = marker.segments.max(3);
+                let inner_r = (outer_r - thickness).max(0.02);
+
+                commands.entity(entity).with_children(|p| {
+                    for i in 0..segments {
+                        let t0 = (i as f32 / segments as f32) * std::f32::consts::PI;
+                        let t1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::PI;
+                        let a = (t0 + t1) * 0.5;
+                        let center_r = (outer_r + inner_r) * 0.5;
+                        let seg_len = (t1 - t0).abs() * center_r;
+                        let y = a.sin() * center_r;
+                        let z = a.cos() * center_r;
+                        let rot = Quat::from_rotation_x(a);
+
+                        p.spawn((
+                            Mesh3d(meshes.add(Cuboid::new(width, thickness, seg_len.max(0.02)))),
+                            MeshMaterial3d(base_material.clone()),
+                            Transform {
+                                translation: Vec3::new(0.0, y, z),
+                                rotation: rot,
+                                scale: Vec3::ONE,
+                            },
+                            GlobalTransform::default(),
+                            Visibility::Visible,
+                            InheritedVisibility::default(),
+                            ViewVisibility::default(),
+                        ));
+                    }
+                });
+            }
+        }
     }
 }
 

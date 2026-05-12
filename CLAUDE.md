@@ -423,6 +423,8 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `TriggerEvent(name, payload?)` | both | Cross-sandbox bus (in-process) |
 | `World.SpawnLocalObject(model, pos, rot)` | both | Lokální entita → handle (u64) |
 | `World.SpawnNetworkedObject(model, pos, rot)` | server | Replikovaná entita → handle |
+| `World.SpawnLocalDummy(shape, params, pos, rot)` | both | Parametrický dummy objekt (cuboid/sphere/cube/stairs/arch) |
+| `World.SpawnNetworkedDummy(shape, params, pos, rot)` | server | Replikovaný parametrický dummy objekt |
 | `World.DeleteObject(handle)` | both | Despawn |
 | `World.SetTransform/SetPosition/SetRotation/SetScale/SetModel` | both | Transformace |
 | `World.PlayAnimation(h, name, blend?)` nebo `World.PlayAnimation(h, name, loop?, speed?, blend?)` / `StopAnimation` | both | Animace (`name` podporuje `clip:N`/`anim:N`/`N`; GLTF = clip index, ADM = clip index nebo clip name; ADM v5 navíc `dict:<dict_name>:<clip_name>`) |

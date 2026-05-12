@@ -1,26 +1,48 @@
 -- Stairs IK Test - Server Side
--- Vytvořá testovací schody objekty
+-- Vytváří testovací schody přes parametrický dummy spawn
 
 local stairs = nil
 
 function RegisterStairs()
-    -- Vytvořit 3-stupňová schodiště
-    -- Každý schod je 0.3m vysoký a 0.4m hluboko
+    -- Vytvoří 3 schodiště s neblokujícím STAIRS trigger colliderem.
+    -- IK systém pak může detekovat, že je hráč na schodech.
     
     stairs = {}
     
     for i = 1, 3 do
-        local height = i * 0.3
-        local depth = -i * 0.4
-        
-        local pos = Vec3.new(0, height, depth)
-        local rot = Quat.identity()
-        
-        -- Vytvoří collider schodů s STAIRS materiálem
-        -- Tento objekt by měl mít DrawableCollision s material='STAIRS'
-        -- V manifestu .drawable by mělo být: [[entities]] type="COLLISION", shape="BOX", material="STAIRS"
-        
-        local handle = World.SpawnNetworkedObject("stairs_step", pos, rot)
+        local total_height = 0.9
+        local total_depth = 1.2
+        local width = 2.0
+
+        local pos = {
+            x = 0.0,
+            y = total_height * 0.5,
+            z = -(i - 1) * (total_depth + 0.4),
+        }
+        local rot = { x = 0.0, y = 0.0, z = 0.0 }
+
+        local handle = World.SpawnNetworkedDummy(
+            'stairs',
+            {
+                size = { x = width, y = total_height, z = total_depth },
+                height = total_height,
+                steps = 3,
+                r = 0.55,
+                g = 0.62,
+                b = 0.72,
+                a = 1.0,
+                collider = {
+                    enabled = true,
+                    shape = 'box',
+                    is_static = true,
+                    is_trigger = true,
+                    stairs = true,
+                    size = { x = width, y = total_height, z = total_depth },
+                },
+            },
+            pos,
+            rot
+        )
         table.insert(stairs, handle)
     end
     

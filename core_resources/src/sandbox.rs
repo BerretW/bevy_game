@@ -23,7 +23,10 @@ use crate::gui::{DrawCommand, GuiDrawBuffer, SpriteFit};
 use bevy::math::{EulerRot, Quat};
 
 use crate::ace::AceRegistry;
-use crate::cmd_queue::{CommandQueue, EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache};
+use crate::cmd_queue::{
+    CommandQueue, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
+    EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache,
+};
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
 use crate::model_registry::{
@@ -893,6 +896,94 @@ fn table_to_vec3(t: &mlua::Table) -> [f32; 3] {
     [get("x", 1), get("y", 2), get("z", 3)]
 }
 
+fn parse_dummy_kind(name: &str) -> DummyPrimitiveKind {
+    match name.to_ascii_lowercase().as_str() {
+        "cuboid" | "kvadr" | "kvádr" => DummyPrimitiveKind::Cuboid,
+        "sphere" | "koule" => DummyPrimitiveKind::Sphere,
+        "cube" | "krychle" => DummyPrimitiveKind::Cube,
+        "stairs" | "schody" => DummyPrimitiveKind::Stairs,
+        "arch" | "oblouk" => DummyPrimitiveKind::Arch,
+        _ => DummyPrimitiveKind::Cuboid,
+    }
+}
+
+fn parse_dummy_collider_shape(name: &str) -> DummyColliderShape {
+    match name.to_ascii_lowercase().as_str() {
+        "none" | "off" => DummyColliderShape::None,
+        "box" | "cuboid" => DummyColliderShape::Box,
+        "sphere" => DummyColliderShape::Sphere,
+        "capsule" => DummyColliderShape::Capsule,
+        "cylinder" => DummyColliderShape::Cylinder,
+        "auto" | _ => DummyColliderShape::Auto,
+    }
+}
+
+fn table_f32(t: &mlua::Table, name: &str, default: f32) -> f32 {
+    t.get::<f32>(name)
+        .or_else(|_| t.get::<i64>(name).map(|v| v as f32))
+        .unwrap_or(default)
+}
+
+fn table_u32(t: &mlua::Table, name: &str, default: u32) -> u32 {
+    t.get::<u32>(name)
+        .or_else(|_| t.get::<i64>(name).map(|v| v.max(0) as u32))
+        .unwrap_or(default)
+}
+
+fn table_bool(t: &mlua::Table, name: &str, default: bool) -> bool {
+    t.get::<bool>(name).unwrap_or(default)
+}
+
+fn parse_dummy_from_lua(shape: &str, params: Option<mlua::Table>) -> DummyObjectMarker {
+    let mut out = DummyObjectMarker {
+        kind: parse_dummy_kind(shape),
+        ..Default::default()
+    };
+
+    let Some(t) = params else { return out };
+
+    if let Ok(size_t) = t.get::<mlua::Table>("size") {
+        out.size = table_to_vec3(&size_t);
+    } else {
+        let uniform = table_f32(&t, "size", out.size[0]);
+        if uniform > 0.0 {
+            out.size = [uniform, uniform, uniform];
+        }
+    }
+
+    out.radius = table_f32(&t, "radius", out.radius).max(0.001);
+    out.height = table_f32(&t, "height", out.height).max(0.001);
+    out.steps = table_u32(&t, "steps", out.steps).max(1);
+    out.segments = table_u32(&t, "segments", out.segments).max(3);
+
+    let r = table_f32(&t, "r", out.color[0]).clamp(0.0, 1.0);
+    let g = table_f32(&t, "g", out.color[1]).clamp(0.0, 1.0);
+    let b = table_f32(&t, "b", out.color[2]).clamp(0.0, 1.0);
+    let a = table_f32(&t, "a", out.color[3]).clamp(0.0, 1.0);
+    out.color = [r, g, b, a];
+
+    if let Ok(col_t) = t.get::<mlua::Table>("collider") {
+        let mut c = out.collider;
+        c.enabled = table_bool(&col_t, "enabled", c.enabled);
+        c.is_static = table_bool(&col_t, "is_static", c.is_static);
+        c.is_trigger = table_bool(&col_t, "is_trigger", c.is_trigger);
+        c.stairs = table_bool(&col_t, "stairs", c.stairs);
+        c.friction = table_f32(&col_t, "friction", c.friction).max(0.0);
+        c.restitution = table_f32(&col_t, "restitution", c.restitution).max(0.0);
+        c.radius = table_f32(&col_t, "radius", c.radius).max(0.001);
+        c.height = table_f32(&col_t, "height", c.height).max(0.001);
+        if let Ok(sz_t) = col_t.get::<mlua::Table>("size") {
+            c.size = table_to_vec3(&sz_t);
+        }
+        if let Ok(shape_name) = col_t.get::<String>("shape") {
+            c.shape = parse_dummy_collider_shape(&shape_name);
+        }
+        out.collider = c;
+    }
+
+    out
+}
+
 /// Převede Lua player_id (integer, number nebo string) na u64. 
 fn lua_value_to_u64(v: &mlua::Value) -> Option<u64> {
     match v {
@@ -1160,6 +1251,43 @@ fn install_runtime_api_inner(
             let rot = table_to_vec3(&rot_t);
             let handle = cq.alloc_handle();
             cq.push(LuaCommand::SpawnNetworkedObject { handle, model, pos, rot });
+            Ok(handle)
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("SpawnLocalDummy", lua.create_function(
+        move |_, (shape, params_v, pos_t, rot_t): (String, mlua::Value, mlua::Table, mlua::Table)| {
+            let params = match params_v {
+                mlua::Value::Table(t) => Some(t),
+                _ => None,
+            };
+            let def = parse_dummy_from_lua(&shape, params);
+            let pos = table_to_vec3(&pos_t);
+            let rot = table_to_vec3(&rot_t);
+            let handle = cq.alloc_handle();
+            cq.push(LuaCommand::SpawnLocalDummy { handle, def, pos, rot });
+            Ok(handle)
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("SpawnNetworkedDummy", lua.create_function(
+        move |_, (shape, params_v, pos_t, rot_t): (String, mlua::Value, mlua::Table, mlua::Table)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError(
+                    "World.SpawnNetworkedDummy is server-only".into(),
+                ));
+            }
+            let params = match params_v {
+                mlua::Value::Table(t) => Some(t),
+                _ => None,
+            };
+            let def = parse_dummy_from_lua(&shape, params);
+            let pos = table_to_vec3(&pos_t);
+            let rot = table_to_vec3(&rot_t);
+            let handle = cq.alloc_handle();
+            cq.push(LuaCommand::SpawnNetworkedDummy { handle, def, pos, rot });
             Ok(handle)
         },
     )?)?;

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::mesh::skinning::SkinnedMesh;
 use core_drawable::{CollisionShape, DrawableCollision};
-use core_resources::CollisionEnabled;
+use core_resources::{CollisionEnabled, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind};
 
 pub struct ClientPhysicsPlugin;
 
@@ -17,6 +17,7 @@ impl Plugin for ClientPhysicsPlugin {
         app.add_systems(Startup, disable_physics_debug_on_start);
         app.add_systems(Update, (
             attach_or_update_drawable_colliders,
+            attach_or_update_dummy_colliders,
             rebuild_navmesh_surface_cache,
             toggle_physics_debug,
             apply_collision_enabled,
@@ -167,6 +168,121 @@ fn attach_or_update_drawable_colliders(
         }
         if dc.restitution > 0.0 {
             ecmd.insert(Restitution::new(dc.restitution));
+        }
+    }
+}
+
+fn attach_or_update_dummy_colliders(
+    mut commands: Commands,
+    q: Query<(Entity, &DummyObjectMarker), Or<(Added<DummyObjectMarker>, Changed<DummyObjectMarker>)>>,
+) {
+    for (entity, marker) in &q {
+        if !marker.collider.enabled || matches!(marker.collider.shape, DummyColliderShape::None) {
+            let mut ecmd = commands.entity(entity);
+            ecmd.remove::<Collider>();
+            ecmd.remove::<RigidBody>();
+            ecmd.remove::<StaticWorldCollider>();
+            ecmd.remove::<Sensor>();
+            continue;
+        }
+
+        let shape = match marker.collider.shape {
+            DummyColliderShape::Auto => match marker.kind {
+                DummyPrimitiveKind::Sphere => DummyColliderShape::Sphere,
+                DummyPrimitiveKind::Arch => DummyColliderShape::Capsule,
+                DummyPrimitiveKind::Cuboid
+                | DummyPrimitiveKind::Cube
+                | DummyPrimitiveKind::Stairs => DummyColliderShape::Box,
+            },
+            other => other,
+        };
+
+        let (default_size, default_radius, default_height) = dummy_collider_defaults(marker);
+        let sx = marker.collider.size[0].max(0.001);
+        let sy = marker.collider.size[1].max(0.001);
+        let sz = marker.collider.size[2].max(0.001);
+        let radius = marker.collider.radius.max(0.001);
+        let height = marker.collider.height.max(0.001);
+
+        let collider = match shape {
+            DummyColliderShape::None => None,
+            DummyColliderShape::Auto => None,
+            DummyColliderShape::Box => Some(Collider::cuboid(
+                if marker.collider.size == [1.0, 1.0, 1.0] { default_size[0] } else { sx },
+                if marker.collider.size == [1.0, 1.0, 1.0] { default_size[1] } else { sy },
+                if marker.collider.size == [1.0, 1.0, 1.0] { default_size[2] } else { sz },
+            )),
+            DummyColliderShape::Sphere => Some(Collider::sphere(
+                if (marker.collider.radius - 0.5).abs() < f32::EPSILON { default_radius } else { radius }
+            )),
+            DummyColliderShape::Capsule => {
+                let r = if (marker.collider.radius - 0.5).abs() < f32::EPSILON { default_radius } else { radius };
+                let full_h = if (marker.collider.height - 1.0).abs() < f32::EPSILON { default_height } else { height };
+                let body_length = (full_h - r * 2.0).max(0.001);
+                Some(Collider::capsule(r, body_length))
+            }
+            DummyColliderShape::Cylinder => {
+                let r = if (marker.collider.radius - 0.5).abs() < f32::EPSILON { default_radius } else { radius };
+                let h = if (marker.collider.height - 1.0).abs() < f32::EPSILON { default_height } else { height };
+                Some(Collider::cylinder(r, h))
+            }
+        };
+
+        let Some(collider) = collider else { continue };
+        let mut ecmd = commands.entity(entity);
+        ecmd.insert(collider);
+        if marker.collider.is_static {
+            ecmd.insert((RigidBody::Static, StaticWorldCollider));
+        } else {
+            ecmd.insert(RigidBody::Dynamic);
+            ecmd.remove::<StaticWorldCollider>();
+        }
+        if marker.collider.is_trigger {
+            ecmd.insert(Sensor);
+        } else {
+            ecmd.remove::<Sensor>();
+        }
+        if marker.collider.friction > 0.0 {
+            ecmd.insert(Friction::new(marker.collider.friction));
+        }
+        if marker.collider.restitution > 0.0 {
+            ecmd.insert(Restitution::new(marker.collider.restitution));
+        }
+    }
+}
+
+fn dummy_collider_defaults(marker: &DummyObjectMarker) -> ([f32; 3], f32, f32) {
+    match marker.kind {
+        DummyPrimitiveKind::Cuboid => (
+            [
+                marker.size[0].max(0.01),
+                marker.size[1].max(0.01),
+                marker.size[2].max(0.01),
+            ],
+            marker.radius.max(0.01),
+            marker.height.max(0.01),
+        ),
+        DummyPrimitiveKind::Cube => {
+            let s = marker.size[0].max(0.01);
+            ([s, s, s], s * 0.5, s)
+        }
+        DummyPrimitiveKind::Sphere => {
+            let r = marker.radius.max(0.01);
+            ([r * 2.0, r * 2.0, r * 2.0], r, r * 2.0)
+        }
+        DummyPrimitiveKind::Stairs => (
+            [
+                marker.size[0].max(0.01),
+                marker.height.max(0.01),
+                marker.size[2].max(0.01),
+            ],
+            marker.size[0].max(0.01) * 0.5,
+            marker.height.max(0.01),
+        ),
+        DummyPrimitiveKind::Arch => {
+            let r = marker.radius.max(0.01);
+            let h = (r * 2.0).max(0.01);
+            ([marker.size[0].max(0.01), h, marker.size[2].max(0.01)], marker.size[2].max(0.01) * 0.5, h)
         }
     }
 }

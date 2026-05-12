@@ -79,6 +79,20 @@ pub enum LuaCommand {
         pos: [f32; 3],
         rot: [f32; 3],
     },
+    /// Parametrický dummy objekt bez závislosti na asset modelu.
+    SpawnLocalDummy {
+        handle: u64,
+        def: DummyObjectMarker,
+        pos: [f32; 3],
+        rot: [f32; 3],
+    },
+    /// Server-only parametrický dummy objekt replikovaný na klienty.
+    SpawnNetworkedDummy {
+        handle: u64,
+        def: DummyObjectMarker,
+        pos: [f32; 3],
+        rot: [f32; 3],
+    },
     /// Spustí animaci na entitě. Phase 4 napojí na Bevy AnimationPlayer.
     PlayAnimation {
         handle: u64,
@@ -252,6 +266,90 @@ pub struct EntityHandle(pub u64);
 /// Replikované klientům, aby věděli, jaký model načíst.
 #[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelName(pub String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DummyPrimitiveKind {
+    Cuboid,
+    Sphere,
+    Cube,
+    Stairs,
+    Arch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DummyColliderShape {
+    Auto,
+    None,
+    Box,
+    Sphere,
+    Capsule,
+    Cylinder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DummyColliderDef {
+    pub enabled: bool,
+    pub shape: DummyColliderShape,
+    pub size: [f32; 3],
+    pub radius: f32,
+    pub height: f32,
+    pub is_static: bool,
+    pub is_trigger: bool,
+    pub stairs: bool,
+    pub friction: f32,
+    pub restitution: f32,
+}
+
+impl Default for DummyColliderDef {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            shape: DummyColliderShape::Auto,
+            size: [1.0, 1.0, 1.0],
+            radius: 0.5,
+            height: 1.0,
+            is_static: true,
+            is_trigger: false,
+            stairs: false,
+            friction: 0.8,
+            restitution: 0.0,
+        }
+    }
+}
+
+/// Marker na collideru/entitě, která se má chovat jako schodiště trigger.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StairsCollider;
+
+/// Parametrický dummy objekt generovaný runtime systémem bez model assetu.
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DummyObjectMarker {
+    pub kind: DummyPrimitiveKind,
+    pub size: [f32; 3],
+    pub radius: f32,
+    pub height: f32,
+    pub steps: u32,
+    pub segments: u32,
+    pub color: [f32; 4],
+    pub collider: DummyColliderDef,
+}
+
+impl Default for DummyObjectMarker {
+    fn default() -> Self {
+        Self {
+            kind: DummyPrimitiveKind::Cuboid,
+            size: [1.0, 1.0, 1.0],
+            radius: 0.5,
+            height: 1.0,
+            steps: 4,
+            segments: 12,
+            color: [0.65, 0.75, 0.9, 1.0],
+            collider: DummyColliderDef::default(),
+        }
+    }
+}
 
 /// Seznam anim-setů připojených k entitě.
 /// Runtime v core_drawable z nich bude později vyhledávat clipy podle názvu.
@@ -666,6 +764,65 @@ pub fn process_lua_commands(
                 info!(
                     "[cmd_queue] queued networked object '{}' (handle={}, entity={:?})",
                     model, handle, entity
+                );
+            }
+
+            LuaCommand::SpawnLocalDummy { handle, def, pos, rot } => {
+                let stairs = def.collider.stairs;
+                let entity = commands
+                    .spawn((
+                        def,
+                        EntityHandle(handle),
+                        Transform {
+                            translation: Vec3::new(pos[0], pos[1], pos[2]),
+                            rotation: Quat::from_euler(
+                                EulerRot::XYZ,
+                                rot[0].to_radians(),
+                                rot[1].to_radians(),
+                                rot[2].to_radians(),
+                            ),
+                            scale: Vec3::ONE,
+                        },
+                    ))
+                    .id();
+                if stairs {
+                    commands.entity(entity).insert(StairsCollider);
+                }
+                world_state.register(handle, entity);
+                debug!(
+                    "[cmd_queue] spawned local dummy (handle={}, entity={:?})",
+                    handle, entity
+                );
+            }
+
+            LuaCommand::SpawnNetworkedDummy { handle, def, pos, rot } => {
+                let stairs = def.collider.stairs;
+                let entity = commands
+                    .spawn((
+                        def,
+                        NetworkedObjectMarker {
+                            model: "__dummy__".to_string(),
+                        },
+                        EntityHandle(handle),
+                        Transform {
+                            translation: Vec3::new(pos[0], pos[1], pos[2]),
+                            rotation: Quat::from_euler(
+                                EulerRot::XYZ,
+                                rot[0].to_radians(),
+                                rot[1].to_radians(),
+                                rot[2].to_radians(),
+                            ),
+                            scale: Vec3::ONE,
+                        },
+                    ))
+                    .id();
+                if stairs {
+                    commands.entity(entity).insert(StairsCollider);
+                }
+                world_state.register(handle, entity);
+                info!(
+                    "[cmd_queue] queued networked dummy (handle={}, entity={:?})",
+                    handle, entity
                 );
             }
 
