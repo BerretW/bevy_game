@@ -149,6 +149,19 @@ class BevyAnimDictionary(bpy.types.PropertyGroup):
     active_clip_index: bpy.props.IntProperty(name="Active Clip", default=0, min=0)
 
 
+class BevyIkChain(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty(name="Chain", default="leg_l")
+    enabled: bpy.props.BoolProperty(name="Enabled", default=True)
+    parent_bone_name: bpy.props.StringProperty(name="Parent Bone", default="DEF_thigh_l")
+    ik_target_name: bpy.props.StringProperty(name="IK Target", default="IK_foot_l")
+    effector_bone_name: bpy.props.StringProperty(name="Effector Bone", default="DEF_foot_l")
+    pole_bone_name: bpy.props.StringProperty(name="Pole Bone", default="IK_knee_l")
+    chain_length: bpy.props.FloatProperty(name="Chain Length", default=1.0, min=0.001)
+    solver_iterations: bpy.props.IntProperty(name="Solver Iterations", default=2, min=1, max=16)
+    min_knee_angle: bpy.props.FloatProperty(name="Min Knee Angle", default=5.0, min=0.0, max=180.0)
+    max_knee_angle: bpy.props.FloatProperty(name="Max Knee Angle", default=175.0, min=0.0, max=180.0)
+
+
 class BevyExportProps(bpy.types.PropertyGroup):
     export_scope: bpy.props.EnumProperty(
         name="Scope",
@@ -194,6 +207,7 @@ class BevyExportProps(bpy.types.PropertyGroup):
     ui_show_tools: bpy.props.BoolProperty(name="Show Tools", default=False)
     ui_show_mixamo_tools: bpy.props.BoolProperty(name="Show Mixamo Tools", default=False)
     ui_show_animation_dictionaries: bpy.props.BoolProperty(name="Show Animation Dictionaries", default=False)
+    ui_show_ik_tools: bpy.props.BoolProperty(name="Show IK Tools", default=False)
     ui_show_entity: bpy.props.BoolProperty(name="Show Entity", default=False)
     ui_show_vertex_masks: bpy.props.BoolProperty(name="Show Vertex Masks", default=False)
     ui_show_import_export: bpy.props.BoolProperty(name="Show Import Export", default=False)
@@ -205,3 +219,13 @@ class BevyExportProps(bpy.types.PropertyGroup):
     active_anim_dict_index: bpy.props.IntProperty(name="Active Anim Dict", default=0, min=0)
     new_anim_dict_name: bpy.props.StringProperty(name="New Dict", default="move")
     anim_dict_clip_name: bpy.props.StringProperty(name="Clip", default="")
+
+    # IK authoring workflow
+    ik_chains: bpy.props.CollectionProperty(type=BevyIkChain)
+    active_ik_chain_index: bpy.props.IntProperty(name="Active IK Chain", default=0, min=0)
+    new_ik_chain_name: bpy.props.StringProperty(name="New IK Chain", default="leg_l")
+    ik_export_sidecar: bpy.props.BoolProperty(
+        name="Export IK Sidecar",
+        description="Export IK chains to a sidecar TOML file next to .adm/.ads_anim/.glb",
+        default=True,
+    )

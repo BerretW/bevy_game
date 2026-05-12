@@ -232,6 +232,37 @@ class BEVY_PT_Panel(bpy.types.Panel):
             mixamo_box.operator("ads.export_adm", text="Export Geometry (.adm)", icon="EXPORT")
             mixamo_box.operator("ads.export_anim_set", text="Export Animation Set (.ads_anim)", icon="ACTION")
 
+            ik_box, ik_open = _collapsible_box(mixamo_box, settings, "ui_show_ik_tools", "IK Chains", "CONSTRAINT_BONE")
+            if ik_open:
+                ik_box.prop(settings, "ik_export_sidecar")
+                ik_box.prop(settings, "new_ik_chain_name", text="Chain")
+                row = ik_box.row(align=True)
+                row.operator("ads.ik_chain_add", text="Add Chain", icon="ADD")
+                row.operator("ads.ik_chain_remove", text="Remove Chain", icon="REMOVE")
+                row = ik_box.row(align=True)
+                row.operator("ads.ik_chain_prev", text="", icon="TRIA_LEFT")
+                row.operator("ads.ik_chain_next", text="", icon="TRIA_RIGHT")
+                row.operator("ads.ik_chain_autofill_biped", text="Autofill Biped", icon="ARMATURE_DATA")
+                ik_box.operator("ads.ik_chain_validate", text="Validate Against Armature", icon="CHECKMARK")
+
+                if settings.ik_chains:
+                    max_idx = len(settings.ik_chains) - 1
+                    active_idx = min(max(0, settings.active_ik_chain_index), max_idx)
+                    chain = settings.ik_chains[active_idx]
+                    ik_box.label(text=f"Selected: {chain.name}")
+                    ik_box.prop(chain, "name")
+                    ik_box.prop(chain, "enabled")
+                    ik_box.prop(chain, "parent_bone_name")
+                    ik_box.prop(chain, "ik_target_name")
+                    ik_box.prop(chain, "effector_bone_name")
+                    ik_box.prop(chain, "pole_bone_name")
+                    ik_box.prop(chain, "chain_length")
+                    ik_box.prop(chain, "solver_iterations")
+                    ik_box.prop(chain, "min_knee_angle")
+                    ik_box.prop(chain, "max_knee_angle")
+                else:
+                    ik_box.label(text="(no IK chains)")
+
             dict_box, dict_open = _collapsible_box(mixamo_box, settings, "ui_show_animation_dictionaries", "Animation Dictionaries", "ACTION")
             if dict_open:
                 dict_box.template_list(

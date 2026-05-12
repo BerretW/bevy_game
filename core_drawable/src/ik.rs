@@ -4,6 +4,10 @@
 //! prostřednictvím Two-Bone IK solveru aplikovaného na nohy.
 
 use bevy::prelude::*;
+use core_resources::IkEnabledComponent;
+
+// Type alias pro kompatibilitu
+pub type IkEnabled = IkEnabledComponent;
 
 // ---------------------------------------------------------------------------
 // Komponenty
@@ -80,20 +84,6 @@ pub struct IkSolverState {
     pub middle_pos: Vec3,
     /// Aktualní práce na výpočtu.
     pub is_solving: bool,
-}
-
-/// Marker: IK je povolen pro tuto entitu.
-#[derive(Component, Debug, Copy, Clone, Reflect)]
-pub struct IkEnabled {
-    pub blend_weight: f32,  // 0-1: jak moc se aplikuje IK vs originální pozice
-}
-
-impl Default for IkEnabled {
-    fn default() -> Self {
-        Self {
-            blend_weight: 1.0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,30 +192,107 @@ pub fn detect_stairs_on_collision(
 }
 
 /// Raycast pod nohama pro zjištění výšky podlahy.
+/// POZNÁMKA: Implementace je v host_client/src/physics.rs
+/// kde má přístup k Avian3d SpatialQuery.
 pub fn raycaster_ground_height(
     mut _on_stairs: Query<(&GlobalTransform, &mut OnStairs)>,
 ) {
-    // Raycast systém bude integrován později, když budeme mít přístup
-    // k spatial query z avian3d. Zatím je to placeholder.
+    // Implementace se provádí v host_client/src/physics.rs v systému
+    // `raycast_stairs_under_player`, protože SpatialQuery je dostupná
+    // pouze v physics plugin.
+}
+
+// ---------------------------------------------------------------------------
+// Helpers pro vyhledávání kostí
+// ---------------------------------------------------------------------------
+
+/// Rekurzivně hledá entitu s konkrétním jménem v hierarchii.
+fn find_bone_by_name(
+    parent: Entity,
+    target_name: &str,
+    name_q: &Query<&Name>,
+    children_q: &Query<&Children>,
+    max_depth: usize,
+) -> Option<Entity> {
+    if max_depth == 0 {
+        return None;
+    }
+
+    if let Ok(name) = name_q.get(parent) {
+        if name.as_str() == target_name {
+            return Some(parent);
+        }
+    }
+
+    if let Ok(children) = children_q.get(parent) {
+        for child in children.iter() {
+            if let Some(found) = find_bone_by_name(child, target_name, name_q, children_q, max_depth - 1) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
 // Aplikace IK na transform
 // ---------------------------------------------------------------------------
 
-/// Aplikuje vypočtené IK na transforms kostí.
+/// Aplikuje IK offsety na transforms kostí.
+/// 
+/// Tato funkce je jednoduchá verzí IK aplikace:
+/// - Hledá left/right foot kosti
+/// - Aplikuje Y offset na základě výšek z raycastu
+/// - Blenduje s originální pozicí na základě `IkEnabled.blend_weight`
 pub fn apply_ik_to_skeleton(
-    mut _ik_chains: Query<(
-        &IkChain,
-        &GlobalTransform,
-        &mut IkSolverState,
-        &IkEnabled,
-    )>,
-    mut _transforms: Query<&mut Transform>,
-    _children: Query<&Children>,
+    entities_with_stairs: Query<(Entity, &OnStairs, &IkEnabled), Changed<OnStairs>>,
+    mut transforms: Query<&mut Transform>,
+    globals: Query<&GlobalTransform>,
+    children: Query<&Children>,
+    names: Query<&Name>,
 ) {
-    // IK aplikace bude integrována později.
-    // Zatím je to placeholder.
+    for (entity, stairs, ik_enabled) in &entities_with_stairs {
+        // Pokud nejsou žádné výšky terénů, přeskoči
+        if stairs.left_foot_height < 0.01 && stairs.right_foot_height < 0.01 {
+            continue;
+        }
+
+        // Hledej foot kosti - typicky DEF_foot_l a DEF_foot_r
+        let left_foot = find_bone_by_name(entity, "DEF_foot_l", &names, &children, 20)
+            .or_else(|| find_bone_by_name(entity, "DEF-foot_l", &names, &children, 20))
+            .or_else(|| find_bone_by_name(entity, "DEF_foot.L", &names, &children, 20));
+
+        let right_foot = find_bone_by_name(entity, "DEF_foot_r", &names, &children, 20)
+            .or_else(|| find_bone_by_name(entity, "DEF-foot_r", &names, &children, 20))
+            .or_else(|| find_bone_by_name(entity, "DEF_foot.R", &names, &children, 20));
+
+        // Aplikuj offset na levou nohu
+        if let Some(left_entity) = left_foot {
+            if let Ok(left_global) = globals.get(left_entity) {
+                if let Ok(mut left_local) = transforms.get_mut(left_entity) {
+                    let target_y = stairs.left_foot_height;
+                    let current_y = left_global.translation().y;
+                    let delta = target_y - current_y;
+                    let blended_delta = delta * ik_enabled.blend_weight;
+                    left_local.translation.y += blended_delta;
+                }
+            }
+        }
+
+        // Aplikuj offset na pravou nohu
+        if let Some(right_entity) = right_foot {
+            if let Ok(right_global) = globals.get(right_entity) {
+                if let Ok(mut right_local) = transforms.get_mut(right_entity) {
+                    let target_y = stairs.right_foot_height;
+                    let current_y = right_global.translation().y;
+                    let delta = target_y - current_y;
+                    let blended_delta = delta * ik_enabled.blend_weight;
+                    right_local.translation.y += blended_delta;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -116,23 +116,34 @@ Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, 
 
 ---
 
-### Phase 4.2 — Runtime IK (Infrastruktura) [✅ Hotovo]
+### Phase 4.2 — Runtime IK (Infrastruktura) [✅ HOTOVO]
+
+**Veškerá implementace dokončena a ověřena kompilací!**
 
 Implementováno: 
 - `OnStairs` marker komponent pro detekci schodů
 - `IkChain` komponenta s definicí IK řetězce (parent bone, IK target, effector bone)
 - `IkSolverState` komponenta pro uložení meziresultátů
-- `IkEnabled` marker pro aktivaci IK
+- `IkEnabledComponent` (v `core_resources`) marker pro aktivaci IK + type alias `IkEnabled` v `core_drawable` pro kompatibilitu
 - `TwoBoneIkSolver` - Two-Bone IK solver s law of cosines algoritmem
 - `CollisionMaterial::Stairs` varianta v enum - umožňuje značit schodištní kolizory
 - `detect_stairs_on_collision` systém - detekuje přítomnost na schodech
-- `raycaster_ground_height` placeholder - raycast pod nohami pro výšku podlahy (připraveno k integraci s avian3d)
-- `apply_ik_to_skeleton` placeholder - aplikace IK transformů na kosti (připraveno k integraci)
+- **`raycast_stairs_under_player()` systém** (v `host_client/src/physics.rs`) — **Implementováno**: Raycast pod oběma nohami (levá stopa: -0.10, +0.05m; pravá stopa: +0.10, +0.05m), distance 1.5m downward, Avian3d `SpatialQuery::cast_ray`, populates `OnStairs.left_foot_height` a `.right_foot_height`
+- **`apply_ik_to_skeleton()` funkcionalita** (v `core_drawable/src/ik.rs`) — **Implementováno**: Hierarchické vyhledávání kostí (`find_bone_by_name()` rekurzivní), přímá aplikace Y-offsetu na DEF_foot_l/DEF_foot_r (s fallback naming), blended offset via `IkEnabledComponent.blend_weight` (0-1 interpolace), triggery na `Changed<OnStairs>`
+- **Lua API** (`World.EnableIk(handle, blend_weight?)` / `World.DisableIk(handle)`) — **Implementováno** v `core_resources/src/sandbox.rs`: `EnableIk` command insertuje `IkEnabledComponent` s blend_weight clamping, `DisableIk` removuje komponentu
 - Client stairs locomotion assist: při kontaktu se `StairsCollider` se pohyb projektuje do roviny sklonu a stabilizuje `LinearVelocity.y` pro plynulý výstup
 - Client adaptive IK sampling: na schodech full-rate sampling, mimo schody decimovaný sampling; `stairs:state` nese `ik.quality/sample_hz/left_foot_y/right_foot_y`
 - Test resource `resources/example/stairs_test/` s demo schodiště a IK monitoring
+- Blender IK authoring workflow (`blender_plugin/appartus_drawable_toolkit`): Scene-level `IK Chains` UI, Add/Remove/Autofill/Validate operátory, a sidecar export `*.ik.toml` při `Export ADS` / `Export ADM` / `Export Animation Set`
 
-**Zbývá:** Plná integrace raycastu s avian3d spatial_query, dynamická aplikace IK na kosti v ADM hierarchii, Lua API pro IK kontrolu.
+**Architektura:**
+- `core_resources::IkEnabledComponent` — single source of truth pro IK enable/disable state
+- `core_drawable::IkEnabled` — type alias pro `IkEnabledComponent` (kompatibilita, bez cyklu)
+- `host_client::raycast_stairs_under_player()` — PopulatesOnStairs heights každý frame
+- `core_drawable::apply_ik_to_skeleton()` — Aplikuje Y-offset na nohy na základě `OnStairs` + `IkEnabled` blend
+- Lua cmd_queue bridge — `EnableIk` / `DisableIk` commands přes `LuaCommand` enum
+
+**Zbývá:** Plná testovací validace na stairs_test resource (ověření raycast heights + IK offset aplikace).
 
 ---
 

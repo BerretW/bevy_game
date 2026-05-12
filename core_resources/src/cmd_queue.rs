@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
+use bevy::reflect::Reflect;
 use core_shared::{Health, PlayerMarker};
 use serde::{Deserialize, Serialize};
 
@@ -445,7 +446,7 @@ impl Default for AnimationState {
 }
 
 /// Phase 4.2 — Marker: IK je povolen pro tuto entitu.
-#[derive(Component, Debug, Copy, Clone)]
+#[derive(Component, Debug, Copy, Clone, Reflect)]
 pub struct IkEnabledComponent {
     pub blend_weight: f32,  // 0-1: jak moc se aplikuje IK vs originální pozice
 }

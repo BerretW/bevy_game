@@ -290,6 +290,113 @@ def _add_clip_to_dict(settings, dict_name, clip_name):
     return True
 
 
+def _sanitize_ik_chain_name(name):
+    raw = (name or "").strip()
+    if not raw:
+        return "ik_chain"
+    return bpy.path.clean_name(raw)
+
+
+def _get_or_create_ik_chain(settings, chain_name):
+    chain_name = _sanitize_ik_chain_name(chain_name)
+    for item in settings.ik_chains:
+        if item.name == chain_name:
+            return item
+    item = settings.ik_chains.add()
+    item.name = chain_name
+    settings.active_ik_chain_index = max(0, len(settings.ik_chains) - 1)
+    return item
+
+
+def _collect_armature_bone_names(armature_obj):
+    if armature_obj is None or armature_obj.type != 'ARMATURE':
+        return set()
+    return {bone.name for bone in armature_obj.data.bones}
+
+
+def _default_biped_ik_specs():
+    return [
+        {
+            'name': 'leg_l',
+            'parent_bone_name': 'DEF_thigh_l',
+            'ik_target_name': 'IK_foot_l',
+            'effector_bone_name': 'DEF_foot_l',
+            'pole_bone_name': 'IK_knee_l',
+            'chain_length': 1.0,
+            'solver_iterations': 2,
+            'min_knee_angle': 5.0,
+            'max_knee_angle': 175.0,
+        },
+        {
+            'name': 'leg_r',
+            'parent_bone_name': 'DEF_thigh_r',
+            'ik_target_name': 'IK_foot_r',
+            'effector_bone_name': 'DEF_foot_r',
+            'pole_bone_name': 'IK_knee_r',
+            'chain_length': 1.0,
+            'solver_iterations': 2,
+            'min_knee_angle': 5.0,
+            'max_knee_angle': 175.0,
+        },
+    ]
+
+
+def _collect_ik_export_data(settings):
+    chains = []
+    for chain in settings.ik_chains:
+        chains.append({
+            'name': _sanitize_ik_chain_name(chain.name),
+            'enabled': bool(chain.enabled),
+            'parent_bone_name': (chain.parent_bone_name or '').strip(),
+            'ik_target_name': (chain.ik_target_name or '').strip(),
+            'effector_bone_name': (chain.effector_bone_name or '').strip(),
+            'pole_bone_name': (chain.pole_bone_name or '').strip(),
+            'chain_length': float(chain.chain_length),
+            'solver_iterations': int(chain.solver_iterations),
+            'min_knee_angle': float(chain.min_knee_angle),
+            'max_knee_angle': float(chain.max_knee_angle),
+        })
+    return chains
+
+
+def _write_ik_sidecar(directory, asset_name, armature_obj, settings):
+    if not settings.ik_export_sidecar:
+        return None, 0
+
+    chains = _collect_ik_export_data(settings)
+    if not chains:
+        return None, 0
+
+    sidecar_path = os.path.join(directory, f"{asset_name}.ik.toml")
+    lines = [
+        'version = "1.0"',
+        f'asset = "{asset_name}"',
+    ]
+    if armature_obj is not None:
+        lines.append(f'armature = "{armature_obj.name}"')
+    lines.append('')
+
+    for chain in chains:
+        lines.append('[[chains]]')
+        lines.append(f'name = "{chain["name"]}"')
+        lines.append(f'enabled = {str(chain["enabled"]).lower()}')
+        lines.append(f'parent_bone = "{chain["parent_bone_name"]}"')
+        lines.append(f'ik_target = "{chain["ik_target_name"]}"')
+        lines.append(f'effector_bone = "{chain["effector_bone_name"]}"')
+        if chain['pole_bone_name']:
+            lines.append(f'pole_bone = "{chain["pole_bone_name"]}"')
+        lines.append(f'chain_length = {chain["chain_length"]:.6g}')
+        lines.append(f'solver_iterations = {chain["solver_iterations"]}')
+        lines.append(f'min_knee_angle = {chain["min_knee_angle"]:.6g}')
+        lines.append(f'max_knee_angle = {chain["max_knee_angle"]:.6g}')
+        lines.append('')
+
+    with open(sidecar_path, 'w', encoding='utf-8') as handle:
+        handle.write('\n'.join(lines))
+
+    return sidecar_path, len(chains)
+
+
 class BEVY_OT_InitProject(bpy.types.Operator):
     bl_idname     = "bevy.init_project"
     bl_label      = "Initialize Masks"
@@ -792,6 +899,14 @@ class BEVY_OT_Export(bpy.types.Operator):
         with open(toml_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
 
+        armature = _find_target_armature(context, target_meshes)
+        try:
+            ik_path, ik_count = _write_ik_sidecar(export_dir, asset_name, armature, settings)
+            if ik_path and ik_count > 0:
+                self.report({'INFO'}, f"IK sidecar: {ik_count} chain(s) -> {os.path.basename(ik_path)}")
+        except Exception as e:
+            self.report({'WARNING'}, f"IK sidecar export selhal: {e}")
+
         save_companion_textures(self.report, os.path.dirname(toml_path), used_materials)
 
         self.report({"INFO"}, f"Exported: {os.path.basename(glb_path)} and {os.path.basename(toml_path)}")
@@ -1186,6 +1301,130 @@ class BEVY_OT_AnimDictRemoveClip(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class BEVY_OT_IkChainAdd(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_add"
+    bl_label = "Add IK Chain"
+    bl_description = "Create a new IK chain definition"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        chain_name = _sanitize_ik_chain_name(settings.new_ik_chain_name)
+        _get_or_create_ik_chain(settings, chain_name)
+        self.report({'INFO'}, f"IK chain '{chain_name}' ready")
+        return {'FINISHED'}
+
+
+class BEVY_OT_IkChainRemove(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_remove"
+    bl_label = "Remove IK Chain"
+    bl_description = "Remove active IK chain definition"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.ik_chains:
+            self.report({'WARNING'}, "No IK chain to remove")
+            return {'CANCELLED'}
+        idx = min(max(0, settings.active_ik_chain_index), len(settings.ik_chains) - 1)
+        name = settings.ik_chains[idx].name
+        settings.ik_chains.remove(idx)
+        settings.active_ik_chain_index = max(0, min(idx, len(settings.ik_chains) - 1))
+        self.report({'INFO'}, f"Removed IK chain '{name}'")
+        return {'FINISHED'}
+
+
+class BEVY_OT_IkChainPrev(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_prev"
+    bl_label = "Previous IK Chain"
+    bl_description = "Select previous IK chain"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.ik_chains:
+            self.report({'WARNING'}, "No IK chain")
+            return {'CANCELLED'}
+        settings.active_ik_chain_index = max(0, min(settings.active_ik_chain_index - 1, len(settings.ik_chains) - 1))
+        return {'FINISHED'}
+
+
+class BEVY_OT_IkChainNext(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_next"
+    bl_label = "Next IK Chain"
+    bl_description = "Select next IK chain"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.ik_chains:
+            self.report({'WARNING'}, "No IK chain")
+            return {'CANCELLED'}
+        settings.active_ik_chain_index = max(0, min(settings.active_ik_chain_index + 1, len(settings.ik_chains) - 1))
+        return {'FINISHED'}
+
+
+class BEVY_OT_IkChainAutofillBiped(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_autofill_biped"
+    bl_label = "Autofill Biped IK"
+    bl_description = "Populate standard left/right leg IK chain templates"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        prepared = 0
+        for spec in _default_biped_ik_specs():
+            chain = _get_or_create_ik_chain(settings, spec['name'])
+            chain.enabled = True
+            chain.parent_bone_name = spec['parent_bone_name']
+            chain.ik_target_name = spec['ik_target_name']
+            chain.effector_bone_name = spec['effector_bone_name']
+            chain.pole_bone_name = spec['pole_bone_name']
+            chain.chain_length = spec['chain_length']
+            chain.solver_iterations = spec['solver_iterations']
+            chain.min_knee_angle = spec['min_knee_angle']
+            chain.max_knee_angle = spec['max_knee_angle']
+            prepared += 1
+        self.report({'INFO'}, f"Prepared {prepared} biped IK chain template(s)")
+        return {'FINISHED'}
+
+
+class BEVY_OT_IkChainValidate(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_validate"
+    bl_label = "Validate IK Chains"
+    bl_description = "Validate IK chain bone names against active armature"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        armature = _find_target_armature(context)
+        if armature is None:
+            self.report({'WARNING'}, "No armature selected")
+            return {'CANCELLED'}
+
+        if not settings.ik_chains:
+            self.report({'WARNING'}, "No IK chains defined")
+            return {'CANCELLED'}
+
+        known_bones = _collect_armature_bone_names(armature)
+        missing = []
+        for chain in settings.ik_chains:
+            checks = [
+                ('parent', chain.parent_bone_name),
+                ('target', chain.ik_target_name),
+                ('effector', chain.effector_bone_name),
+            ]
+            if chain.pole_bone_name.strip():
+                checks.append(('pole', chain.pole_bone_name))
+            for label, bone_name in checks:
+                name = (bone_name or '').strip()
+                if not name or name not in known_bones:
+                    missing.append(f"{chain.name}:{label}:{name or '<empty>'}")
+
+        if missing:
+            self.report({'WARNING'}, f"IK validate: {len(missing)} missing bone reference(s)")
+            for msg in missing[:10]:
+                self.report({'WARNING'}, msg)
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"IK validate OK ({len(settings.ik_chains)} chain(s))")
+        return {'FINISHED'}
+
+
 class BEVY_OT_RenameMixamoRig(bpy.types.Operator):
     bl_idname = "ads.rename_mixamo_rig"
     bl_label = "Auto Rename Mixamo Rig"
@@ -1371,6 +1610,8 @@ class ADS_OT_export_adm(bpy.types.Operator):
         from .export import build_drawable_toml
         import os
 
+        settings = context.scene.bevy_toolkit_export
+
         if self.use_selection:
             objects = [o for o in context.selected_objects if o.type == 'MESH']
         else:
@@ -1411,6 +1652,13 @@ class ADS_OT_export_adm(bpy.types.Operator):
         except Exception as e:
             self.report({'WARNING'}, f".drawable selhal: {e}")
 
+        try:
+            ik_path, ik_count = _write_ik_sidecar(self.directory, export_name, armature, settings)
+            if ik_path and ik_count > 0:
+                self.report({'INFO'}, f"IK sidecar: {ik_count} chain(s) -> {os.path.basename(ik_path)}")
+        except Exception as e:
+            self.report({'WARNING'}, f"IK sidecar export selhal: {e}")
+
         self.report({'INFO'}, f"ADM: {meshes} meshů, {nodes} uzlů → {os.path.basename(adm_path)} + {os.path.basename(drawable_path)}")
         return {'FINISHED'}
 
@@ -1431,6 +1679,8 @@ class ADS_OT_export_anim_set(bpy.types.Operator):
         from .adm_export import export_ads_anim
         import os
 
+        settings = context.scene.bevy_toolkit_export
+
         objects = _gather_anim_export_objects(context, self.use_selection)
         armature = _find_target_armature(context, objects)
 
@@ -1446,6 +1696,13 @@ class ADS_OT_export_anim_set(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, f"ADS anim export selhal: {e}")
             return {'CANCELLED'}
+
+        try:
+            ik_path, ik_count = _write_ik_sidecar(self.directory, export_name, armature, settings)
+            if ik_path and ik_count > 0:
+                self.report({'INFO'}, f"IK sidecar: {ik_count} chain(s) -> {os.path.basename(ik_path)}")
+        except Exception as e:
+            self.report({'WARNING'}, f"IK sidecar export selhal: {e}")
 
         self.report(
             {'INFO'},

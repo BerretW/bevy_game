@@ -22,6 +22,7 @@ impl Plugin for ClientPhysicsPlugin {
             rebuild_navmesh_surface_cache,
             toggle_physics_debug,
             apply_collision_enabled,
+            raycast_stairs_under_player,
         ));
     }
 }
@@ -650,6 +651,43 @@ fn toggle_colliders_recursive(
     if let Ok(children) = children_q.get(entity) {
         for &child in children {
             toggle_colliders_recursive(child, enabled, children_q, has_collider, commands);
+        }
+    }
+}
+
+/// Raycastuje pod nohama hráče a naplňuje `OnStairs` komponentu s výškami terénů.
+/// Vyžaduje Avian3d `SpatialQuery` pro raycast detekci.
+fn raycast_stairs_under_player(
+    spatial_query: SpatialQuery,
+    mut on_stairs_q: Query<(&GlobalTransform, &mut core_drawable::OnStairs)>,
+) {
+    for (global_tf, mut stairs) in &mut on_stairs_q {
+        // Raycast pod levou nohou (-X offset)
+        let left_foot_origin = global_tf.translation() + Vec3::new(-0.10, 0.05, 0.0);
+        if let Some(hit) = spatial_query.cast_ray(
+            left_foot_origin,
+            Dir3::NEG_Y,
+            1.5,  // max distance [m]
+            true,
+            &SpatialQueryFilter::default(),
+        ) {
+            stairs.left_foot_height = hit.distance;
+        } else {
+            stairs.left_foot_height = 0.0;
+        }
+
+        // Raycast pod pravou nohou (+X offset)
+        let right_foot_origin = global_tf.translation() + Vec3::new(0.10, 0.05, 0.0);
+        if let Some(hit) = spatial_query.cast_ray(
+            right_foot_origin,
+            Dir3::NEG_Y,
+            1.5,
+            true,
+            &SpatialQueryFilter::default(),
+        ) {
+            stairs.right_foot_height = hit.distance;
+        } else {
+            stairs.right_foot_height = 0.0;
         }
     }
 }
