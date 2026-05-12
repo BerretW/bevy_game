@@ -1621,6 +1621,28 @@ fn install_runtime_api_inner(
         Ok(())
     })?)?;
 
+    // World.EnableIk(handle, blend_weight?) — Phase 4.2 — zapne IK
+    let cq = cmd_queue.clone();
+    world.set("EnableIk", lua.create_function(
+        move |_, (handle, blend_weight_opt): (u64, mlua::Value)| {
+            let blend_weight = match blend_weight_opt {
+                mlua::Value::Number(n) => n as f32,
+                mlua::Value::Integer(i) => i as f32,
+                mlua::Value::Nil => 1.0,
+                _ => 1.0,
+            }.clamp(0.0, 1.0);
+            cq.push(LuaCommand::EnableIk { handle, blend_weight });
+            Ok(())
+        },
+    )?)?;
+
+    // World.DisableIk(handle) — Phase 4.2 — vypne IK
+    let cq = cmd_queue.clone();
+    world.set("DisableIk", lua.create_function(move |_, handle: u64| {
+        cq.push(LuaCommand::DisableIk { handle });
+        Ok(())
+    })?)?;
+
     globals.set("World", world)?;
 
     // Engine namespace — Model Registry + Anim Set Registry

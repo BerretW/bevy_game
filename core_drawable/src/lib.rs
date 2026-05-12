@@ -1,5 +1,6 @@
 mod adm;
 mod hook;
+mod ik;
 mod loader;
 mod lod;
 mod map;
@@ -25,6 +26,10 @@ pub use hook::{
     classify_ads_node_name,
     attach_drawable_intent, hook_drawable_scenes, observe_scene_ready,
     setup_fallback_textures, auto_hide_col_nodes, apply_material_overrides,
+};
+pub use ik::{
+    OnStairs, IkChain, IkSolverState, IkEnabled, TwoBoneIkSolver,
+    detect_stairs_on_collision, raycaster_ground_height, apply_ik_to_skeleton,
 };
 pub use loader::DrawableManifestLoader;
 pub use lod::{DefaultLodDistances, LodGroup, LodLevel, apply_skeletal_pruning, parse_lod_level, update_lod_visibility};
@@ -74,7 +79,12 @@ impl Plugin for DrawablePlugin {
             .register_type::<GltfMaterialName>()
             .register_type::<bevy::ecs::hierarchy::ChildOf>()
             .register_type::<bevy::ecs::hierarchy::Children>()
-            .register_type::<Name>();
+            .register_type::<Name>()
+            // IK komponenty
+            .register_type::<ik::OnStairs>()
+            .register_type::<ik::IkChain>()
+            .register_type::<ik::IkSolverState>()
+            .register_type::<ik::IkEnabled>();
 
         app.init_asset::<AdmScene>()
             .add_message::<adm::AdmAnimNotifyEvent>()
@@ -110,6 +120,9 @@ impl Plugin for DrawablePlugin {
                     update_lod_visibility.after(hook_drawable_scenes),
                     apply_skeletal_pruning.after(update_lod_visibility),
                     apply_material_overrides,
+                    detect_stairs_on_collision,
+                    raycaster_ground_height.after(detect_stairs_on_collision),
+                    apply_ik_to_skeleton.after(raycaster_ground_height),
                 ),
             );
     }

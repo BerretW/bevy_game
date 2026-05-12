@@ -105,6 +105,15 @@ pub enum LuaCommand {
         speed: f32,
         flags: u32,
     },
+    /// Phase 4.2 — Zapne IK na entitě s danou váhou blendování (0-1).
+    EnableIk {
+        handle: u64,
+        blend_weight: f32,
+    },
+    /// Phase 4.2 — Vypne IK na entitě.
+    DisableIk {
+        handle: u64,
+    },
     /// Připojí child entitu k parent entitě přes dvojici socketů.
     Attach {
         child_handle: u64,
@@ -303,6 +312,20 @@ pub struct AnimationState {
 impl Default for AnimationState {
     fn default() -> Self {
         Self { current: None, speed: 1.0, looping: true, paused: false, blend_time: 0.0, flags: 1 }
+    }
+}
+
+/// Phase 4.2 — Marker: IK je povolen pro tuto entitu.
+#[derive(Component, Debug, Copy, Clone)]
+pub struct IkEnabledComponent {
+    pub blend_weight: f32,  // 0-1: jak moc se aplikuje IK vs originální pozice
+}
+
+impl Default for IkEnabledComponent {
+    fn default() -> Self {
+        Self {
+            blend_weight: 1.0,
+        }
     }
 }
 
@@ -700,6 +723,26 @@ pub fn process_lua_commands(
                     commands.entity(entity).remove::<AnimationState>();
                 } else {
                     warn!("[cmd_queue] PlayBlendSpace: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::EnableIk { handle, blend_weight } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    commands.entity(entity).insert(IkEnabledComponent {
+                        blend_weight: blend_weight.clamp(0.0, 1.0),
+                    });
+                    debug!("[cmd_queue] EnableIk handle={} blend_weight={}", handle, blend_weight);
+                } else {
+                    warn!("[cmd_queue] EnableIk: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::DisableIk { handle } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    commands.entity(entity).remove::<IkEnabledComponent>();
+                    debug!("[cmd_queue] DisableIk handle={}", handle);
+                } else {
+                    warn!("[cmd_queue] DisableIk: unknown handle {}", handle);
                 }
             }
 

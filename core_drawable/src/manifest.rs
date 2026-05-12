@@ -167,6 +167,7 @@ pub enum CollisionMaterial {
     Carpet,
     Asphalt,
     LadderMetal,
+    Stairs,
 }
 
 impl CollisionMaterial {
@@ -192,6 +193,7 @@ impl CollisionMaterial {
             CollisionMaterial::Carpet => "footstep_carpet",
             CollisionMaterial::Asphalt => "footstep_asphalt",
             CollisionMaterial::LadderMetal => "footstep_ladder_metal",
+            CollisionMaterial::Stairs => "footstep_stone",
         }
     }
 
@@ -217,6 +219,7 @@ impl CollisionMaterial {
             CollisionMaterial::Carpet => "impact_carpet_thud",
             CollisionMaterial::Asphalt => "impact_asphalt_chip",
             CollisionMaterial::LadderMetal => "impact_ladder_metal_spark",
+            CollisionMaterial::Stairs => "impact_stone_chip",
         }
     }
 }

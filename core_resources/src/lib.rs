@@ -23,7 +23,7 @@ mod watcher;
 
 pub use cmd_queue::{
     AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
-    EntityStateCache, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
+    EntityStateCache, IkEnabledComponent, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, PendingDamageEvent,
     PlayerEntityMap, PlayerStatsCache, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
     process_lua_commands, sync_entity_state_cache,

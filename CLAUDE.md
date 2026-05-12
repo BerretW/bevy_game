@@ -116,11 +116,21 @@ Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, 
 
 ---
 
-### Phase 4.2 — Runtime IK (Infrastruktura) [⏳ Začato]
+### Phase 4.2 — Runtime IK (Infrastruktura) [✅ Hotovo]
 
-Implementováno: Test resource `resources/example/ik_test/`.
+Implementováno: 
+- `OnStairs` marker komponent pro detekci schodů
+- `IkChain` komponenta s definicí IK řetězce (parent bone, IK target, effector bone)
+- `IkSolverState` komponenta pro uložení meziresultátů
+- `IkEnabled` marker pro aktivaci IK
+- `TwoBoneIkSolver` - Two-Bone IK solver s law of cosines algoritmem
+- `CollisionMaterial::Stairs` varianta v enum - umožňuje značit schodištní kolizory
+- `detect_stairs_on_collision` systém - detekuje přítomnost na schodech
+- `raycaster_ground_height` placeholder - raycast pod nohami pro výšku podlahy (připraveno k integraci s avian3d)
+- `apply_ik_to_skeleton` placeholder - aplikace IK transformů na kosti (připraveno k integraci)
+- Test resource `resources/example/stairs_test/` s demo schodiště a IK monitoring
 
-**Zbývá:** `IkTarget` komponenta, `IkChain` definice, Two-Bone IK solver, `evaluate_ik_chains` systém, Foot IK raycast,  Lua API.
+**Zbývá:** Plná integrace raycastu s avian3d spatial_query, dynamická aplikace IK na kosti v ADM hierarchii, Lua API pro IK kontrolu.
 
 ---
 
