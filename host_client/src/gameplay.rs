@@ -1,7 +1,9 @@
-//! Phase 3 — klientska gameplay vrstva.
-//!
-//! Phase 3.7: `RaycastBridge` se aktualizuje kazdy frame z pozice mysi.
-//! Lua sandbox cte pres `Raycast.GetGroundPosition()`.
+/// Maximální vzdálenost od země, kdy se ještě počítá ground kontakt (v metrech)
+const GROUND_CONTACT_MAX_DIST: f32 = 0.05;
+// Phase 3 — klientska gameplay vrstva.
+//
+// Phase 3.7: `RaycastBridge` se aktualizuje kazdy frame z pozice mysi.
+// Lua sandbox cte pres `Raycast.GetGroundPosition()`.
 
 use bevy::input::mouse::MouseMotion;
 use bevy::ecs::message::MessageReader;
@@ -455,7 +457,8 @@ fn has_ground_contact(shape_hits: Option<&ShapeHits>) -> bool {
     shape_hits
         .map(|hits| {
             hits.iter().any(|hit| {
-                (-hit.normal2).dot(Vec3::Y) > GROUND_NORMAL_Y_MIN
+                ((-hit.normal2).dot(Vec3::Y) > GROUND_NORMAL_Y_MIN)
+                    && (hit.distance <= GROUND_CONTACT_MAX_DIST)
             })
         })
         .unwrap_or(false)
@@ -525,29 +528,54 @@ fn log_terrain_diag(
     let hit_count = shape_hits.map(|h| h.iter().count()).unwrap_or(0);
     let slope_deg = normal.y.clamp(-1.0, 1.0).acos().to_degrees();
 
+    // Najdi minimální vzdálenost od země (nejmenší hit.distance)
+    let min_ground_dist = shape_hits
+        .and_then(|hits| hits.iter().map(|hit| hit.distance).reduce(f32::min));
+
     // Log při změně grounded stavu
     if grounded != diag.was_grounded {
-        info!(
-            "[terrain_diag] grounded={grounded} vel_y={:.3} normal=({:.3},{:.3},{:.3}) slope={slope_deg:.1}° hits={hit_count}",
-            vel.y, normal.x, normal.y, normal.z
-        );
+        if let Some(dist) = min_ground_dist {
+            info!(
+                "[terrain_diag] grounded={} vel_y={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist={:.4}",
+                grounded, vel.y, normal.x, normal.y, normal.z, slope_deg, hit_count, dist
+            );
+        } else {
+            info!(
+                "[terrain_diag] grounded={} vel_y={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist=NONE",
+                grounded, vel.y, normal.x, normal.y, normal.z, slope_deg, hit_count
+            );
+        }
     }
 
     // Log při výrazné změně normály (detekce přechodu na jiný povrch / hranu)
     let normal_shift = (normal.y - diag.last_normal_y).abs();
     if grounded && normal_shift > 0.05 {
-        info!(
-            "[terrain_diag] normal_shift={normal_shift:.3} normal=({:.3},{:.3},{:.3}) slope={slope_deg:.1}° vel=({:.2},{:.2},{:.2}) hits={hit_count}",
-            normal.x, normal.y, normal.z, vel.x, vel.y, vel.z
-        );
+        if let Some(dist) = min_ground_dist {
+            info!(
+                "[terrain_diag] normal_shift={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° vel=({:.2},{:.2},{:.2}) hits={} ground_dist={:.4}",
+                normal_shift, normal.x, normal.y, normal.z, slope_deg, vel.x, vel.y, vel.z, hit_count, dist
+            );
+        } else {
+            info!(
+                "[terrain_diag] normal_shift={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° vel=({:.2},{:.2},{:.2}) hits={} ground_dist=NONE",
+                normal_shift, normal.x, normal.y, normal.z, slope_deg, vel.x, vel.y, vel.z, hit_count
+            );
+        }
     }
 
     // Heartbeat každých 90 framů
     if diag.frame % 90 == 0 {
-        info!(
-            "[terrain_diag] TICK frame={} grounded={grounded} vel=({:.2},{:.2},{:.2}) normal=({:.3},{:.3},{:.3}) slope={slope_deg:.1}° hits={hit_count}",
-            diag.frame, vel.x, vel.y, vel.z, normal.x, normal.y, normal.z
-        );
+        if let Some(dist) = min_ground_dist {
+            info!(
+                "[terrain_diag] TICK frame={} grounded={} vel=({:.2},{:.2},{:.2}) normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist={:.4}",
+                diag.frame, grounded, vel.x, vel.y, vel.z, normal.x, normal.y, normal.z, slope_deg, hit_count, dist
+            );
+        } else {
+            info!(
+                "[terrain_diag] TICK frame={} grounded={} vel=({:.2},{:.2},{:.2}) normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist=NONE",
+                diag.frame, grounded, vel.x, vel.y, vel.z, normal.x, normal.y, normal.z, slope_deg, hit_count
+            );
+        }
     }
 
     diag.was_grounded = grounded;
