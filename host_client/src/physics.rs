@@ -379,8 +379,12 @@ fn attach_stairs_dummy_colliders(
             }
             let slope_length = (total_height * total_height + total_depth * total_depth).sqrt();
             let trigger_thickness = (step_h * 0.2).clamp(0.02, 0.08);
-            let trigger_clearance = trigger_thickness + 0.03;
-            let trigger_offset = Quat::from_rotation_x(slope_angle) * Vec3::new(0.0, trigger_clearance, 0.0);
+            // Trigger chceme mít nad hranou schodů po celé délce, ne uvnitř mesh objemu.
+            let trigger_clearance_y = if marker.collider.stairs_clearance_y > 0.0 {
+                marker.collider.stairs_clearance_y
+            } else {
+                (trigger_thickness * 0.5 + step_h * 0.5).max(0.08)
+            };
 
             p.spawn((
                 DummyGeneratedCollider,
@@ -388,7 +392,7 @@ fn attach_stairs_dummy_colliders(
                 Sensor,
                 Collider::cuboid(width, trigger_thickness, slope_length.max(0.01)),
                 Transform {
-                    translation: trigger_offset,
+                    translation: Vec3::new(0.0, trigger_clearance_y, 0.0),
                     rotation: Quat::from_rotation_x(slope_angle),
                     scale: Vec3::ONE,
                 },

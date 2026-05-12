@@ -320,6 +320,7 @@ pub struct DummyColliderDef {
     pub is_trigger: bool,
     pub stairs: bool,
     pub stairs_slope_invert: bool,
+    pub stairs_clearance_y: f32,
     pub friction: f32,
     pub restitution: f32,
 }
@@ -336,6 +337,7 @@ impl Default for DummyColliderDef {
             is_trigger: false,
             stairs: false,
             stairs_slope_invert: false,
+            stairs_clearance_y: 0.0,
             friction: 0.8,
             restitution: 0.0,
         }

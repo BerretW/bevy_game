@@ -969,6 +969,7 @@ fn parse_dummy_from_lua(shape: &str, params: Option<mlua::Table>) -> DummyObject
         c.is_trigger = table_bool(&col_t, "is_trigger", c.is_trigger);
         c.stairs = table_bool(&col_t, "stairs", c.stairs);
         c.stairs_slope_invert = table_bool(&col_t, "stairs_slope_invert", c.stairs_slope_invert);
+        c.stairs_clearance_y = table_f32(&col_t, "stairs_clearance_y", c.stairs_clearance_y).max(0.0);
         c.friction = table_f32(&col_t, "friction", c.friction).max(0.0);
         c.restitution = table_f32(&col_t, "restitution", c.restitution).max(0.0);
         c.radius = table_f32(&col_t, "radius", c.radius).max(0.001);
@@ -999,6 +1000,7 @@ fn parse_collider_from_lua(params: Option<mlua::Table>) -> DummyColliderDef {
     c.is_trigger = table_bool(&source, "is_trigger", c.is_trigger);
     c.stairs = table_bool(&source, "stairs", c.stairs);
     c.stairs_slope_invert = table_bool(&source, "stairs_slope_invert", c.stairs_slope_invert);
+    c.stairs_clearance_y = table_f32(&source, "stairs_clearance_y", c.stairs_clearance_y).max(0.0);
     c.friction = table_f32(&source, "friction", c.friction).max(0.0);
     c.restitution = table_f32(&source, "restitution", c.restitution).max(0.0);
     c.radius = table_f32(&source, "radius", c.radius).max(0.001);

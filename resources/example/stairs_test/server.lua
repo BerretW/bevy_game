@@ -42,6 +42,7 @@ function RegisterStairs()
                 is_static = true,
                 is_trigger = true,
                 stairs = true,
+                stairs_clearance_y = 0.22,
                 size = { x = width, y = total_height, z = total_depth },
             },
         },

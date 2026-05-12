@@ -425,7 +425,7 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `World.SpawnNetworkedObject(model, pos, rot)` | server | Replikovaná entita → handle |
 | `World.SpawnLocalDummy(shape, params, pos, rot)` | both | Parametrický dummy objekt (cuboid/sphere/cube/stairs/arch) |
 | `World.SpawnNetworkedDummy(shape, params, pos, rot)` | server | Replikovaný parametrický dummy objekt |
-| `World.SpawnLocalCollider(params, pos, rot)` | both | Samostatný collider bez render meshe (`shape/size/radius/height/is_static/is_trigger/stairs/stairs_slope_invert`) |
+| `World.SpawnLocalCollider(params, pos, rot)` | both | Samostatný collider bez render meshe (`shape/size/radius/height/is_static/is_trigger/stairs/stairs_slope_invert/stairs_clearance_y`) |
 | `World.SpawnNetworkedCollider(params, pos, rot)` | server | Replikovaný samostatný collider bez render meshe |
 | `World.DeleteObject(handle)` | both | Despawn |
 | `World.SetTransform/SetPosition/SetRotation/SetScale/SetModel` | both | Transformace |
