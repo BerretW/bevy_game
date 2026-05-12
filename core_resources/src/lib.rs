@@ -25,7 +25,8 @@ pub use cmd_queue::{
     AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
     ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider,
     EntityStateCache, IkEnabledComponent, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
-    LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, PendingDamageEvent,
+    NpcAgent, NpcMoveGoal, NpcWanderKind, PedProfileOverride,
+    LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, NpcPedMarker, PendingDamageEvent,
     PlayerEntityMap, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
     process_lua_commands, sync_entity_state_cache,
 };

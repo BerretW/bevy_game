@@ -25,7 +25,7 @@ use bevy::math::{EulerRot, Quat};
 use crate::ace::AceRegistry;
 use crate::cmd_queue::{
     CommandQueue, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
-    EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache,
+    EntityStateCache, LocalPlayerStats, LuaCommand, NpcWanderKind, PlayerStatsCache,
 };
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
@@ -1023,6 +1023,14 @@ fn lua_value_to_u64(v: &mlua::Value) -> Option<u64> {
     }
 }
 
+fn parse_npc_wander_kind(name: &str) -> NpcWanderKind {
+    match name.to_ascii_lowercase().as_str() {
+        "patrol" => NpcWanderKind::Patrol,
+        "orbit" => NpcWanderKind::Orbit,
+        _ => NpcWanderKind::Random,
+    }
+}
+
 /// Převede Lua table parametrů (nebo nil) na Vec<Json> pro DB executor.
 fn json_params(v: mlua::Value) -> Vec<Json> {
     match v {
@@ -1280,6 +1288,29 @@ fn install_runtime_api_inner(
             let rot = table_to_vec3(&rot_t);
             let handle = cq.alloc_handle();
             cq.push(LuaCommand::SpawnNetworkedObject { handle, model, pos, rot });
+            Ok(handle)
+        },
+    )?)?;
+
+    // World.SpawnNetworkedNpc — server-only, replikovaná NPC entita.
+    // Oproti SpawnNetworkedObject přidá marker NPC, takže klient vytvoří capsule collider.
+    let cq = cmd_queue.clone();
+    world.set("SpawnNetworkedNpc", lua.create_function(
+        move |_, (model, pos_t, rot_t, ped_profile_opt): (String, mlua::Table, mlua::Table, Option<mlua::Value>)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError(
+                    "World.SpawnNetworkedNpc is server-only".into(),
+                ));
+            }
+            let pos = table_to_vec3(&pos_t);
+            let rot = table_to_vec3(&rot_t);
+            let ped_profile = match ped_profile_opt {
+                Some(mlua::Value::String(s)) => Some(s.to_str()?.to_string()),
+                Some(mlua::Value::Nil) | None => None,
+                _ => return Err(mlua::Error::RuntimeError("ped_profile must be string or nil".into())),
+            };
+            let handle = cq.alloc_handle();
+            cq.push(LuaCommand::SpawnNetworkedNpc { handle, model, pos, rot, ped_profile });
             Ok(handle)
         },
     )?)?;
@@ -1749,6 +1780,136 @@ fn install_runtime_api_inner(
             Ok(())
         },
     )?)?;
+
+    // -- NPC AI --------------------------------------------------------------
+
+    // World.NpcConfigure(handle, opts)
+    // opts: { move_speed?, arrive_distance?, turn_speed? }
+    let cq = cmd_queue.clone();
+    world.set("NpcConfigure", lua.create_function(
+        move |_, (handle, opts_v): (u64, mlua::Value)| {
+            let mut move_speed = None;
+            let mut arrive_distance = None;
+            let mut turn_speed = None;
+            if let mlua::Value::Table(opts) = opts_v {
+                move_speed = opts.get::<f32>("move_speed").ok();
+                arrive_distance = opts.get::<f32>("arrive_distance").ok();
+                turn_speed = opts.get::<f32>("turn_speed").ok();
+            }
+            cq.push(LuaCommand::NpcConfigure {
+                handle,
+                move_speed,
+                arrive_distance,
+                turn_speed,
+            });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcWander(handle, kind?, opts?)
+    // kind: "random" | "patrol" | "orbit"
+    // opts: { radius?, retarget_sec?, orbit_angular_speed?, patrol_point?, clockwise? }
+    let cq = cmd_queue.clone();
+    world.set("NpcWander", lua.create_function(
+        move |_, args: MultiValue| {
+            if args.is_empty() {
+                return Err(mlua::Error::RuntimeError(
+                    "World.NpcWander(handle, kind?, opts?) requires at least handle".into(),
+                ));
+            }
+
+            let handle = match &args[0] {
+                mlua::Value::Integer(v) if *v >= 0 => *v as u64,
+                mlua::Value::Number(v) if *v >= 0.0 => *v as u64,
+                _ => return Err(mlua::Error::RuntimeError("NpcWander: invalid handle".into())),
+            };
+
+            let mut kind = NpcWanderKind::Random;
+            let mut opts: Option<mlua::Table> = None;
+
+            if args.len() >= 2 {
+                match &args[1] {
+                    mlua::Value::String(s) => kind = parse_npc_wander_kind(s.to_str()?.as_ref()),
+                    mlua::Value::Table(t) => opts = Some(t.clone()),
+                    _ => {}
+                }
+            }
+            if args.len() >= 3 {
+                if let mlua::Value::Table(t) = &args[2] {
+                    opts = Some(t.clone());
+                }
+            }
+
+            let mut radius = 4.0_f32;
+            let mut retarget_sec = 2.5_f32;
+            let mut orbit_angular_speed = 0.8_f32;
+            let mut patrol_point = None;
+            let mut clockwise = false;
+
+            if let Some(t) = opts {
+                if let Ok(v) = t.get::<f32>("radius") {
+                    radius = v;
+                }
+                if let Ok(v) = t.get::<f32>("retarget_sec") {
+                    retarget_sec = v;
+                }
+                if let Ok(v) = t.get::<f32>("orbit_angular_speed") {
+                    orbit_angular_speed = v;
+                }
+                if let Ok(v) = t.get::<bool>("clockwise") {
+                    clockwise = v;
+                }
+                if let Ok(p) = t.get::<mlua::Table>("patrol_point") {
+                    patrol_point = Some(table_to_vec3(&p));
+                }
+            }
+
+            cq.push(LuaCommand::NpcWander {
+                handle,
+                kind,
+                radius,
+                retarget_sec,
+                orbit_angular_speed,
+                patrol_point,
+                clockwise,
+            });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcGoToCoord(handle, pos, stop_distance?)
+    let cq = cmd_queue.clone();
+    world.set("NpcGoToCoord", lua.create_function(
+        move |_, (handle, pos_t, stop_distance): (u64, mlua::Table, Option<f32>)| {
+            let target = table_to_vec3(&pos_t);
+            cq.push(LuaCommand::NpcGoToCoord {
+                handle,
+                target,
+                stop_distance: stop_distance.unwrap_or(0.35),
+            });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcGoToEntity(handle, target_handle, stop_distance?)
+    let cq = cmd_queue.clone();
+    world.set("NpcGoToEntity", lua.create_function(
+        move |_, (handle, target_handle, stop_distance): (u64, u64, Option<f32>)| {
+            cq.push(LuaCommand::NpcGoToEntity {
+                handle,
+                target_handle,
+                stop_distance: stop_distance.unwrap_or(1.1),
+            });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcStop(handle)
+    let cq = cmd_queue.clone();
+    world.set("NpcStop", lua.create_function(move |_, handle: u64| {
+        cq.push(LuaCommand::NpcStop { handle });
+        Ok(())
+    })?)?;
 
     // -- Phase 5 extensions ---------------------------------------------------
 

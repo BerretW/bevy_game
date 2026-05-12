@@ -8,6 +8,7 @@ use bevy::prelude::*;
 
 use crate::cmd_queue::{
     process_lua_commands, sync_entity_state_cache, CommandQueue, EntityStateCache,
+    tick_npc_agents,
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
@@ -102,6 +103,7 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<LuaWorldState>();
         app.add_message::<PendingDamageEvent>();
         app.add_systems(PostUpdate, process_lua_commands);
+        app.add_systems(FixedUpdate, tick_npc_agents);
 
         // Phase 3.4 - Model Registry
         app.init_resource::<ModelRegistry>();

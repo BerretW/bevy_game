@@ -1,0 +1,1 @@
+musíme zavést systém vlastnictví NPC na hráče. server nemůže simulovat fyziku bez prostředí a tak by každé NPC měl vlastnit nějaký hráč, samozřejmě je třeba udělat dědičnost aby když se hráč odpojí nebo vzdálí aby NPC dostal někdo jiný případně se zamrazila když v okolí nikdo není.

@@ -35,6 +35,7 @@ use core_resources::{
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
     DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
     IkEnabledComponent, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
+    NpcPedMarker,
     ModelRegistry, StairsCollider, process_lua_commands, sync_entity_state_cache,
 };
 use core_shared::{NetTransform, PlayerMarker};
@@ -56,6 +57,18 @@ const ROTATION_SMOOTHING_RATE: f32 = 18.0;
 const IK_OFF_STAIRS_DECIMATION_FRAMES: u64 = 6;
 /// Výchozí FOV kamery v radiánech (60°) — Bevy default.
 const DEFAULT_CAMERA_FOV: f32 = std::f32::consts::FRAC_PI_3;
+const PLAYER_MOVE_SPEED: f32 = 5.0;
+const PLAYER_SPRINT_MULT: f32 = 1.8;
+const PLAYER_CROUCH_MULT: f32 = 0.5;
+const PLAYER_JUMP_VEL: f32 = 6.0;
+/// Fallback konstanty — použijí se pokud player.ped.toml není ještě načten.
+const GROUND_VEL_THRESHOLD: f32 = 0.25;
+/// Small sphere radius so the shape cast only hits things directly underfoot,
+/// not walls or steep terrain edges that a larger sphere would catch.
+const GROUND_CASTER_RADIUS: f32 = 0.14;
+/// cos(~49°) — surfaces steeper than this are not walkable and do not count as ground.
+/// Matches the ped profile's slope_max_angle (46°) with a small margin.
+const GROUND_NORMAL_Y_MIN: f32 = 0.65;
 
 #[derive(Resource, Clone, Copy)]
 pub struct LocalClientId(pub u64);
@@ -86,6 +99,12 @@ struct LocalObjectVisualAttached;
 
 #[derive(Component)]
 struct DummyObjectVisualAttached;
+
+#[derive(Component)]
+struct NpcCapsuleAttached;
+
+#[derive(Component)]
+struct NpcVisualAttached;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocomotionState {
@@ -171,13 +190,6 @@ struct FootIkBoneState {
 }
 
 #[derive(Resource, Default)]
-struct TerrainDiag {
-    frame: u64,
-    was_grounded: bool,
-    last_normal_y: f32,
-}
-
-#[derive(Resource, Default)]
 struct MovementGroundState {
     last_grounded_time: f32,
 }
@@ -217,7 +229,6 @@ impl Plugin for ClientGameplayPlugin {
         app.init_resource::<LuaAnimationGraphCache>();
         app.init_resource::<ModelAnimationDiscoveryCache>();
         app.init_resource::<AdaptiveIkSampleCache>();
-        app.init_resource::<TerrainDiag>();
         app.init_resource::<MovementGroundState>();
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
@@ -249,6 +260,18 @@ impl Plugin for ClientGameplayPlugin {
                 .chain()
                 .run_if(in_state(AppState::InGame)),
         );
+            app.add_systems(
+                Update,
+                attach_model_to_new_npcs.run_if(in_state(AppState::InGame)),
+            );
+            app.add_systems(
+                Update,
+                attach_capsule_to_new_npcs.run_if(in_state(AppState::InGame)),
+            );
+            app.add_systems(
+                Update,
+                sync_npc_net_transform.run_if(in_state(AppState::InGame)),
+            );
         // IK foot placement: PostUpdate před propagací, aby animace (Update) kosti nastavila
         // a IK je přepsal dřív než se počítají GlobalTransforms pro render → žádný frame-lag.
         app.add_systems(
@@ -283,10 +306,6 @@ impl Plugin for ClientGameplayPlugin {
                 .before(sync_entity_state_cache),
         );
         // app.add_systems(Update, debug_player_movement.run_if(on_timer(std::time::Duration::from_secs(2))));
-        app.add_systems(
-            Update,
-            log_terrain_diag.run_if(in_state(AppState::InGame)),
-        );
     }
 }
 
@@ -306,19 +325,6 @@ fn sync_replicated_entity_handles(
     }
 }
 
-const PLAYER_MOVE_SPEED: f32 = 5.0;
-const PLAYER_SPRINT_MULT: f32 = 1.8;
-const PLAYER_CROUCH_MULT: f32 = 0.5;
-const PLAYER_JUMP_VEL: f32 = 6.0;
-/// Fallback konstanty — použijí se pokud player.ped.toml není ještě načten.
-const GROUND_VEL_THRESHOLD: f32 = 0.25;
-/// Small sphere radius so the shape cast only hits things directly underfoot,
-/// not walls or steep terrain edges that a larger sphere would catch.
-const GROUND_CASTER_RADIUS: f32 = 0.14;
-/// cos(~49°) — surfaces steeper than this are not walkable and do not count as ground.
-/// Matches the ped profile's slope_max_angle (46°) with a small margin.
-const GROUND_NORMAL_Y_MIN: f32 = 0.65;
-
 /// (player.ped.toml) pokud je načten — jinak se použijí fallback konstanty.
 fn apply_player_movement(
     time: Res<Time>,
@@ -331,70 +337,60 @@ fn apply_player_movement(
     mut ground_state: ResMut<MovementGroundState>,
     mut players: Query<(&PlayerMarker, &mut LinearVelocity, Option<&ShapeHits>), With<Predicted>>,
 ) {
-    let Some(lid) = local_client_id else { return };
+    let Some(local_id) = local_client_id.map(|r| r.0) else { return };
+
+    let dt = time.delta_secs().max(0.0001);
+    let now = time.elapsed_secs();
     let bindings = &cfg.0.input.keys;
 
-    // Načti preferovaný ped profil (primárně "player", fallback na první dostupný).
     let ped = resolve_default_ped_profile(&ped_reg, &ped_assets);
+    let run_speed = ped.map(|p| p.movement.run_speed).unwrap_or(PLAYER_MOVE_SPEED);
+    let sprint_speed = ped
+        .map(|p| p.movement.sprint_speed)
+        .unwrap_or(PLAYER_MOVE_SPEED * PLAYER_SPRINT_MULT);
+    let crouch_speed = ped
+        .map(|p| p.movement.crouch_speed)
+        .unwrap_or(PLAYER_MOVE_SPEED * PLAYER_CROUCH_MULT);
+    let movement_smoothing = ped.map(|p| p.movement.movement_smoothing).unwrap_or(12.0);
+    let jump_impulse = ped.map(|p| p.jump.impulse).unwrap_or(PLAYER_JUMP_VEL);
+    let grounded_thresh = ped
+        .map(|p| p.jump.grounded_vel_threshold)
+        .unwrap_or(GROUND_VEL_THRESHOLD);
+    let double_jump_enabled = ped.map(|p| p.jump.double_jump).unwrap_or(false);
+    let max_fall_speed = ped.map(|p| p.jump.max_fall_speed).unwrap_or(28.0_f32);
 
-    let mut move_x = 0.0f32;
-    let mut move_y = 0.0f32;
-    if keys.pressed(bindings.move_forward)  { move_y += 1.0; }
-    if keys.pressed(bindings.move_backward) { move_y -= 1.0; }
-    if keys.pressed(bindings.move_right)    { move_x -= 1.0; }
-    if keys.pressed(bindings.move_left)     { move_x += 1.0; }
+    let mut input_x = 0.0_f32;
+    let mut input_z = 0.0_f32;
+    if keys.pressed(bindings.move_forward) { input_z += 1.0; }
+    if keys.pressed(bindings.move_backward) { input_z -= 1.0; }
+    if keys.pressed(bindings.move_right) { input_x += 1.0; }
+    if keys.pressed(bindings.move_left) { input_x -= 1.0; }
+
+    let input = Vec2::new(input_x, input_z).normalize_or_zero();
+    let yaw = look.yaw;
+    let sin_yaw = yaw.sin();
+    let cos_yaw = yaw.cos();
+    let world_x = input.x * cos_yaw + input.y * sin_yaw;
+    let world_z = input.y * cos_yaw - input.x * sin_yaw;
 
     let sprint = keys.pressed(bindings.sprint);
     let crouch = keys.pressed(bindings.crouch);
-    let jump   = keys.pressed(bindings.jump);
+    let jump = keys.just_pressed(bindings.jump);
 
-    // Rychlost pohybu z ped profilu nebo fallback
-    let (run_speed, sprint_speed, crouch_speed, movement_smoothing) = if let Some(p) = ped {
-        (
-            p.movement.run_speed,
-            p.movement.sprint_speed,
-            p.movement.crouch_speed,
-            p.movement.movement_smoothing,
-        )
+    let speed = if crouch {
+        crouch_speed
+    } else if sprint {
+        sprint_speed
     } else {
-        (
-            PLAYER_MOVE_SPEED,
-            PLAYER_MOVE_SPEED * PLAYER_SPRINT_MULT,
-            PLAYER_MOVE_SPEED * PLAYER_CROUCH_MULT,
-            0.0,
-        )
+        run_speed
     };
-    let speed = if crouch { crouch_speed } else if sprint { sprint_speed } else { run_speed };
-
-    // Parametry skoku z ped profilu nebo fallback
-    let (jump_impulse, grounded_thresh, double_jump_enabled) = if let Some(p) = ped {
-        (p.jump.impulse, p.jump.grounded_vel_threshold, p.jump.double_jump)
-    } else {
-        (PLAYER_JUMP_VEL, GROUND_VEL_THRESHOLD, false)
-    };
-
-    // Rotace vstupního vektoru podle yaw kamery (world-space).
-    let yaw = look.yaw;
-    let world_x = yaw.cos() * move_x + yaw.sin() * move_y;
-    let world_z = -yaw.sin() * move_x + yaw.cos() * move_y;
-
-    let mag2 = world_x * world_x + world_z * world_z;
-    let (world_x, world_z) = if mag2 > 1.0 {
-        let inv = mag2.sqrt().recip();
-        (world_x * inv, world_z * inv)
-    } else {
-        (world_x, world_z)
-    };
-
-    let max_fall_speed = ped.map(|p| p.jump.max_fall_speed).unwrap_or(28.0_f32);
-    let dt = time.delta_secs();
-    let now = time.elapsed_secs();
 
     for (marker, mut vel, shape_hits) in players.iter_mut() {
-        if marker.client_id != lid.0 { continue; }
+        if marker.client_id != local_id {
+            continue;
+        }
 
-        let was_grounded = (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
-        let raw_grounded = has_ground_contact_with_state(shape_hits, was_grounded);
+        let raw_grounded = has_ground_contact(shape_hits);
         if raw_grounded {
             ground_state.last_grounded_time = now;
         }
@@ -402,24 +398,14 @@ fn apply_player_movement(
 
         let ground_normal = get_ground_normal(shape_hits);
 
-        // ── Vertikální pohyb ────────────────────────────────────────────────
-        // Avian gravitaci jsme vypnuli (GravityScale(0.0)) — aplikujeme ji sami,
-        // aby vel.y nikdy nenakumulovalo velkou zápornou hodnotu před dopadem.
-        // Velký dopad = velký Baumgarte spike = postava skáče. Viz AAA přístup.
         if grounded {
-            // Na zemi: velký záporný vel.y v dalším ticku by způsobil penetraci
-            // a velký opravný impulz. Nastavíme malý "lepící" tlak k terénu.
             if vel.y < 0.0 {
-                // Absorbuj přistávací rychlost — jeden frame gravitace stačí.
                 vel.y = -(9.81_f32 * dt);
             }
-            // Velký pozitivní vel.y (Baumgarte spike z minulého ticku) zahubí post_physics_damp.
-            // Malý pozitivní (< 0.5) necháme projít — potřebujeme ho pro výstup ze schodů.
         } else {
             vel.y = (vel.y - 9.81_f32 * dt).max(-max_fall_speed);
         }
 
-        // ── Skok ────────────────────────────────────────────────────────────
         let can_jump = if double_jump_enabled {
             grounded || vel.y.abs() < grounded_thresh
         } else {
@@ -429,7 +415,6 @@ fn apply_player_movement(
             vel.y = jump_impulse;
         }
 
-        // ── Horizontální pohyb ──────────────────────────────────────────────
         let desired = Vec3::new(world_x * speed, 0.0, world_z * speed);
         let projected = if grounded && ground_normal.y < 0.9999 {
             desired - ground_normal * desired.dot(ground_normal)
@@ -446,11 +431,6 @@ fn apply_player_movement(
             vel.z = vel.z + (projected.z - vel.z) * alpha;
         }
 
-        // Slope Y follow: na svazitém terénu (slope > ~4°) nastav vel.y z projekce
-        // pohybu na povrch — i při stání klidně (desired=0 → projected.y=0 → vel.y=0).
-        // Klíčový efekt: ŽÁDNÝ záporný vel.y na svahu → žádné klouzání dolů s malým
-        // třením. Na rovném terénu (normal.y≥0.997) zůstane -dt*g pro udržení kontaktu.
-        // Nesmí přebíjet skok.
         if grounded && ground_normal.y < 0.997 && !jump {
             vel.y = projected.y;
         }
@@ -541,75 +521,6 @@ fn post_physics_vel_y_damp(
             vel.y = 0.0;
         }
     }
-}
-
-fn log_terrain_diag(
-    mut diag: ResMut<TerrainDiag>,
-    local_client_id: Option<Res<LocalClientId>>,
-    players: Query<(&PlayerMarker, &LinearVelocity, Option<&ShapeHits>), With<Predicted>>,
-) {
-    let Some(lid) = local_client_id else { return };
-    let Some((_, vel, shape_hits)) = players.iter().find(|(m, _, _)| m.client_id == lid.0) else { return };
-
-    diag.frame = diag.frame.wrapping_add(1);
-
-    let grounded = has_ground_contact_with_state(shape_hits, diag.was_grounded);
-    let normal = get_ground_normal(shape_hits);
-    let hit_count = shape_hits.map(|h| h.iter().count()).unwrap_or(0);
-    let slope_deg = normal.y.clamp(-1.0, 1.0).acos().to_degrees();
-
-    // Najdi minimální vzdálenost od země (nejmenší hit.distance)
-    let min_ground_dist = shape_hits
-        .and_then(|hits| hits.iter().map(|hit| hit.distance).reduce(f32::min));
-
-    // Log při změně grounded stavu
-    if grounded != diag.was_grounded {
-        if let Some(dist) = min_ground_dist {
-            info!(
-                "[terrain_diag] grounded={} vel_y={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist={:.4}",
-                grounded, vel.y, normal.x, normal.y, normal.z, slope_deg, hit_count, dist
-            );
-        } else {
-            info!(
-                "[terrain_diag] grounded={} vel_y={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist=NONE",
-                grounded, vel.y, normal.x, normal.y, normal.z, slope_deg, hit_count
-            );
-        }
-    }
-
-    // Log při výrazné změně normály (detekce přechodu na jiný povrch / hranu)
-    let normal_shift = (normal.y - diag.last_normal_y).abs();
-    if grounded && normal_shift > 0.05 {
-        if let Some(dist) = min_ground_dist {
-            info!(
-                "[terrain_diag] normal_shift={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° vel=({:.2},{:.2},{:.2}) hits={} ground_dist={:.4}",
-                normal_shift, normal.x, normal.y, normal.z, slope_deg, vel.x, vel.y, vel.z, hit_count, dist
-            );
-        } else {
-            info!(
-                "[terrain_diag] normal_shift={:.3} normal=({:.3},{:.3},{:.3}) slope={:.1}° vel=({:.2},{:.2},{:.2}) hits={} ground_dist=NONE",
-                normal_shift, normal.x, normal.y, normal.z, slope_deg, vel.x, vel.y, vel.z, hit_count
-            );
-        }
-    }
-
-    // Heartbeat každých 90 framů
-    if diag.frame % 90 == 0 {
-        if let Some(dist) = min_ground_dist {
-            info!(
-                "[terrain_diag] TICK frame={} grounded={} vel=({:.2},{:.2},{:.2}) normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist={:.4}",
-                diag.frame, grounded, vel.x, vel.y, vel.z, normal.x, normal.y, normal.z, slope_deg, hit_count, dist
-            );
-        } else {
-            info!(
-                "[terrain_diag] TICK frame={} grounded={} vel=({:.2},{:.2},{:.2}) normal=({:.3},{:.3},{:.3}) slope={:.1}° hits={} ground_dist=NONE",
-                diag.frame, grounded, vel.x, vel.y, vel.z, normal.x, normal.y, normal.z, slope_deg, hit_count
-            );
-        }
-    }
-
-    diag.was_grounded = grounded;
-    diag.last_normal_y = normal.y;
 }
 
 fn resolve_default_ped_profile<'a>(
@@ -1090,6 +1001,146 @@ fn update_player_state_driven_animations(
                 });
             }
         }
+    }
+}
+
+fn attach_capsule_to_new_npcs(
+    mut commands: Commands,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
+    new_npcs: Query<(Entity, &ModelName, Option<&core_resources::PedProfileOverride>), (With<NpcPedMarker>, Without<NpcCapsuleAttached>)>,
+) {
+    for (entity, model_name, ped_override) in &new_npcs {
+        let ped = if let Some(override_comp) = ped_override {
+            ped_reg.0.get(&override_comp.0)
+                .and_then(|h| ped_assets.get(h))
+                .or_else(|| resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets))
+        } else {
+            resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets)
+        };
+        let cap_radius = ped.map(|p| p.capsule.radius).unwrap_or(0.35_f32);
+        let cap_height = ped.map(|p| p.capsule.height).unwrap_or(1.80_f32);
+        let cap_body = (cap_height - cap_radius * 2.0).max(0.001);
+
+        commands.entity(entity).insert((
+            NpcCapsuleAttached,
+            RigidBody::Kinematic,
+            LockedAxes::new()
+                .lock_rotation_x()
+                .lock_rotation_y()
+                .lock_rotation_z(),
+        ));
+
+        commands.entity(entity).with_children(|p| {
+            p.spawn((
+                Collider::capsule(cap_radius, cap_body),
+                CollisionLayers::new(LayerMask(0b10), LayerMask::ALL),
+                Friction::new(0.1).with_combine_rule(CoefficientCombine::Min),
+                Restitution::ZERO,
+                Transform::from_xyz(0.0, cap_height / 2.0, 0.0),
+                GlobalTransform::default(),
+            ));
+        });
+    }
+}
+
+fn attach_model_to_new_npcs(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    ped_anim_index: Res<PedAdsAnimIndex>,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
+    new_npcs: Query<
+        (Entity, &ModelName, Option<&core_resources::PedProfileOverride>, Option<&NetTransform>),
+        (With<NpcPedMarker>, Without<NpcVisualAttached>),
+    >,
+) {
+    for (entity, model_name, ped_override, net_tf) in &new_npcs {
+        let model_path = format!("models/{}.adm", model_name.0);
+        let model_handle = asset_server.load::<crate::drawable::AdmScene>(model_path);
+
+        // Lookup anim sets by model name first, then fall back to the ped profile override,
+        // then to whatever ped resolves for this model. This lets models without their own
+        // .ped.toml inherit anim sets from the ped_profile passed at spawn time.
+        let attached_anim_sets = ped_anim_index
+            .0
+            .get(&model_name.0)
+            .cloned()
+            .or_else(|| {
+                ped_override.and_then(|ov| ped_anim_index.0.get(&ov.0).cloned())
+            })
+            .or_else(|| {
+                resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets)
+                    .and_then(|p| ped_anim_index.0.get(&p.identity.model).cloned())
+            })
+            .unwrap_or_default();
+
+        let spawn_transform = net_tf
+            .map(|nt| Transform { translation: nt.translation, rotation: nt.rotation, scale: Vec3::ONE })
+            .unwrap_or_default();
+
+        commands.entity(entity).insert((
+            NpcVisualAttached,
+            spawn_transform,
+            GlobalTransform::default(),
+            Visibility::Visible,
+            InheritedVisibility::default(),
+            ViewVisibility::default(),
+        ));
+
+        commands.entity(entity).with_children(|p| {
+            let mut child = p.spawn((
+                AdmSceneRoot(model_handle.clone()),
+                DisableDrawableCollisions,
+                ModelName(model_name.0.clone()),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+                GlobalTransform::default(),
+                Visibility::default(),
+                InheritedVisibility::default(),
+                ViewVisibility::default(),
+            ));
+
+            let ped = if let Some(override_comp) = ped_override {
+                ped_reg
+                    .0
+                    .get(&override_comp.0)
+                    .and_then(|h| ped_assets.get(h))
+                    .or_else(|| resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets))
+            } else {
+                resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets)
+            };
+
+            let initial_clip = ped
+                .and_then(|ped| {
+                    let idle = ped.animations.idle.clone();
+                    if idle.is_empty() { None } else { Some(idle) }
+                })
+                .unwrap_or_else(|| "clip:0".to_string());
+
+            child.insert(AnimationState {
+                current: Some(initial_clip),
+                speed: 1.0,
+                looping: true,
+                paused: false,
+                blend_time: 0.0,
+                flags: 1,
+            });
+
+            if !attached_anim_sets.is_empty() {
+                child.insert(AttachedAnimSets {
+                    sets: attached_anim_sets,
+                });
+            }
+        });
+    }
+}
+
+fn sync_npc_net_transform(
+    mut q: Query<(&mut Transform, &NetTransform), (With<NpcPedMarker>, With<NpcVisualAttached>)>,
+) {
+    for (mut transform, net_tf) in &mut q {
+        transform.translation = net_tf.translation;
+        transform.rotation = net_tf.rotation;
     }
 }
 

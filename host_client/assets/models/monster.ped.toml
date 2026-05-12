@@ -1,0 +1,91 @@
+# Apparatus Ped Physics Definition — monster.ped.toml
+# Fyzikální a pohybový profil pro levitující monstrum
+
+[identity]
+model = "monster"
+display_name = "Levitující Monstrum"
+
+[animations]
+idle        = "dict:idle:Idle"
+walk        = "dict:walking:Walking"
+run         = "dict:walking:Walking1"
+sprint      = "dict:walking:Walking1"
+crouch_idle = "dict:idle:Idle"
+crouch_move = "dict:walking:Walking"
+prone_idle  = "dict:idle:Idle"
+prone_move  = "dict:walking:Walking"
+jump_start  = "dict:idle:Idle"
+jump_loop   = "dict:idle:Idle"
+fall_loop   = "dict:idle:Idle"
+land        = "dict:idle:Idle"
+vault       = "dict:walking:Walking"
+reload      = "dict:idle:Idle"
+
+[animation_sets]
+ads_anim = ["Armature.ads_anim"]
+
+[capsule]
+radius = 0.5
+height = 1.6
+eye_height = 1.4
+mass = 80.0
+friction = 0.0
+restitution = 0.0
+linear_damping_air = 0.05
+linear_damping_ground = 0.0
+
+[movement]
+walk_speed = 3.0
+run_speed = 6.0
+sprint_speed = 9.0
+crouch_speed = 2.0
+prone_speed = 1.2
+swim_speed = 2.5
+acceleration = 12.0
+deceleration = 10.0
+air_acceleration = 8.0
+movement_smoothing = 10.0
+slope_max_angle = 89.0
+slope_slide_speed = 0.0
+turn_speed = 10.0
+idle_threshold = 0.10
+ads_speed_mult = 0.80
+hipfire_speed_mult = 1.0
+
+[stances.standing]
+capsule_height = 1.60
+eye_offset_y = 1.40
+transition_time = 0.10
+speed_mult = 1.0
+spread_bonus_deg = 0.0
+
+[stances.crouching]
+capsule_height = 1.60
+eye_offset_y = 1.40
+transition_time = 0.10
+speed_mult = 1.0
+spread_bonus_deg = 0.0
+
+[stances.prone]
+capsule_height = 1.60
+eye_offset_y = 1.40
+transition_time = 0.10
+speed_mult = 1.0
+spread_bonus_deg = 0.0
+
+[jump]
+impulse = 0.0
+double_jump = false
+double_jump_impulse = 0.0
+coyote_time = 0.0
+jump_buffer_time = 0.0
+hold_gravity_scale = 1.0
+fall_gravity_scale = 1.0
+base_gravity_scale = 0.0
+max_fall_speed = 0.0
+grounded_vel_threshold = 1.0
+safe_fall_height = 9999.0
+fall_damage_per_meter = 0.0
+allow_crouch_jump = false
+allow_prone_jump = false
+speed_jump_bonus = 0.0

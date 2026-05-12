@@ -1,24 +1,28 @@
-//! Phase 3.2 — Command Queue: bezpečný Lua → ECS most.
-//!
-//! Lua sandbox nesmí přímo mutovat ECS svět (`mlua` je `!Send`, sandbox běží
-//! na main threadu v `NonSend` resource). Místo toho Lua vkládá záměry do
-//! sdíleného `CommandQueue` bufferu. Bevy systém `process_lua_commands`
-//! v `PostUpdate` frontu vybere a bezpečně aplikuje příkazy na ECS svět.
-//!
-//! Phase 4 přidává:
-//! * `Stats` a `Inventory` ECS komponenty.
-//! * `PlayerEntityMap` — mapuje client_id → Entity (udržuje core_net).
-//! * `PlayerStatsCache` — Arc<Mutex> snapshot pro synchronní Lua čtení.
-//! * `LuaCommand::SetStat`, `GiveItem`, `TakeItem` — mutace přes frontu.
+/// Komponenta pro explicitní override ped physics profilu na entitě (NPC).
+#[derive(Debug, Clone, Component, Reflect, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PedProfileOverride(pub String);
+// Phase 3.2 — Command Queue: bezpečný Lua → ECS most.
+//
+// Lua sandbox nesmí přímo mutovat ECS svět (`mlua` je `!Send`, sandbox běží
+// na main threadu v `NonSend` resource). Místo toho Lua vkládá záměry do
+// sdíleného `CommandQueue` bufferu. Bevy systém `process_lua_commands`
+// v `PostUpdate` frontu vybere a bezpečně aplikuje příkazy na ECS svět.
+//
+// Phase 4 přidává:
+// * `Stats` a `Inventory` ECS komponenty.
+// * `PlayerEntityMap` — mapuje client_id → Entity (udržuje core_net).
+// * `PlayerStatsCache` — Arc<Mutex> snapshot pro synchronní Lua čtení.
+// * `LuaCommand::SetStat`, `GiveItem`, `TakeItem` — mutace přes frontu.
 
 use std::collections::HashMap;
+use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::prelude::*;
 use bevy::reflect::Reflect;
-use core_shared::{Health, PlayerMarker};
+use core_shared::{Health, NetTransform, PlayerMarker};
 use serde::{Deserialize, Serialize};
 
 use crate::model_registry::AnimSetCommandQueue;
@@ -79,6 +83,15 @@ pub enum LuaCommand {
         model: String,
         pos: [f32; 3],
         rot: [f32; 3],
+    },
+    /// Server-only: replikovaná NPC entita (model + NPC marker).
+    /// Server-only: replikovaná NPC entita (model + NPC marker + volitelný ped profil).
+    SpawnNetworkedNpc {
+        handle: u64,
+        model: String,
+        pos: [f32; 3],
+        rot: [f32; 3],
+        ped_profile: Option<String>,
     },
     /// Parametrický dummy objekt bez závislosti na asset modelu.
     SpawnLocalDummy {
@@ -153,6 +166,39 @@ pub enum LuaCommand {
     },
     /// Phase 4.3 — Vypne Root Motion na ADM entitě.
     DisableRootMotion {
+        handle: u64,
+    },
+    /// AI: nastaví základní parametry NPC agenta na entitě.
+    NpcConfigure {
+        handle: u64,
+        move_speed: Option<f32>,
+        arrive_distance: Option<f32>,
+        turn_speed: Option<f32>,
+    },
+    /// AI: nastaví NPC do wander módu.
+    NpcWander {
+        handle: u64,
+        kind: NpcWanderKind,
+        radius: f32,
+        retarget_sec: f32,
+        orbit_angular_speed: f32,
+        patrol_point: Option<[f32; 3]>,
+        clockwise: bool,
+    },
+    /// AI: pohyb NPC k pevné world-space pozici.
+    NpcGoToCoord {
+        handle: u64,
+        target: [f32; 3],
+        stop_distance: f32,
+    },
+    /// AI: pohyb NPC k jiné entitě (podle jejího handle).
+    NpcGoToEntity {
+        handle: u64,
+        target_handle: u64,
+        stop_distance: f32,
+    },
+    /// AI: zastaví aktivní movement goal NPC.
+    NpcStop {
         handle: u64,
     },
     /// Připojí child entitu k parent entitě přes dvojici socketů.
@@ -289,6 +335,11 @@ pub struct LocalObjectMarker {
 pub struct NetworkedObjectMarker {
     pub model: String,
 }
+
+/// Marker na síťových entitách spawnutých jako NPC.
+/// Klient používá tento marker pro vytvoření capsule collideru a NPC vizuálního setupu.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NpcPedMarker;
 
 /// Embeddovaný handle na všech entitách spawnutých přes Lua bridge.
 /// Replikovaný klientům přes lightyear — client identifikuje síťové entity
@@ -509,6 +560,77 @@ pub struct BlendSpaceState {
     pub flags: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NpcWanderKind {
+    Random,
+    Patrol,
+    Orbit,
+}
+
+#[derive(Debug, Clone)]
+pub enum NpcMoveGoal {
+    Idle,
+    GoToCoord {
+        target: Vec3,
+        stop_distance: f32,
+    },
+    GoToEntity {
+        target_handle: u64,
+        stop_distance: f32,
+    },
+    Wander {
+        kind: NpcWanderKind,
+        radius: f32,
+        retarget_sec: f32,
+        orbit_angular_speed: f32,
+        patrol_point: Option<Vec3>,
+        clockwise: bool,
+    },
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct NpcAgent {
+    pub move_speed: f32,
+    pub arrive_distance: f32,
+    pub turn_speed: f32,
+    pub home: Vec3,
+    pub goal: NpcMoveGoal,
+    pub wander_target: Vec3,
+    pub wander_timer: f32,
+    pub orbit_angle: f32,
+    pub patrol_to_target: bool,
+    pub rng_state: u32,
+}
+
+impl NpcAgent {
+    pub fn new(handle: u64, home: Vec3) -> Self {
+        let seed = (handle as u32)
+            .wrapping_mul(747_796_405)
+            .wrapping_add(2_891_336_453);
+        Self {
+            move_speed: 2.5,
+            arrive_distance: 0.2,
+            turn_speed: 10.0,
+            home,
+            goal: NpcMoveGoal::Idle,
+            wander_target: home,
+            wander_timer: 0.0,
+            orbit_angle: 0.0,
+            patrol_to_target: true,
+            rng_state: seed,
+        }
+    }
+
+    fn next_rand01(&mut self) -> f32 {
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        (self.rng_state as f64 / (u32::MAX as f64)) as f32
+    }
+}
+
 /// Message emitovaná při zpracování `World.ApplyDamage`.
 /// Phase 3.3 combat systémy ji čtou přes `MessageReader<PendingDamageEvent>`.
 #[derive(Message, Debug, Clone)]
@@ -684,6 +806,7 @@ pub fn process_lua_commands(
     mut attached_anim_sets: Query<&mut AttachedAnimSets>,
     mut player_stats: Query<(&PlayerMarker, &mut Stats, &mut Inventory)>,
     mut mat_overrides: Query<&mut LuaMaterialOverride>,
+    mut npc_agents: Query<&mut NpcAgent>,
 ) {
     let mut pending_mat: HashMap<u64, LuaMaterialOverride> = HashMap::new();
 
@@ -835,6 +958,41 @@ pub fn process_lua_commands(
                 info!(
                     "[cmd_queue] queued networked object '{}' (handle={}, entity={:?})",
                     model, handle, entity
+                );
+            }
+
+            LuaCommand::SpawnNetworkedNpc { handle, model, pos, rot, ped_profile } => {
+                let spawn_translation = Vec3::new(pos[0], pos[1], pos[2]);
+                let spawn_rotation = Quat::from_euler(
+                    EulerRot::XYZ,
+                    rot[0].to_radians(),
+                    rot[1].to_radians(),
+                    rot[2].to_radians(),
+                );
+                let mut entity_builder = commands.spawn((
+                    NpcPedMarker,
+                    NetworkedObjectMarker { model: model.clone() },
+                    ModelName(model.clone()),
+                    EntityHandle(handle),
+                    NpcAgent::new(handle, spawn_translation),
+                    NetTransform {
+                        translation: spawn_translation,
+                        rotation: spawn_rotation,
+                    },
+                    Transform {
+                        translation: spawn_translation,
+                        rotation: spawn_rotation,
+                        scale: Vec3::ONE,
+                    },
+                ));
+                if let Some(profile) = ped_profile.clone() {
+                    entity_builder.insert(PedProfileOverride(profile));
+                }
+                let entity = entity_builder.id();
+                world_state.register(handle, entity);
+                info!(
+                    "[cmd_queue] queued networked npc '{}' (handle={}, entity={:?}, ped_profile={:?})",
+                    model, handle, entity, ped_profile
                 );
             }
 
@@ -1040,6 +1198,154 @@ pub fn process_lua_commands(
                 }
             }
 
+            LuaCommand::NpcConfigure {
+                handle,
+                move_speed,
+                arrive_distance,
+                turn_speed,
+            } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    if let Ok(mut agent) = npc_agents.get_mut(entity) {
+                        if let Some(v) = move_speed {
+                            agent.move_speed = v.max(0.0);
+                        }
+                        if let Some(v) = arrive_distance {
+                            agent.arrive_distance = v.max(0.01);
+                        }
+                        if let Some(v) = turn_speed {
+                            agent.turn_speed = v.max(0.0);
+                        }
+                    } else {
+                        let home = transforms
+                            .get(entity)
+                            .map(|t| t.translation)
+                            .unwrap_or(Vec3::ZERO);
+                        let mut agent = NpcAgent::new(handle, home);
+                        if let Some(v) = move_speed {
+                            agent.move_speed = v.max(0.0);
+                        }
+                        if let Some(v) = arrive_distance {
+                            agent.arrive_distance = v.max(0.01);
+                        }
+                        if let Some(v) = turn_speed {
+                            agent.turn_speed = v.max(0.0);
+                        }
+                        commands.entity(entity).insert(agent);
+                    }
+                } else {
+                    warn!("[cmd_queue] NpcConfigure: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::NpcWander {
+                handle,
+                kind,
+                radius,
+                retarget_sec,
+                orbit_angular_speed,
+                patrol_point,
+                clockwise,
+            } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    let home = transforms
+                        .get(entity)
+                        .map(|t| t.translation)
+                        .unwrap_or(Vec3::ZERO);
+
+                    let mut goal = NpcMoveGoal::Wander {
+                        kind,
+                        radius: radius.max(0.1),
+                        retarget_sec: retarget_sec.max(0.05),
+                        orbit_angular_speed: orbit_angular_speed.max(0.05),
+                        patrol_point: patrol_point
+                            .map(|p| Vec3::new(p[0], p[1], p[2])),
+                        clockwise,
+                    };
+
+                    if let Ok(mut agent) = npc_agents.get_mut(entity) {
+                        if matches!(agent.goal, NpcMoveGoal::Idle) {
+                            agent.home = home;
+                        }
+                        agent.goal = goal;
+                        agent.wander_timer = 0.0;
+                    } else {
+                        let mut agent = NpcAgent::new(handle, home);
+                        agent.goal = std::mem::replace(&mut goal, NpcMoveGoal::Idle);
+                        commands.entity(entity).insert(agent);
+                    }
+                } else {
+                    warn!("[cmd_queue] NpcWander: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::NpcGoToCoord {
+                handle,
+                target,
+                stop_distance,
+            } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    let home = transforms
+                        .get(entity)
+                        .map(|t| t.translation)
+                        .unwrap_or(Vec3::ZERO);
+                    let goal = NpcMoveGoal::GoToCoord {
+                        target: Vec3::new(target[0], target[1], target[2]),
+                        stop_distance: stop_distance.max(0.01),
+                    };
+                    if let Ok(mut agent) = npc_agents.get_mut(entity) {
+                        if matches!(agent.goal, NpcMoveGoal::Idle) {
+                            agent.home = home;
+                        }
+                        agent.goal = goal;
+                    } else {
+                        let mut agent = NpcAgent::new(handle, home);
+                        agent.goal = goal;
+                        commands.entity(entity).insert(agent);
+                    }
+                } else {
+                    warn!("[cmd_queue] NpcGoToCoord: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::NpcGoToEntity {
+                handle,
+                target_handle,
+                stop_distance,
+            } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    let home = transforms
+                        .get(entity)
+                        .map(|t| t.translation)
+                        .unwrap_or(Vec3::ZERO);
+                    let goal = NpcMoveGoal::GoToEntity {
+                        target_handle,
+                        stop_distance: stop_distance.max(0.01),
+                    };
+                    if let Ok(mut agent) = npc_agents.get_mut(entity) {
+                        if matches!(agent.goal, NpcMoveGoal::Idle) {
+                            agent.home = home;
+                        }
+                        agent.goal = goal;
+                    } else {
+                        let mut agent = NpcAgent::new(handle, home);
+                        agent.goal = goal;
+                        commands.entity(entity).insert(agent);
+                    }
+                } else {
+                    warn!("[cmd_queue] NpcGoToEntity: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::NpcStop { handle } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    if let Ok(mut agent) = npc_agents.get_mut(entity) {
+                        agent.goal = NpcMoveGoal::Idle;
+                    }
+                } else {
+                    warn!("[cmd_queue] NpcStop: unknown handle {}", handle);
+                }
+            }
+
             LuaCommand::Attach { child_handle, child_socket, parent_handle, parent_socket } => {
                 let Some(child_entity) = world_state.entity_for(child_handle) else {
                     warn!("[cmd_queue] Attach: unknown child handle {}", child_handle);
@@ -1241,6 +1547,147 @@ pub fn process_lua_commands(
             if let Some(v) = new_params.wet_height  { existing.wet_height  = Some(v); }
         } else {
             commands.entity(entity).insert(new_params);
+        }
+    }
+}
+
+pub fn tick_npc_agents(
+    time: Res<Time<Fixed>>,
+    world_state: Res<LuaWorldState>,
+    mut npcs: Query<(&EntityHandle, &mut Transform, Option<&mut NetTransform>, &mut NpcAgent)>,
+    globals: Query<&GlobalTransform>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+
+    for (_handle, mut transform, net_tf_opt, mut agent) in &mut npcs {
+        let mut stop_distance = agent.arrive_distance.max(0.01);
+        let mut complete_goal = false;
+
+        let goal_snapshot = agent.goal.clone();
+        let target_pos = match goal_snapshot {
+            NpcMoveGoal::Idle => continue,
+            NpcMoveGoal::GoToCoord { target, stop_distance: stop } => {
+                stop_distance = stop.max(agent.arrive_distance).max(0.01);
+                target
+            }
+            NpcMoveGoal::GoToEntity {
+                target_handle,
+                stop_distance: stop,
+            } => {
+                if let Some(target_entity) = world_state.entity_for(target_handle) {
+                    if let Ok(t) = globals.get(target_entity) {
+                        stop_distance = stop.max(agent.arrive_distance).max(0.01);
+                        t.translation()
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+            NpcMoveGoal::Wander {
+                kind,
+                radius,
+                retarget_sec,
+                orbit_angular_speed,
+                patrol_point,
+                clockwise,
+            } => {
+                let radius = radius.max(0.1);
+                let retarget_sec = retarget_sec.max(0.05);
+
+                match kind {
+                    NpcWanderKind::Random => {
+                        agent.wander_timer -= dt;
+                        let dist_to_curr = Vec2::new(
+                            transform.translation.x - agent.wander_target.x,
+                            transform.translation.z - agent.wander_target.z,
+                        )
+                        .length();
+                        if agent.wander_timer <= 0.0 || dist_to_curr <= stop_distance {
+                            let a = agent.next_rand01() * TAU;
+                            let d = radius * (0.35 + 0.65 * agent.next_rand01());
+                            agent.wander_target = Vec3::new(
+                                agent.home.x + a.cos() * d,
+                                transform.translation.y,
+                                agent.home.z + a.sin() * d,
+                            );
+                            agent.wander_timer = retarget_sec;
+                        }
+                        agent.wander_target
+                    }
+                    NpcWanderKind::Patrol => {
+                        let patrol = patrol_point.unwrap_or_else(|| {
+                            agent.home + Vec3::new(radius, 0.0, 0.0)
+                        });
+                        let curr_target = if agent.patrol_to_target {
+                            patrol
+                        } else {
+                            agent.home
+                        };
+
+                        let d = Vec2::new(
+                            transform.translation.x - curr_target.x,
+                            transform.translation.z - curr_target.z,
+                        )
+                        .length();
+                        if d <= stop_distance {
+                            agent.patrol_to_target = !agent.patrol_to_target;
+                        }
+
+                        if agent.patrol_to_target {
+                            patrol
+                        } else {
+                            agent.home
+                        }
+                    }
+                    NpcWanderKind::Orbit => {
+                        let sign = if clockwise { -1.0 } else { 1.0 };
+                        agent.orbit_angle = (agent.orbit_angle + sign * orbit_angular_speed.max(0.05) * dt)
+                            .rem_euclid(TAU);
+                        stop_distance = (radius * 0.15).max(agent.arrive_distance).max(0.1);
+                        Vec3::new(
+                            agent.home.x + radius * agent.orbit_angle.cos(),
+                            transform.translation.y,
+                            agent.home.z + radius * agent.orbit_angle.sin(),
+                        )
+                    }
+                }
+            }
+        };
+
+        let to_target = Vec2::new(
+            target_pos.x - transform.translation.x,
+            target_pos.z - transform.translation.z,
+        );
+        let dist = to_target.length();
+
+        if dist <= stop_distance {
+            if matches!(goal_snapshot, NpcMoveGoal::GoToCoord { .. } | NpcMoveGoal::GoToEntity { .. }) {
+                complete_goal = true;
+            }
+        } else {
+            let dir = to_target / dist;
+            let step = (agent.move_speed.max(0.0) * dt).min(dist - stop_distance);
+            transform.translation.x += dir.x * step;
+            transform.translation.z += dir.y * step;
+
+            let desired_yaw = dir.x.atan2(dir.y);
+            let desired_rot = Quat::from_rotation_y(desired_yaw);
+            let t = (agent.turn_speed.max(0.0) * dt).clamp(0.0, 1.0);
+            transform.rotation = transform.rotation.slerp(desired_rot, t);
+        }
+
+        if complete_goal {
+            agent.goal = NpcMoveGoal::Idle;
+        }
+
+        if let Some(mut net_tf) = net_tf_opt {
+            net_tf.translation = transform.translation;
+            net_tf.rotation = transform.rotation;
         }
     }
 }

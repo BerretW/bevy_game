@@ -178,6 +178,8 @@ impl Plugin for ProtocolPlugin {
         // Žádná prediction není potřeba — tato data se po spawnu nemění.
         app.register_component::<core_resources::EntityHandle>();
         app.register_component::<core_resources::ModelName>();
+        app.register_component::<core_resources::NpcPedMarker>();
+        app.register_component::<core_resources::PedProfileOverride>();
         app.register_component::<core_resources::DummyObjectMarker>();
         app.register_component::<core_resources::ColliderObjectMarker>();
     }

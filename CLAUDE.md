@@ -68,6 +68,7 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
+- [x] **2026-05-12**: NPC Framework + základní AI pohyb — Přidán `NpcAgent` systém v `core_resources` (`tick_npc_agents` ve `FixedUpdate`) s módy `wander` (`random`/`patrol`/`orbit`), `go to entity` a `go to coord`. Rozšířeno Lua API o `World.NpcConfigure/NpcWander/NpcGoToEntity/NpcGoToCoord/NpcStop`. Přidán demo resource `resources/example/npc_test/`.
 - [x] **2026-05-12**: Model Viewer texture browser/export tool — Registrace chybějících systémů `init_texture_browser`, `handle_texture_keys`, `rebuild_panel`, `show_extract_status` do `Update` scheduling. Nástroj na zobrazení a export textur (T pro toggle, E pro export) znovu plně funkční.
 - [x] **2026-05-12 (oprava)**: Export textur — Oprava cest: ADM cesty byly relativní. Přidán `ModelSourcePaths` Resource, který si pamatuje absolutní cestu na disk pro každý načtený model. Export teď používá absolutní cesty namísto relativních bevy paths.
 - [x] **2026-05-12**: Kinematic pohybový refaktor — IK/Terrain Snap/Root Motion — Přidány `OnStairs` + `IkEnabledComponent` do player spawnu; nový systém `terrain_snap_kinematic` v FixedUpdate po `apply_player_movement` (snappuje Y velocitu hráče k terén height z raycastu); root motion plně implementováno: `RootMotionState` komponent, `extract_root_motion` systém, Lua API `World.EnableRootMotion/DisableRootMotion`.
@@ -429,6 +430,7 @@ Hitbox.Register('player_default', {
   example/anim_notify_test/      test onAnimNotify + crossfade pipeline
   example/blend_space_test/      test PlayBlendSpace (Lua API + infrastruktura)
   example/ik_test/               test IK solver (infrastruktura)
+  example/npc_test/              test NPC AI (wander + go-to coord/entity)
   example/root_motion_test/      test root motion — extrakce delty z animací
   example/moving_square/         demo pohybu + input.lua
 ```
@@ -451,6 +453,7 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `TriggerEvent(name, payload?)` | both | Cross-sandbox bus (in-process) |
 | `World.SpawnLocalObject(model, pos, rot)` | both | Lokální entita → handle (u64) |
 | `World.SpawnNetworkedObject(model, pos, rot)` | server | Replikovaná entita → handle |
+| `World.SpawnNetworkedNpc(model, pos, rot, ped_profile?)` | server | Replikované NPC (NPC marker + klientský capsule collider setup, volitelně s explicitním ped profilem, např. "player" nebo "monster") |
 | `World.SpawnLocalDummy(shape, params, pos, rot)` | both | Parametrický dummy objekt (cuboid/sphere/cube/stairs/arch) |
 | `World.SpawnNetworkedDummy(shape, params, pos, rot)` | server | Replikovaný parametrický dummy objekt |
 | `World.SpawnLocalCollider(params, pos, rot)` | both | Samostatný collider bez render meshe (`shape/size/radius/height/is_static/is_trigger/stairs/stairs_slope_invert/stairs_clearance_y`) |
@@ -463,6 +466,11 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `World.GetSocketTransform(handle, socket)` | both | World-space socket transform |
 | `World.IsValid/IsAlive/GetHealth/GetModel` | both | State dotazy |
 | `World.GetPosition/Rotation/Quaternion/Scale/Transform/Animation/AnimationSpeed` | both | Gettery |
+| `World.NpcConfigure(handle, opts)` | both/server | Nastaví NPC parametry (`move_speed`, `arrive_distance`, `turn_speed`) |
+| `World.NpcWander(handle, kind, opts)` | both/server | Wander módy: `random`, `patrol`, `orbit` |
+| `World.NpcGoToEntity(handle, target, stop?)` / `World.NpcGoToCoord(handle, pos, stop?)` / `World.NpcStop(handle)` | both/server | Přímé AI movement příkazy |
+
+Poznámka: Pro AI postavy používej `World.SpawnNetworkedNpc(...)` místo `World.SpawnNetworkedObject(...)`, aby klientská vrstva vytvořila správný capsule collider pro NPC. Pokud potřebuješ specifický fyzikální profil (např. pro létající monstrum), zadej čtvrtý parametr `ped_profile` (název bez přípony, např. "monster").
 | `World.ApplyDamage(target, amount, source?)` | server | Damage intent |
 | `Engine.RequestModel/HasModelLoaded/SetModelAsNoLongerNeeded` | both | Model ref-counting |
 | `Engine.GetModelClipCount/GetModelClipNames` | both | Počet a názvy animačních clipů modelu |
