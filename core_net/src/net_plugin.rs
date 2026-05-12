@@ -179,6 +179,7 @@ impl Plugin for ProtocolPlugin {
         app.register_component::<core_resources::EntityHandle>();
         app.register_component::<core_resources::ModelName>();
         app.register_component::<core_resources::DummyObjectMarker>();
+        app.register_component::<core_resources::ColliderObjectMarker>();
     }
 }
 

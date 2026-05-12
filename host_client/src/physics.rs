@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::mesh::skinning::SkinnedMesh;
 use core_drawable::{CollisionShape, DrawableCollision};
-use core_resources::{CollisionEnabled, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider};
+use core_resources::{ColliderObjectMarker, CollisionEnabled, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider};
 
 pub struct ClientPhysicsPlugin;
 
@@ -18,6 +18,7 @@ impl Plugin for ClientPhysicsPlugin {
         app.add_systems(Update, (
             attach_or_update_drawable_colliders,
             attach_or_update_dummy_colliders,
+            attach_or_update_collider_objects,
             rebuild_navmesh_surface_cache,
             toggle_physics_debug,
             apply_collision_enabled,
@@ -263,6 +264,57 @@ fn attach_or_update_dummy_colliders(
     }
 }
 
+fn attach_or_update_collider_objects(
+    mut commands: Commands,
+    q: Query<(Entity, &ColliderObjectMarker), Or<(Added<ColliderObjectMarker>, Changed<ColliderObjectMarker>)>>,
+) {
+    for (entity, marker) in &q {
+        let def = marker.collider;
+        if !def.enabled || matches!(def.shape, DummyColliderShape::None) {
+            let mut ecmd = commands.entity(entity);
+            ecmd.remove::<Collider>();
+            ecmd.remove::<RigidBody>();
+            ecmd.remove::<StaticWorldCollider>();
+            ecmd.remove::<Sensor>();
+            ecmd.remove::<StairsCollider>();
+            continue;
+        }
+
+        let Some(collider) = collider_from_dummy_def(def, [1.0, 1.0, 1.0], 0.5, 1.0) else {
+            continue;
+        };
+
+        let mut ecmd = commands.entity(entity);
+        ecmd.insert(collider);
+
+        if def.is_static {
+            ecmd.insert((RigidBody::Static, StaticWorldCollider));
+        } else {
+            ecmd.insert(RigidBody::Dynamic);
+            ecmd.remove::<StaticWorldCollider>();
+        }
+
+        if def.is_trigger {
+            ecmd.insert(Sensor);
+        } else {
+            ecmd.remove::<Sensor>();
+        }
+
+        if def.stairs {
+            ecmd.insert(StairsCollider);
+        } else {
+            ecmd.remove::<StairsCollider>();
+        }
+
+        if def.friction > 0.0 {
+            ecmd.insert(Friction::new(def.friction));
+        }
+        if def.restitution > 0.0 {
+            ecmd.insert(Restitution::new(def.restitution));
+        }
+    }
+}
+
 fn clear_generated_dummy_colliders(
     entity: Entity,
     commands: &mut Commands,
@@ -321,7 +373,10 @@ fn attach_stairs_dummy_colliders(
         }
 
         if marker.collider.stairs {
-            let slope_angle = (total_height / total_depth.max(0.001)).atan();
+            let mut slope_angle = -(total_height / total_depth.max(0.001)).atan();
+            if marker.collider.stairs_slope_invert {
+                slope_angle = -slope_angle;
+            }
             let slope_length = (total_height * total_height + total_depth * total_depth).sqrt();
             let trigger_thickness = (step_h * 0.2).clamp(0.02, 0.08);
 
@@ -373,6 +428,48 @@ fn dummy_collider_defaults(marker: &DummyObjectMarker) -> ([f32; 3], f32, f32) {
             let r = marker.radius.max(0.01);
             let h = (r * 2.0).max(0.01);
             ([marker.size[0].max(0.01), h, marker.size[2].max(0.01)], marker.size[2].max(0.01) * 0.5, h)
+        }
+    }
+}
+
+fn collider_from_dummy_def(
+    def: DummyColliderDef,
+    default_size: [f32; 3],
+    default_radius: f32,
+    default_height: f32,
+) -> Option<Collider> {
+    let sx = def.size[0].max(0.001);
+    let sy = def.size[1].max(0.001);
+    let sz = def.size[2].max(0.001);
+    let radius = def.radius.max(0.001);
+    let height = def.height.max(0.001);
+
+    let shape = match def.shape {
+        DummyColliderShape::Auto => DummyColliderShape::Box,
+        other => other,
+    };
+
+    match shape {
+        DummyColliderShape::None => None,
+        DummyColliderShape::Auto => None,
+        DummyColliderShape::Box => Some(Collider::cuboid(
+            if def.size == [1.0, 1.0, 1.0] { default_size[0] } else { sx },
+            if def.size == [1.0, 1.0, 1.0] { default_size[1] } else { sy },
+            if def.size == [1.0, 1.0, 1.0] { default_size[2] } else { sz },
+        )),
+        DummyColliderShape::Sphere => Some(Collider::sphere(
+            if (def.radius - 0.5).abs() < f32::EPSILON { default_radius } else { radius }
+        )),
+        DummyColliderShape::Capsule => {
+            let r = if (def.radius - 0.5).abs() < f32::EPSILON { default_radius } else { radius };
+            let full_h = if (def.height - 1.0).abs() < f32::EPSILON { default_height } else { height };
+            let body_length = (full_h - r * 2.0).max(0.001);
+            Some(Collider::capsule(r, body_length))
+        }
+        DummyColliderShape::Cylinder => {
+            let r = if (def.radius - 0.5).abs() < f32::EPSILON { default_radius } else { radius };
+            let h = if (def.height - 1.0).abs() < f32::EPSILON { default_height } else { height };
+            Some(Collider::cylinder(r, h))
         }
     }
 }

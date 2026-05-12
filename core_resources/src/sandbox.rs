@@ -24,7 +24,7 @@ use bevy::math::{EulerRot, Quat};
 
 use crate::ace::AceRegistry;
 use crate::cmd_queue::{
-    CommandQueue, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
+    CommandQueue, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
     EntityStateCache, LocalPlayerStats, LuaCommand, PlayerStatsCache,
 };
 use crate::db_bridge::{DbBridge, DbQueryResult};
@@ -968,6 +968,7 @@ fn parse_dummy_from_lua(shape: &str, params: Option<mlua::Table>) -> DummyObject
         c.is_static = table_bool(&col_t, "is_static", c.is_static);
         c.is_trigger = table_bool(&col_t, "is_trigger", c.is_trigger);
         c.stairs = table_bool(&col_t, "stairs", c.stairs);
+        c.stairs_slope_invert = table_bool(&col_t, "stairs_slope_invert", c.stairs_slope_invert);
         c.friction = table_f32(&col_t, "friction", c.friction).max(0.0);
         c.restitution = table_f32(&col_t, "restitution", c.restitution).max(0.0);
         c.radius = table_f32(&col_t, "radius", c.radius).max(0.001);
@@ -982,6 +983,36 @@ fn parse_dummy_from_lua(shape: &str, params: Option<mlua::Table>) -> DummyObject
     }
 
     out
+}
+
+fn parse_collider_from_lua(params: Option<mlua::Table>) -> DummyColliderDef {
+    let mut c = DummyColliderDef::default();
+    let Some(t) = params else { return c };
+
+    // Podporuje obě varianty:
+    // 1) params = { enabled=..., shape=..., size=..., ... }
+    // 2) params = { collider = { ... } }
+    let source = t.get::<mlua::Table>("collider").ok().unwrap_or(t);
+
+    c.enabled = table_bool(&source, "enabled", c.enabled);
+    c.is_static = table_bool(&source, "is_static", c.is_static);
+    c.is_trigger = table_bool(&source, "is_trigger", c.is_trigger);
+    c.stairs = table_bool(&source, "stairs", c.stairs);
+    c.stairs_slope_invert = table_bool(&source, "stairs_slope_invert", c.stairs_slope_invert);
+    c.friction = table_f32(&source, "friction", c.friction).max(0.0);
+    c.restitution = table_f32(&source, "restitution", c.restitution).max(0.0);
+    c.radius = table_f32(&source, "radius", c.radius).max(0.001);
+    c.height = table_f32(&source, "height", c.height).max(0.001);
+
+    if let Ok(sz_t) = source.get::<mlua::Table>("size") {
+        c.size = table_to_vec3(&sz_t);
+    }
+
+    if let Ok(shape_name) = source.get::<String>("shape") {
+        c.shape = parse_dummy_collider_shape(&shape_name);
+    }
+
+    c
 }
 
 /// Převede Lua player_id (integer, number nebo string) na u64. 
@@ -1289,6 +1320,58 @@ fn install_runtime_api_inner(
             let handle = cq.alloc_handle();
             cq.push(LuaCommand::SpawnNetworkedDummy { handle, def, pos, rot });
             Ok(handle)
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("SpawnLocalCollider", lua.create_function(
+        move |_, (params_v, pos_t, rot_t): (mlua::Value, mlua::Table, mlua::Table)| {
+            let params = match params_v {
+                mlua::Value::Table(t) => Some(t),
+                _ => None,
+            };
+            let collider = parse_collider_from_lua(params);
+            let pos = table_to_vec3(&pos_t);
+            let rot = table_to_vec3(&rot_t);
+            let handle = cq.alloc_handle();
+            cq.push(LuaCommand::SpawnLocalCollider { handle, collider, pos, rot });
+            Ok(handle)
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("SpawnNetworkedCollider", lua.create_function(
+        move |_, (params_v, pos_t, rot_t): (mlua::Value, mlua::Table, mlua::Table)| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError(
+                    "World.SpawnNetworkedCollider is server-only".into(),
+                ));
+            }
+            let params = match params_v {
+                mlua::Value::Table(t) => Some(t),
+                _ => None,
+            };
+            let collider = parse_collider_from_lua(params);
+            let pos = table_to_vec3(&pos_t);
+            let rot = table_to_vec3(&rot_t);
+            let handle = cq.alloc_handle();
+            cq.push(LuaCommand::SpawnNetworkedCollider { handle, collider, pos, rot });
+            Ok(handle)
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("AttachWithOffset", lua.create_function(
+        move |_, (child_handle, parent_handle, offset_t, rot_t): (u64, u64, mlua::Table, mlua::Table)| {
+            let offset = table_to_vec3(&offset_t);
+            let rot = table_to_vec3(&rot_t);
+            cq.push(LuaCommand::AttachWithOffset {
+                child_handle,
+                parent_handle,
+                offset,
+                rot,
+            });
+            Ok(())
         },
     )?)?;
 

@@ -425,10 +425,13 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `World.SpawnNetworkedObject(model, pos, rot)` | server | Replikovaná entita → handle |
 | `World.SpawnLocalDummy(shape, params, pos, rot)` | both | Parametrický dummy objekt (cuboid/sphere/cube/stairs/arch) |
 | `World.SpawnNetworkedDummy(shape, params, pos, rot)` | server | Replikovaný parametrický dummy objekt |
+| `World.SpawnLocalCollider(params, pos, rot)` | both | Samostatný collider bez render meshe (`shape/size/radius/height/is_static/is_trigger/stairs/stairs_slope_invert`) |
+| `World.SpawnNetworkedCollider(params, pos, rot)` | server | Replikovaný samostatný collider bez render meshe |
 | `World.DeleteObject(handle)` | both | Despawn |
 | `World.SetTransform/SetPosition/SetRotation/SetScale/SetModel` | both | Transformace |
 | `World.PlayAnimation(h, name, blend?)` nebo `World.PlayAnimation(h, name, loop?, speed?, blend?)` / `StopAnimation` | both | Animace (`name` podporuje `clip:N`/`anim:N`/`N`; GLTF = clip index, ADM = clip index nebo clip name; ADM v5 navíc `dict:<dict_name>:<clip_name>`) |
 | `World.Attach(child, child_socket, parent, parent_socket)` / `World.Detach(child)` | both | Socket-to-socket attachment |
+| `World.AttachWithOffset(child, parent, offset, rot)` | both | Parent attachment přes lokální offset od pivotu parent entity |
 | `World.GetSocketTransform(handle, socket)` | both | World-space socket transform |
 | `World.IsValid/IsAlive/GetHealth/GetModel` | both | State dotazy |
 | `World.GetPosition/Rotation/Quaternion/Scale/Transform/Animation/AnimationSpeed` | both | Gettery |

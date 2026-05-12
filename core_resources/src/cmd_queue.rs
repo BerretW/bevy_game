@@ -93,6 +93,20 @@ pub enum LuaCommand {
         pos: [f32; 3],
         rot: [f32; 3],
     },
+    /// Samostatný collider objekt bez vizuální reprezentace.
+    SpawnLocalCollider {
+        handle: u64,
+        collider: DummyColliderDef,
+        pos: [f32; 3],
+        rot: [f32; 3],
+    },
+    /// Server-only samostatný collider objekt replikovaný na klienty.
+    SpawnNetworkedCollider {
+        handle: u64,
+        collider: DummyColliderDef,
+        pos: [f32; 3],
+        rot: [f32; 3],
+    },
     /// Spustí animaci na entitě. Phase 4 napojí na Bevy AnimationPlayer.
     PlayAnimation {
         handle: u64,
@@ -134,6 +148,13 @@ pub enum LuaCommand {
         child_socket: String,
         parent_handle: u64,
         parent_socket: String,
+    },
+    /// Připojí child entitu k parent přes lokální offset od pivotu parenta.
+    AttachWithOffset {
+        child_handle: u64,
+        parent_handle: u64,
+        offset: [f32; 3],
+        rot: [f32; 3],
     },
     /// Odpojí child entitu z hierarchie a zachová world-space transform.
     Detach {
@@ -298,6 +319,7 @@ pub struct DummyColliderDef {
     pub is_static: bool,
     pub is_trigger: bool,
     pub stairs: bool,
+    pub stairs_slope_invert: bool,
     pub friction: f32,
     pub restitution: f32,
 }
@@ -313,6 +335,7 @@ impl Default for DummyColliderDef {
             is_static: true,
             is_trigger: false,
             stairs: false,
+            stairs_slope_invert: false,
             friction: 0.8,
             restitution: 0.0,
         }
@@ -333,6 +356,12 @@ pub struct DummyObjectMarker {
     pub steps: u32,
     pub segments: u32,
     pub color: [f32; 4],
+    pub collider: DummyColliderDef,
+}
+
+/// Samostatný collider objekt bez render mesh.
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColliderObjectMarker {
     pub collider: DummyColliderDef,
 }
 
@@ -818,6 +847,57 @@ pub fn process_lua_commands(
                 );
             }
 
+            LuaCommand::SpawnLocalCollider { handle, collider, pos, rot } => {
+                let entity = commands
+                    .spawn((
+                        ColliderObjectMarker { collider },
+                        EntityHandle(handle),
+                        Transform {
+                            translation: Vec3::new(pos[0], pos[1], pos[2]),
+                            rotation: Quat::from_euler(
+                                EulerRot::XYZ,
+                                rot[0].to_radians(),
+                                rot[1].to_radians(),
+                                rot[2].to_radians(),
+                            ),
+                            scale: Vec3::ONE,
+                        },
+                    ))
+                    .id();
+                world_state.register(handle, entity);
+                debug!(
+                    "[cmd_queue] spawned local collider (handle={}, entity={:?})",
+                    handle, entity
+                );
+            }
+
+            LuaCommand::SpawnNetworkedCollider { handle, collider, pos, rot } => {
+                let entity = commands
+                    .spawn((
+                        ColliderObjectMarker { collider },
+                        NetworkedObjectMarker {
+                            model: "__collider__".to_string(),
+                        },
+                        EntityHandle(handle),
+                        Transform {
+                            translation: Vec3::new(pos[0], pos[1], pos[2]),
+                            rotation: Quat::from_euler(
+                                EulerRot::XYZ,
+                                rot[0].to_radians(),
+                                rot[1].to_radians(),
+                                rot[2].to_radians(),
+                            ),
+                            scale: Vec3::ONE,
+                        },
+                    ))
+                    .id();
+                world_state.register(handle, entity);
+                info!(
+                    "[cmd_queue] queued networked collider (handle={}, entity={:?})",
+                    handle, entity
+                );
+            }
+
             LuaCommand::PlayAnimation { handle, name, looping, speed, blend_time, flags } => {
                 if let Some(entity) = world_state.entity_for(handle) {
                     commands.entity(entity).insert(AnimationState {
@@ -969,6 +1049,37 @@ pub fn process_lua_commands(
                         parent_socket,
                     },
                 ));
+            }
+
+            LuaCommand::AttachWithOffset { child_handle, parent_handle, offset, rot } => {
+                let Some(child_entity) = world_state.entity_for(child_handle) else {
+                    warn!("[cmd_queue] AttachWithOffset: unknown child handle {}", child_handle);
+                    continue;
+                };
+                let Some(parent_entity) = world_state.entity_for(parent_handle) else {
+                    warn!("[cmd_queue] AttachWithOffset: unknown parent handle {}", parent_handle);
+                    continue;
+                };
+
+                let current_scale = transforms
+                    .get(child_entity)
+                    .map(|t| t.scale)
+                    .unwrap_or(Vec3::ONE);
+
+                commands.entity(child_entity).insert((
+                    ChildOf(parent_entity),
+                    Transform {
+                        translation: Vec3::new(offset[0], offset[1], offset[2]),
+                        rotation: Quat::from_euler(
+                            EulerRot::XYZ,
+                            rot[0].to_radians(),
+                            rot[1].to_radians(),
+                            rot[2].to_radians(),
+                        ),
+                        scale: current_scale,
+                    },
+                ));
+                commands.entity(child_entity).remove::<SocketAttachment>();
             }
 
             LuaCommand::Detach { child_handle } => {
