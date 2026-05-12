@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::gltf::Gltf;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
@@ -11,12 +12,13 @@ use core_drawable::{
     DrawableManifest, DrawableManifestRegistry, EntityDef,
     LodGroup, TextureSource,
     StandardPbrMaterial, LayeredEnvMaterial,
+    TwoBoneIkSolver,
 };
 
 use crate::camera;
 use crate::state::{
     ColliderPanel, DebugStatus, GltfHandleCache, InfoOverlay, LodPanel, LodViewerState,
-    RigPanel, RigViewerState, ViewerState, VCOL_DEBUG_MODES, WEATHER_PRESETS, WeatherState,
+    RigPanel, RigViewerState, ViewerIkChains, ViewerState, VCOL_DEBUG_MODES, WEATHER_PRESETS, WeatherState,
 };
 
 pub(crate) fn update_info_overlay(
@@ -908,6 +910,137 @@ pub(crate) fn draw_lod_circles(
         }
     }
 }
+
+// ─── IK Solver ────────────────────────────────────────────────────────────────
+
+/// Řeší IK chains každý snímek když je ik_mode ON.
+/// Běží v PostUpdate PŘED transform propagací, takže animace (Update) nastaví kosti
+/// a IK je přepíše dřív než se spočítají GlobalTransformy pro render.
+pub(crate) fn solve_viewer_ik(
+    rig: Res<RigViewerState>,
+    chains: Res<ViewerIkChains>,
+    names: Query<(Entity, &Name)>,
+    globals: Query<&GlobalTransform>,
+    children: Query<&Children>,
+    parent_q: Query<&ChildOf>,
+    mut transforms: Query<&mut Transform>,
+) {
+    if !rig.ik_mode || chains.chains.is_empty() {
+        return;
+    }
+
+    let name_map: HashMap<&str, Entity> = names.iter().map(|(e, n)| (n.as_str(), e)).collect();
+
+    for chain in &chains.chains {
+        if !chain.enabled { continue; }
+
+        let Some(&root_ent) = name_map.get(chain.parent_bone.as_str()) else { continue };
+        let Some(&end_ent)  = name_map.get(chain.effector_bone.as_str()) else { continue };
+        let Some(&tgt_ent)  = name_map.get(chain.ik_target.as_str()) else { continue };
+
+        let Some(mid_ent) = find_chain_mid(root_ent, end_ent, &children) else { continue };
+        if mid_ent == end_ent { continue; }
+
+        let Ok(root_gt)   = globals.get(root_ent) else { continue };
+        let Ok(mid_gt)    = globals.get(mid_ent)  else { continue };
+        let Ok(end_gt)    = globals.get(end_ent)  else { continue };
+        let Ok(target_gt) = globals.get(tgt_ent)  else { continue };
+
+        let root_pos   = root_gt.translation();
+        let mid_pos    = mid_gt.translation();
+        let end_pos    = end_gt.translation();
+        let target_pos = target_gt.translation();
+
+        let len_a = root_pos.distance(mid_pos);
+        let len_b = mid_pos.distance(end_pos);
+        if len_a < 0.001 || len_b < 0.001 { continue; }
+
+        // Pole hint — osa v níž se IK ohýbá (typicky koleno dopředu)
+        let pole_hint = chain.pole_bone.as_deref()
+            .and_then(|n| name_map.get(n))
+            .and_then(|&e| globals.get(e).ok())
+            .and_then(|gt| {
+                let v = gt.translation() - root_pos;
+                if v.length_squared() > 0.0001 { Some(v.normalize()) } else { None }
+            })
+            .unwrap_or(Vec3::Z);
+
+        let (new_mid, new_end) = TwoBoneIkSolver::solve(root_pos, target_pos, len_a, len_b, pole_hint);
+
+        // ── Čtení lokálních dat ─────────────────────────────────────────────
+        let root_local_rot = transforms.get(root_ent).map(|t| t.rotation).unwrap_or(Quat::IDENTITY);
+        let mid_local_rot  = transforms.get(mid_ent).map(|t| t.rotation).unwrap_or(Quat::IDENTITY);
+        let end_local_t    = transforms.get(end_ent).map(|t| t.translation).unwrap_or(Vec3::Y);
+
+        let root_parent_rot = parent_q.get(root_ent).ok()
+            .and_then(|c| globals.get(c.parent()).ok())
+            .map(|gt| gt.to_scale_rotation_translation().1)
+            .unwrap_or(Quat::IDENTITY);
+
+        let root_world_rot = root_parent_rot * root_local_rot;
+
+        // ── Root bone: otočit od starého směru k novému (mid) ───────────────
+        let old_root_dir_sq = (mid_pos - root_pos).length_squared();
+        let new_root_dir_sq = (new_mid  - root_pos).length_squared();
+        if old_root_dir_sq < 0.000001 || new_root_dir_sq < 0.000001 { continue; }
+        let old_root_dir = (mid_pos - root_pos) / old_root_dir_sq.sqrt();
+        let new_root_dir = (new_mid  - root_pos) / new_root_dir_sq.sqrt();
+
+        let delta_root = if old_root_dir.dot(new_root_dir) < 0.99999 {
+            Quat::from_rotation_arc(old_root_dir, new_root_dir)
+        } else {
+            Quat::IDENTITY
+        };
+
+        let new_root_world_rot = delta_root * root_world_rot;
+        let new_root_local     = root_parent_rot.inverse() * new_root_world_rot;
+
+        // ── Mid bone: otočit od (mid→end) ke (new_mid→new_end) ──────────────
+        // end_local_t je lokální translace end kosti vůči mid — dává nám "os" segmentu
+        let end_local_len_sq = end_local_t.length_squared();
+        let new_end_vec_sq   = (new_end - new_mid).length_squared();
+        let new_mid_local = if end_local_len_sq > 0.000001 && new_end_vec_sq > 0.000001 {
+            let end_local_dir = end_local_t / end_local_len_sq.sqrt();
+            // Aktuální směr mid→end v prostoru root kosti
+            let v = (mid_local_rot * end_local_dir).normalize();
+            // Požadovaný směr v prostoru new_root_world_rot
+            let u = (new_root_world_rot.inverse() * (new_end - new_mid)).normalize();
+            if v.dot(u) < 0.99999 {
+                Quat::from_rotation_arc(v, u) * mid_local_rot
+            } else {
+                mid_local_rot
+            }
+        } else {
+            mid_local_rot
+        };
+
+        // ── Zápis ───────────────────────────────────────────────────────────
+        if let Ok(mut t) = transforms.get_mut(root_ent) { t.rotation = new_root_local; }
+        if let Ok(mut t) = transforms.get_mut(mid_ent)  { t.rotation = new_mid_local; }
+
+        // Effektor kost: translaci neměníme, jen zajistíme že end entity sedí na místě
+        let _ = end_pos; // používáme jen pro délky, není třeba přepisovat
+    }
+}
+
+fn find_chain_mid(root: Entity, end: Entity, children: &Query<&Children>) -> Option<Entity> {
+    let Ok(kids) = children.get(root) else { return None };
+    for child in kids.iter() {
+        if child == end || entity_is_ancestor_of(child, end, children, 24) {
+            return Some(child);
+        }
+    }
+    None
+}
+
+fn entity_is_ancestor_of(node: Entity, target: Entity, children: &Query<&Children>, depth: usize) -> bool {
+    if node == target { return true; }
+    if depth == 0 { return false; }
+    let Ok(kids) = children.get(node) else { return false };
+    kids.iter().any(|c| entity_is_ancestor_of(c, target, children, depth - 1))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 pub(crate) fn handle_material_debug(
     keys:          Res<ButtonInput<KeyCode>>,

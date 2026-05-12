@@ -131,3 +131,17 @@ pub struct UiDiagAnimButton;
 pub struct AnimDebugState {
     pub text: String,
 }
+
+pub struct ViewerIkChainDef {
+    pub name: String,
+    pub enabled: bool,
+    pub parent_bone: String,
+    pub ik_target: String,
+    pub effector_bone: String,
+    pub pole_bone: Option<String>,
+}
+
+#[derive(Resource, Default)]
+pub struct ViewerIkChains {
+    pub chains: Vec<ViewerIkChainDef>,
+}

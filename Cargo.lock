@@ -5571,7 +5571,9 @@ dependencies = [
  "core_drawable",
  "core_resources",
  "rfd",
+ "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

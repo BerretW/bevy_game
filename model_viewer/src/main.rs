@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use bevy::asset::UnapprovedPathMode;
 use bevy::prelude::*;
+use bevy::transform::TransformSystems;
 use bevy::window::WindowResolution;
 
 use core_drawable::{
@@ -95,6 +96,7 @@ fn main() {
         .init_resource::<state::ModelSourcePaths>()
         .init_resource::<AdmAnimationBrowser>()
         .init_resource::<RigViewerState>()
+        .init_resource::<state::ViewerIkChains>()
         .init_resource::<ViewerSessionAnimHandles>()
         .init_resource::<AnimDebugState>()
         .insert_resource(ViewerState::default())
@@ -134,6 +136,10 @@ fn main() {
                 textures::rebuild_panel,
                 textures::show_extract_status,
             ),
+        )
+        .add_systems(
+            PostUpdate,
+            runtime::solve_viewer_ik.before(TransformSystems::Propagate),
         )
         .add_systems(
             PostUpdate,

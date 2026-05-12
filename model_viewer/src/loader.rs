@@ -2,6 +2,8 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
 
+use serde::Deserialize;
+
 use bevy::gltf::{Gltf, GltfLoaderSettings};
 use bevy::prelude::*;
 use rfd::FileDialog;
@@ -9,7 +11,67 @@ use rfd::FileDialog;
 use core_drawable::{AdmScene, AdmSceneRoot, AnimationSet, DrawableManifestRegistry};
 use core_resources::{AnimationState, AttachedAnimSets, ModelName, ModelRegistry};
 
-use crate::state::{AnimDebugState, GltfHandleCache, ModelPaths, ModelSourcePaths, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton, ViewerSessionAnimHandles};
+use crate::state::{AnimDebugState, GltfHandleCache, ModelPaths, ModelSourcePaths, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton, ViewerIkChainDef, ViewerIkChains, ViewerSessionAnimHandles};
+
+// ─── IK sidecar parser ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct IkTomlFile {
+    #[serde(default)]
+    chains: Vec<IkTomlChain>,
+}
+
+#[derive(Deserialize)]
+struct IkTomlChain {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "ik_default_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    parent_bone: String,
+    #[serde(default)]
+    ik_target: String,
+    #[serde(default)]
+    effector_bone: String,
+    #[serde(default)]
+    pole_bone: Option<String>,
+}
+
+fn ik_default_enabled() -> bool { true }
+
+fn load_ik_sidecar(path: &PathBuf, ik_chains: &mut ViewerIkChains) {
+    let ik_path = path.with_extension("ik.toml");
+    if !ik_path.exists() { return; }
+    let content = match fs::read_to_string(&ik_path) {
+        Ok(s) => s,
+        Err(e) => { warn!("[viewer] IK toml read error {}: {}", ik_path.display(), e); return; }
+    };
+    let parsed: IkTomlFile = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => { warn!("[viewer] IK toml parse error {}: {}", ik_path.display(), e); return; }
+    };
+    let mut added = 0usize;
+    for c in parsed.chains {
+        if c.parent_bone.is_empty() || c.ik_target.is_empty() || c.effector_bone.is_empty() {
+            continue;
+        }
+        let pole = c.pole_bone.filter(|s| !s.is_empty());
+        ik_chains.chains.push(ViewerIkChainDef {
+            name: c.name,
+            enabled: c.enabled,
+            parent_bone: c.parent_bone,
+            ik_target: c.ik_target,
+            effector_bone: c.effector_bone,
+            pole_bone: pole,
+        });
+        added += 1;
+    }
+    if added > 0 {
+        info!("[viewer] IK sidecar: {} chain(s) from {}", added, ik_path.file_name().unwrap_or_default().to_string_lossy());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 pub(crate) fn handle_loader_buttons(
     adm_q: Query<&Interaction, (Changed<Interaction>, With<UiLoadAdmButton>)>,
@@ -21,6 +83,7 @@ pub(crate) fn handle_loader_buttons(
     mut model_reg: ResMut<ModelRegistry>,
     mut anim_handles: ResMut<ViewerSessionAnimHandles>,
     mut model_source_paths: ResMut<ModelSourcePaths>,
+    mut ik_chains: ResMut<ViewerIkChains>,
     mut commands: Commands,
     roots: Query<Entity, With<AdmSceneRoot>>,
     mut query_anim_roots: Query<&mut AttachedAnimSets>,
@@ -49,6 +112,7 @@ pub(crate) fn handle_loader_buttons(
                 &mut model_reg,
                 &mut anim_handles,
                 &mut model_source_paths,
+                &mut ik_chains,
                 &mut commands,
                 &[],
             );
@@ -122,6 +186,7 @@ pub(crate) fn load_models(
     mut model_reg: ResMut<ModelRegistry>,
     mut anim_handles: ResMut<ViewerSessionAnimHandles>,
     mut model_source_paths: ResMut<ModelSourcePaths>,
+    mut ik_chains: ResMut<ViewerIkChains>,
     mut commands: Commands,
     mut overlay: Query<&mut Text, With<crate::state::InfoOverlay>>,
 ) {
@@ -159,6 +224,7 @@ pub(crate) fn load_models(
             &mut model_reg,
             &mut anim_handles,
             &mut model_source_paths,
+            &mut ik_chains,
             &mut commands,
             &explicit_anim_sets,
         );
@@ -185,6 +251,7 @@ pub(crate) fn load_one_model(
     model_reg: &mut ModelRegistry,
     anim_handles: &mut ViewerSessionAnimHandles,
     model_source_paths: &mut ModelSourcePaths,
+    ik_chains: &mut ViewerIkChains,
     commands: &mut Commands,
     explicit_anim_sets: &[String],
 ) {
@@ -248,6 +315,7 @@ pub(crate) fn load_one_model(
                 AttachedAnimSets { sets: attached_sets },
             ));
         }
+        load_ik_sidecar(&path, ik_chains);
     } else {
         let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load_with_settings(
             bevy_path.clone(),
@@ -272,6 +340,7 @@ pub(crate) fn load_one_model(
         let scene_handle: Handle<Scene> = asset_server.load(scene_path);
 
         commands.spawn((SceneRoot(scene_handle), Transform::default(), ModelName(stem)));
+        load_ik_sidecar(&path, ik_chains);
     }
 }
 
