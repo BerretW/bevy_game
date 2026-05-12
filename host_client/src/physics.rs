@@ -379,6 +379,8 @@ fn attach_stairs_dummy_colliders(
             }
             let slope_length = (total_height * total_height + total_depth * total_depth).sqrt();
             let trigger_thickness = (step_h * 0.2).clamp(0.02, 0.08);
+            let trigger_clearance = trigger_thickness + 0.03;
+            let trigger_offset = Quat::from_rotation_x(slope_angle) * Vec3::new(0.0, trigger_clearance, 0.0);
 
             p.spawn((
                 DummyGeneratedCollider,
@@ -386,7 +388,7 @@ fn attach_stairs_dummy_colliders(
                 Sensor,
                 Collider::cuboid(width, trigger_thickness, slope_length.max(0.01)),
                 Transform {
-                    translation: Vec3::ZERO,
+                    translation: trigger_offset,
                     rotation: Quat::from_rotation_x(slope_angle),
                     scale: Vec3::ONE,
                 },
