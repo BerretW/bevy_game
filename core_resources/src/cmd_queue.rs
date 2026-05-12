@@ -768,7 +768,6 @@ pub fn process_lua_commands(
             }
 
             LuaCommand::SpawnLocalDummy { handle, def, pos, rot } => {
-                let stairs = def.collider.stairs;
                 let entity = commands
                     .spawn((
                         def,
@@ -785,9 +784,6 @@ pub fn process_lua_commands(
                         },
                     ))
                     .id();
-                if stairs {
-                    commands.entity(entity).insert(StairsCollider);
-                }
                 world_state.register(handle, entity);
                 debug!(
                     "[cmd_queue] spawned local dummy (handle={}, entity={:?})",
@@ -796,7 +792,6 @@ pub fn process_lua_commands(
             }
 
             LuaCommand::SpawnNetworkedDummy { handle, def, pos, rot } => {
-                let stairs = def.collider.stairs;
                 let entity = commands
                     .spawn((
                         def,
@@ -816,9 +811,6 @@ pub fn process_lua_commands(
                         },
                     ))
                     .id();
-                if stairs {
-                    commands.entity(entity).insert(StairsCollider);
-                }
                 world_state.register(handle, entity);
                 info!(
                     "[cmd_queue] queued networked dummy (handle={}, entity={:?})",

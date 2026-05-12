@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::mesh::skinning::SkinnedMesh;
 use core_drawable::{CollisionShape, DrawableCollision};
-use core_resources::{CollisionEnabled, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind};
+use core_resources::{CollisionEnabled, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider};
 
 pub struct ClientPhysicsPlugin;
 
@@ -59,6 +59,9 @@ fn toggle_physics_debug(
 
 #[derive(Component, Debug)]
 pub struct StaticWorldCollider;
+
+#[derive(Component, Debug)]
+struct DummyGeneratedCollider;
 
 /// Projde řetěz ChildOf nahoru a vrátí `true` pokud nějaký předek má `RigidBody`.
 /// Zabraňuje tomu, aby child COL_* entity (compound colliders) dostávaly vlastní RigidBody.
@@ -175,14 +178,23 @@ fn attach_or_update_drawable_colliders(
 fn attach_or_update_dummy_colliders(
     mut commands: Commands,
     q: Query<(Entity, &DummyObjectMarker), Or<(Added<DummyObjectMarker>, Changed<DummyObjectMarker>)>>,
+    children_q: Query<&Children>,
+    generated_q: Query<(), With<DummyGeneratedCollider>>,
 ) {
     for (entity, marker) in &q {
+        clear_generated_dummy_colliders(entity, &mut commands, &children_q, &generated_q);
+
         if !marker.collider.enabled || matches!(marker.collider.shape, DummyColliderShape::None) {
             let mut ecmd = commands.entity(entity);
             ecmd.remove::<Collider>();
             ecmd.remove::<RigidBody>();
             ecmd.remove::<StaticWorldCollider>();
             ecmd.remove::<Sensor>();
+            continue;
+        }
+
+        if matches!(marker.kind, DummyPrimitiveKind::Stairs) {
+            attach_stairs_dummy_colliders(entity, marker, &mut commands);
             continue;
         }
 
@@ -249,6 +261,84 @@ fn attach_or_update_dummy_colliders(
             ecmd.insert(Restitution::new(marker.collider.restitution));
         }
     }
+}
+
+fn clear_generated_dummy_colliders(
+    entity: Entity,
+    commands: &mut Commands,
+    children_q: &Query<&Children>,
+    generated_q: &Query<(), With<DummyGeneratedCollider>>,
+) {
+    let Ok(children) = children_q.get(entity) else { return };
+    for child in children.iter() {
+        if generated_q.get(child).is_ok() {
+            commands.entity(child).despawn();
+        }
+    }
+}
+
+fn attach_stairs_dummy_colliders(
+    entity: Entity,
+    marker: &DummyObjectMarker,
+    commands: &mut Commands,
+) {
+    let width = marker.size[0].max(0.05);
+    let total_height = marker.height.max(0.05);
+    let total_depth = marker.size[2].max(0.05);
+    let steps = marker.steps.max(1);
+    let step_h = total_height / steps as f32;
+    let step_d = total_depth / steps as f32;
+
+    let mut parent_cmd = commands.entity(entity);
+    parent_cmd.remove::<Collider>();
+    parent_cmd.remove::<Sensor>();
+
+    if marker.collider.is_static {
+        parent_cmd.insert((RigidBody::Static, StaticWorldCollider));
+    } else {
+        parent_cmd.insert(RigidBody::Dynamic);
+        parent_cmd.remove::<StaticWorldCollider>();
+    }
+
+    commands.entity(entity).with_children(|p| {
+        for i in 0..steps {
+            let y = -total_height * 0.5 + step_h * (i as f32 + 0.5);
+            let z = -total_depth * 0.5 + step_d * (i as f32 + 0.5);
+
+            let mut step = p.spawn((
+                DummyGeneratedCollider,
+                Collider::cuboid(width, step_h.max(0.01), step_d.max(0.01)),
+                Transform::from_xyz(0.0, y, z),
+                GlobalTransform::default(),
+            ));
+
+            if marker.collider.friction > 0.0 {
+                step.insert(Friction::new(marker.collider.friction));
+            }
+            if marker.collider.restitution > 0.0 {
+                step.insert(Restitution::new(marker.collider.restitution));
+            }
+        }
+
+        if marker.collider.stairs {
+            let slope_angle = (total_height / total_depth.max(0.001)).atan();
+            let slope_length = (total_height * total_height + total_depth * total_depth).sqrt();
+            let trigger_thickness = (step_h * 0.2).clamp(0.02, 0.08);
+
+            p.spawn((
+                DummyGeneratedCollider,
+                StairsCollider,
+                Sensor,
+                Collider::cuboid(width, trigger_thickness, slope_length.max(0.01)),
+                Transform {
+                    translation: Vec3::ZERO,
+                    rotation: Quat::from_rotation_x(slope_angle),
+                    scale: Vec3::ONE,
+                },
+                GlobalTransform::default(),
+            ));
+        }
+    });
 }
 
 fn dummy_collider_defaults(marker: &DummyObjectMarker) -> ([f32; 3], f32, f32) {

@@ -156,7 +156,7 @@ Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, 
 
 #### 5.0 — Collision Foundation ✅
 
-Implementováno: `DrawableCollision` → Avian `Collider` pipeline, axis-lock flagy (`lock_translation/rotation`), `DisableDrawableCollisions` marker, `StaticWorldCollider` filter pro movement gate, `NAVMESH` shape → `NavMeshSurfaceCache`, `ClientMapPlugin` (`assets/maps/*.map.toml`), Blender toolkit NAVMESH + map TOML workflow, pravidlo RB ownership: hierarchické (child) drawable collidery nedostávají vlastní `RigidBody` (prevence mesh/collider desync).
+Implementováno: `DrawableCollision` → Avian `Collider` pipeline, axis-lock flagy (`lock_translation/rotation`), `DisableDrawableCollisions` marker, `StaticWorldCollider` filter pro movement gate, `NAVMESH` shape → `NavMeshSurfaceCache`, `ClientMapPlugin` (`assets/maps/*.map.toml`), Blender toolkit NAVMESH + map TOML workflow, pravidlo RB ownership: hierarchické (child) drawable collidery nedostávají vlastní `RigidBody` (prevence mesh/collider desync), `DummyPrimitiveKind::Stairs` nyní generuje samostatné child collidery: fyzické step-volume collidery + oddělený `StairsCollider` trigger jako svažitá plošina.
 
 `material` enum: `CONCRETE`, `STONE`, `BRICK`, `WOOD`, `METAL`, `GLASS`, `DIRT`, `GRASS`, `SAND`, `GRAVEL`, `MUD`, `SNOW`, `ICE`, `WATER`, `RUBBER`, `PLASTIC`, `CERAMIC`, `CARPET`, `ASPHALT`, `LADDER_METAL`.
 
