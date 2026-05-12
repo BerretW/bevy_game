@@ -18,6 +18,8 @@
 //!   V                     → cyklovat vertex color debug kanály (off → RGB → R → G → B → A)
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 
 use bevy::asset::UnapprovedPathMode;
@@ -27,6 +29,7 @@ use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::window::WindowResolution;
+use rfd::FileDialog;
 
 use core_drawable::{
     AdmScene, AdmSceneRoot, AnimationSet,
@@ -103,6 +106,8 @@ fn main() {
         .init_resource::<textures::TextureBrowser>()
         .init_resource::<AdmAnimationBrowser>()
         .init_resource::<RigViewerState>()
+        .init_resource::<ViewerSessionAnimHandles>()
+        .init_resource::<AnimDebugState>()
         .insert_resource(ViewerState::default())
         .insert_resource(ModelPaths(model_paths))
         .add_systems(Startup, (setup_scene, load_models.after(setup_scene)))
@@ -110,6 +115,7 @@ fn main() {
             Update,
             (
                 camera::orbit_camera,
+                handle_loader_buttons,
                 handle_keyboard,
                 handle_animation_keyboard,
                 sync_rig_viewer_state,
@@ -125,6 +131,7 @@ fn main() {
                 sync_adm_animation_browser,
                 apply_animation_browser_state,
                 update_animation_overlay,
+                update_anim_debug_overlay,
                 update_rig_overlay,
                 update_collider_panel,
             ),
@@ -189,6 +196,11 @@ struct AdmAnimationBrowser {
     paused: bool,
     /// Notifies aktuálně vybraného klipu: (čas_sec, název)
     notifies: Vec<(f32, String)>,
+}
+
+#[derive(Resource, Default)]
+struct ViewerSessionAnimHandles {
+    handles: HashMap<String, Handle<AnimationSet>>,
 }
 
 impl Default for ViewerState {
@@ -411,6 +423,94 @@ fn setup_scene(mut commands: Commands) {
         Visibility::Hidden,
         RigPanel,
     ));
+
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 12.0, ..default() },
+        TextColor(Color::srgba(0.95, 0.80, 0.95, 0.95)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(185.0),
+            right: Val::Px(8.0),
+            max_width: Val::Px(560.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        AnimDebugPanel,
+    ));
+
+    // Top bar with file-loading shortcuts
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(6.0),
+                left: Val::Px(6.0),
+                right: Val::Px(6.0),
+                height: Val::Px(34.0),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.06, 0.07, 0.10, 0.88)),
+        ))
+        .with_children(|parent| {
+            let button_style = Node {
+                min_width: Val::Px(128.0),
+                height: Val::Px(24.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            };
+
+            parent
+                .spawn((
+                    Button,
+                    button_style.clone(),
+                    BackgroundColor(Color::srgba(0.15, 0.18, 0.25, 0.95)),
+                    UiLoadAdmButton,
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("Open ADM/GLB"),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::srgba(0.96, 0.96, 0.98, 1.0)),
+                    ));
+                });
+
+            parent
+                .spawn((
+                    Button,
+                    button_style.clone(),
+                    BackgroundColor(Color::srgba(0.15, 0.18, 0.25, 0.95)),
+                    UiLoadAnimButton,
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("Open ADS_ANIM"),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::srgba(0.96, 0.96, 0.98, 1.0)),
+                    ));
+                });
+
+            parent
+                .spawn((
+                    Button,
+                    button_style,
+                    BackgroundColor(Color::srgba(0.18, 0.15, 0.28, 0.95)),
+                    UiDiagAnimButton,
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("Diag ADS_ANIM"),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::srgba(0.98, 0.96, 1.0, 1.0)),
+                    ));
+                });
+        });
 }
 
 // ─── Markery ──────────────────────────────────────────────────────────────────
@@ -433,6 +533,124 @@ struct AnimPanel;
 #[derive(Component)]
 struct RigPanel;
 
+#[derive(Component)]
+struct AnimDebugPanel;
+
+#[derive(Component)]
+struct UiLoadAdmButton;
+
+#[derive(Component)]
+struct UiLoadAnimButton;
+
+#[derive(Component)]
+struct UiDiagAnimButton;
+
+#[derive(Resource, Default)]
+struct AnimDebugState {
+    text: String,
+}
+
+fn handle_loader_buttons(
+    adm_q: Query<&Interaction, (Changed<Interaction>, With<UiLoadAdmButton>)>,
+    anim_q: Query<&Interaction, (Changed<Interaction>, With<UiLoadAnimButton>)>,
+    diag_q: Query<&Interaction, (Changed<Interaction>, With<UiDiagAnimButton>)>,
+    asset_server: Res<AssetServer>,
+    mut drawable_reg: ResMut<DrawableManifestRegistry>,
+    mut gltf_cache: ResMut<GltfHandleCache>,
+    mut model_reg: ResMut<ModelRegistry>,
+    mut anim_handles: ResMut<ViewerSessionAnimHandles>,
+    mut commands: Commands,
+    roots: Query<Entity, With<AdmSceneRoot>>,
+    mut query_anim_roots: Query<&mut AttachedAnimSets>,
+    mut anim_debug: ResMut<AnimDebugState>,
+) {
+    for interaction in &adm_q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let Some(path) = FileDialog::new()
+            .add_filter("Model", &["adm", "glb", "gltf"])
+            .pick_file()
+        else {
+            continue;
+        };
+
+        let mut model_paths = Vec::new();
+        model_paths.push(path);
+        for path in model_paths {
+            load_one_model(
+                &path,
+                &asset_server,
+                &mut drawable_reg,
+                &mut gltf_cache,
+                &mut model_reg,
+                &mut anim_handles,
+                &mut commands,
+                &[],
+            );
+        }
+    }
+
+    for interaction in &anim_q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let Some(files) = FileDialog::new()
+            .add_filter("ADS Anim", &["ads_anim"])
+            .pick_files()
+        else {
+            continue;
+        };
+
+        let mut added_paths: Vec<String> = Vec::new();
+        for path in files {
+            if let Some(anim_path) = canonical_bevy_path(&path) {
+                added_paths.push(anim_path.clone());
+                let handle: Handle<AnimationSet> = asset_server.load(anim_path.clone());
+                anim_handles.handles.insert(anim_path, handle);
+            }
+        }
+
+        if added_paths.is_empty() {
+            continue;
+        }
+
+        for entity in &roots {
+            if let Ok(mut attached) = query_anim_roots.get_mut(entity) {
+                for path in &added_paths {
+                    if !attached.sets.iter().any(|p| p == path) {
+                        attached.sets.push(path.clone());
+                    }
+                }
+            } else {
+                commands.entity(entity).insert(AttachedAnimSets {
+                    sets: added_paths.clone(),
+                });
+            }
+        }
+    }
+
+    for interaction in &diag_q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+
+        let Some(path) = FileDialog::new()
+            .add_filter("ADS Anim", &["ads_anim"])
+            .pick_file()
+        else {
+            continue;
+        };
+
+        anim_debug.text = diagnose_anim_set_file(&path);
+        if let Some(first) = anim_debug.text.lines().next() {
+            info!("[viewer] {}", first);
+        }
+    }
+}
+
 // ─── Model loading ────────────────────────────────────────────────────────────
 
 fn load_models(
@@ -441,6 +659,7 @@ fn load_models(
     mut drawable_reg: ResMut<DrawableManifestRegistry>,
     mut gltf_cache: ResMut<GltfHandleCache>,
     mut model_reg: ResMut<ModelRegistry>,
+    mut anim_handles: ResMut<ViewerSessionAnimHandles>,
     mut commands: Commands,
     mut overlay: Query<&mut Text, With<InfoOverlay>>,
 ) {
@@ -452,7 +671,8 @@ fn load_models(
         if ext == "ads_anim" {
             if let Some(bevy_path) = canonical_bevy_path(path) {
                 if !explicit_anim_sets.iter().any(|p| p == &bevy_path) {
-                    let _handle: Handle<AnimationSet> = asset_server.load(bevy_path.clone());
+                    let handle: Handle<AnimationSet> = asset_server.load(bevy_path.clone());
+                    anim_handles.handles.insert(bevy_path.clone(), handle);
                     explicit_anim_sets.push(bevy_path);
                 }
             }
@@ -475,6 +695,7 @@ fn load_models(
             &mut drawable_reg,
             &mut gltf_cache,
             &mut model_reg,
+            &mut anim_handles,
             &mut commands,
             &explicit_anim_sets,
         );
@@ -505,6 +726,7 @@ fn load_one_model(
     drawable_reg: &mut DrawableManifestRegistry,
     gltf_cache: &mut GltfHandleCache,
     model_reg: &mut ModelRegistry,
+    anim_handles: &mut ViewerSessionAnimHandles,
     commands: &mut Commands,
     explicit_anim_sets: &[String],
 ) {
@@ -544,7 +766,8 @@ fn load_one_model(
         }
 
         for set_path in &attached_sets {
-            let _handle: Handle<AnimationSet> = asset_server.load(set_path.clone());
+            let handle: Handle<AnimationSet> = asset_server.load(set_path.clone());
+            anim_handles.handles.insert(set_path.clone(), handle);
         }
 
         // Auto-detect .drawable manifest beside .adm
@@ -926,6 +1149,7 @@ fn collect_anim_set_data(
     attached_sets: Option<&AttachedAnimSets>,
     asset_server: &AssetServer,
     anim_set_assets: &Assets<AnimationSet>,
+    anim_handles: &ViewerSessionAnimHandles,
 ) -> (
     Vec<String>,
     Vec<String>,
@@ -944,7 +1168,11 @@ fn collect_anim_set_data(
 
     for set_path in &attached_sets.sets {
         let normalized = normalize_anim_set_path(set_path);
-        let handle: Handle<AnimationSet> = asset_server.load(normalized);
+        let handle: Handle<AnimationSet> = anim_handles
+            .handles
+            .get(&normalized)
+            .cloned()
+            .unwrap_or_else(|| asset_server.load(normalized));
         let Some(anim_set) = anim_set_assets.get(&handle) else { continue };
 
         for clip in &anim_set.clips {
@@ -981,6 +1209,7 @@ fn sync_adm_animation_browser(
     roots: Query<(Entity, &ModelName, Option<&AttachedAnimSets>), With<AnimationState>>,
     asset_server: Res<AssetServer>,
     anim_set_assets: Res<Assets<AnimationSet>>,
+    anim_handles: Res<ViewerSessionAnimHandles>,
 ) {
     if let Some(root) = browser.root {
         if roots.get(root).is_err() {
@@ -995,6 +1224,7 @@ fn sync_adm_animation_browser(
                 attached_sets,
                 &asset_server,
                 &anim_set_assets,
+                &anim_handles,
             );
             if all_clips.is_empty() {
                 continue;
@@ -1034,6 +1264,7 @@ fn sync_adm_animation_browser(
                 attached_sets,
                 &asset_server,
                 &anim_set_assets,
+                &anim_handles,
             );
 
             if dictionaries != browser.dictionaries {
@@ -1084,13 +1315,63 @@ fn apply_animation_browser_state(
 
 fn update_animation_overlay(
     browser: Res<AdmAnimationBrowser>,
+    roots: Query<(Entity, &ModelName, Option<&AttachedAnimSets>), With<AnimationState>>,
+    asset_server: Res<AssetServer>,
+    anim_set_assets: Res<Assets<AnimationSet>>,
+    anim_handles: Res<ViewerSessionAnimHandles>,
     mut panel: Query<(&mut Text, &mut Visibility), With<AnimPanel>>,
 ) {
     let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
 
+    let mut runtime_lines: Vec<String> = Vec::new();
+    runtime_lines.push(format!("Runtime roots with AnimationState: {}", roots.iter().count()));
+
+    let mut roots_with_sets = 0usize;
+    let mut roots_with_clips = 0usize;
+    for (entity, model_name, attached_sets) in &roots {
+        if let Some(attached_sets) = attached_sets {
+            roots_with_sets += 1;
+            let (clips, dicts, _, _) = collect_anim_set_data(
+                Some(attached_sets),
+                &asset_server,
+                &anim_set_assets,
+                &anim_handles,
+            );
+            if !clips.is_empty() {
+                roots_with_clips += 1;
+                runtime_lines.push(format!(
+                    "  root {:?} model:{} sets:{} clips:{} dicts:{}",
+                    entity,
+                    model_name.0,
+                    attached_sets.sets.len(),
+                    clips.len(),
+                    dicts.len()
+                ));
+            } else {
+                runtime_lines.push(format!(
+                    "  root {:?} model:{} sets:{} clips:0 (asset not ready or parse failed)",
+                    entity,
+                    model_name.0,
+                    attached_sets.sets.len()
+                ));
+            }
+        } else {
+            runtime_lines.push(format!("  root {:?} model:{} sets:0", entity, model_name.0));
+        }
+    }
+
     if browser.root.is_none() {
-        *vis = Visibility::Hidden;
-        txt.0 = String::new();
+        *vis = Visibility::Visible;
+        txt.0 = [
+            "── Animace ──",
+            "Žádné aktivní animace.",
+            "Nahraj .adm a .ads_anim (s klipy).",
+            "Ovládání: N/→ další clip, B/← předchozí, Space pauza.",
+            "PageUp/PageDown přepíná dictionary.",
+            &format!("Roots s AttachedAnimSets: {}", roots_with_sets),
+            &format!("Roots s načtenými klipy: {}", roots_with_clips),
+        ]
+        .join("\n");
         return;
     }
 
@@ -1144,7 +1425,211 @@ fn update_animation_overlay(
         }
     }
 
+    lines.push(String::new());
+    lines.push("Runtime debug:".to_string());
+    lines.extend(runtime_lines);
+
     txt.0 = lines.join("\n");
+}
+
+fn update_anim_debug_overlay(
+    debug: Res<AnimDebugState>,
+    roots: Query<(Entity, &ModelName, Option<&AttachedAnimSets>), With<AnimationState>>,
+    asset_server: Res<AssetServer>,
+    anim_set_assets: Res<Assets<AnimationSet>>,
+    anim_handles: Res<ViewerSessionAnimHandles>,
+    mut panel: Query<(&mut Text, &mut Visibility), With<AnimDebugPanel>>,
+) {
+    let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
+
+    *vis = Visibility::Visible;
+    if !debug.text.trim().is_empty() {
+        txt.0 = debug.text.clone();
+        return;
+    }
+
+    let mut lines = vec!["── Runtime anim debug ──".to_string()];
+    lines.push(format!("AnimationState roots: {}", roots.iter().count()));
+
+    let mut any_runtime_clip = false;
+    for (entity, model_name, attached_sets) in &roots {
+        match attached_sets {
+            Some(attached_sets) => {
+                let (clips, dicts, _, _) = collect_anim_set_data(
+                    Some(attached_sets),
+                    &asset_server,
+                    &anim_set_assets,
+                    &anim_handles,
+                );
+                if clips.is_empty() {
+                    lines.push(format!(
+                        "root {:?} model:{} sets:{} clips:0 (not loaded or parse mismatch)",
+                        entity,
+                        model_name.0,
+                        attached_sets.sets.len()
+                    ));
+                } else {
+                    any_runtime_clip = true;
+                    lines.push(format!(
+                        "root {:?} model:{} sets:{} clips:{} dicts:{}",
+                        entity,
+                        model_name.0,
+                        attached_sets.sets.len(),
+                        clips.len(),
+                        dicts.len()
+                    ));
+                }
+            }
+            None => {
+                lines.push(format!("root {:?} model:{} sets:0", entity, model_name.0));
+            }
+        }
+    }
+
+    if any_runtime_clip {
+        lines.push("Runtime clips found. Use N/B/Space or top-bar Play/Pause.".to_string());
+    } else {
+        lines.push("No runtime clips found. Check whether AttachedAnimSets is populated.".to_string());
+    }
+
+    txt.0 = lines.join("\n");
+}
+
+fn diagnose_anim_set_file(path: &PathBuf) -> String {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return format!("ADS diag: {}\n  read error: {}", path.display(), err);
+        }
+    };
+
+    let mut cur = Cursor::new(bytes.as_slice());
+    let magic = match read_u8_vec_local(&mut cur, 4) {
+        Ok(magic) => magic,
+        Err(err) => return format!("ADS diag: {}\n  read error: {:?}", path.display(), err),
+    };
+
+    let version = match read_u32_local(&mut cur) {
+        Ok(v) => v,
+        Err(err) => return format!("ADS diag: {}\n  bad header: {:?}", path.display(), err),
+    };
+
+    let mut lines = vec![format!("ADS diag: {}", path.display())];
+    lines.push(format!("  size: {} bytes", bytes.len()));
+    lines.push(format!("  magic: {:?}", String::from_utf8_lossy(&magic)));
+    lines.push(format!("  version: {}", version));
+
+    if magic.as_slice() != b"ADS\0" {
+        lines.push("  status: invalid magic, expected ADS\0".to_string());
+        return lines.join("\n");
+    }
+
+    if version != 1 {
+        lines.push("  status: unsupported version, expected 1".to_string());
+        return lines.join("\n");
+    }
+
+    match parse_anim_set_debug(&mut cur, bytes.len()) {
+        Ok(report) => {
+            lines.extend(report);
+        }
+        Err(err) => {
+            lines.push(format!("  parse error: {:?}", err));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn parse_anim_set_debug(cur: &mut Cursor<&[u8]>, total_len: usize) -> Result<Vec<String>, AnimDiagError> {
+    let clip_count = read_u32_local(cur)? as usize;
+    let mut clip_lines = vec![format!("  clips: {}", clip_count)];
+    let mut clip_names = Vec::with_capacity(clip_count);
+
+    for clip_idx in 0..clip_count {
+        let name = read_string_local(cur)?;
+        let duration = read_f32_local(cur)?;
+        let track_count = read_u32_local(cur)? as usize;
+        clip_names.push(name.clone());
+        clip_lines.push(format!("    [{}] {}  duration:{:.3}s  tracks:{}", clip_idx, name, duration, track_count));
+
+        for _ in 0..track_count {
+            let _node_name = read_string_local(cur)?;
+            let key_count = read_u32_local(cur)? as usize;
+
+            for _ in 0..key_count {
+                skip_f32_local(cur)?; // time
+                skip_f32_local(cur)?; // pos x
+                skip_f32_local(cur)?; // pos y
+                skip_f32_local(cur)?; // pos z
+                skip_f32_local(cur)?; // rot x
+                skip_f32_local(cur)?; // rot y
+                skip_f32_local(cur)?; // rot z
+                skip_f32_local(cur)?; // rot w
+                skip_f32_local(cur)?; // scale x
+                skip_f32_local(cur)?; // scale y
+                skip_f32_local(cur)?; // scale z
+            }
+        }
+    }
+
+    let remaining = total_len.saturating_sub(cur.position() as usize);
+    clip_lines.push(format!("  remaining bytes after clips: {}", remaining));
+    if !clip_names.is_empty() {
+        clip_lines.push(format!("  clip names: {}", clip_names.join(", ")));
+    }
+
+    Ok(clip_lines)
+}
+
+#[derive(Debug)]
+enum AnimDiagError {
+    Io,
+    Utf8,
+    UnexpectedEof,
+}
+
+fn read_u8_local(cur: &mut Cursor<&[u8]>) -> Result<u8, AnimDiagError> {
+    let mut buf = [0u8; 1];
+    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
+    Ok(buf[0])
+}
+
+fn read_u32_local(cur: &mut Cursor<&[u8]>) -> Result<u32, AnimDiagError> {
+    let mut buf = [0u8; 4];
+    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn read_f32_local(cur: &mut Cursor<&[u8]>) -> Result<f32, AnimDiagError> {
+    let mut buf = [0u8; 4];
+    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
+    Ok(f32::from_le_bytes(buf))
+}
+
+fn skip_f32_local(cur: &mut Cursor<&[u8]>) -> Result<(), AnimDiagError> {
+    let mut buf = [0u8; 4];
+    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
+    Ok(())
+}
+
+fn read_u16_local(cur: &mut Cursor<&[u8]>) -> Result<u16, AnimDiagError> {
+    let mut buf = [0u8; 2];
+    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
+    Ok(u16::from_le_bytes(buf))
+}
+
+fn read_string_local(cur: &mut Cursor<&[u8]>) -> Result<String, AnimDiagError> {
+    let len = read_u16_local(cur)? as usize;
+    let mut buf = vec![0u8; len];
+    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
+    String::from_utf8(buf).map_err(|_| AnimDiagError::Utf8)
+}
+
+fn read_u8_vec_local(cur: &mut Cursor<&[u8]>, len: usize) -> Result<Vec<u8>, AnimDiagError> {
+    let mut buf = vec![0u8; len];
+    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
+    Ok(buf)
 }
 
 fn update_rig_overlay(

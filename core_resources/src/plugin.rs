@@ -189,8 +189,10 @@ fn initial_load(
     rebuild(
         &mut vfs, side.0, &mut registry,
         p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
+        p.anim_set_cmds.clone(),
         &mut model_registry,
         p.model_anims.clone(),
+        p.anim_set_reg.clone(),
         p.bridges.clone(),
         p.stats_cache.clone(), p.entity_cache.clone(),
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
@@ -218,8 +220,10 @@ fn hot_reload_on_dirty(
     rebuild(
         &mut vfs, side.0, &mut registry,
         p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
+        p.anim_set_cmds.clone(),
         &mut model_registry,
         p.model_anims.clone(),
+        p.anim_set_reg.clone(),
         p.bridges.clone(),
         p.stats_cache.clone(), p.entity_cache.clone(),
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
@@ -235,8 +239,10 @@ fn rebuild(
     cmd_queue: CommandQueue,
     local_bus: LocalEventBus,
     model_cmds: ModelCommandQueue,
+    anim_set_cmds: AnimSetCommandQueue,
     model_registry: &mut ModelRegistry,
     model_anims: ModelAnimationRegistry,
+    anim_set_reg: AnimSetRegistry,
     bridges: GameBridges,
     stats_cache: PlayerStatsCache,
     entity_cache: EntityStateCache,
@@ -352,8 +358,8 @@ fn rebuild(
             bridges.auth.clone(),
             bridges.crosshair.clone(),
             bridges.camera.clone(),
-            p.anim_set_cmds.clone(),
-            p.anim_set_reg.clone(),
+            anim_set_cmds.clone(),
+            anim_set_reg.clone(),
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);

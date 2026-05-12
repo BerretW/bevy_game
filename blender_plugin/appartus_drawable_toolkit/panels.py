@@ -13,7 +13,7 @@ def _lod_level_from_name(name: str) -> int:
 def _collapsible_box(layout, settings, toggle_name, title, icon):
     box = layout.box()
     header = box.row(align=True)
-    is_open = bool(getattr(settings, toggle_name, True))
+    is_open = bool(getattr(settings, toggle_name, False))
     header.prop(
         settings,
         toggle_name,
@@ -272,95 +272,94 @@ class BEVY_PT_Panel(bpy.types.Panel):
             return
 
         if obj.type == "MESH":
-            physics_box = layout.box()
-            physics_box.label(text="Entity", icon="PHYSICS")
-            physics_box.prop(obj.bevy_toolkit_obj, "export_name")
-            physics_box.prop(obj.bevy_toolkit_obj, "is_col")
-            if is_collision_object(obj):
-                physics_box.prop(obj.bevy_toolkit_obj, "col_shape")
-                physics_box.prop(obj.bevy_toolkit_obj, "mass")
-                physics_box.prop(obj.bevy_toolkit_obj, "is_static")
-                physics_box.prop(obj.bevy_toolkit_obj, "col_climbable")
-                physics_box.prop(obj.bevy_toolkit_obj, "col_ladder")
-                physics_box.prop(obj.bevy_toolkit_obj, "col_material")
-                physics_box.prop(obj.bevy_toolkit_obj, "friction")
-                physics_box.prop(obj.bevy_toolkit_obj, "restitution")
-                physics_box.prop(obj.bevy_toolkit_obj, "tags_csv")
-                physics_box.label(text="Axis Locks")
-                row = physics_box.row(align=True)
-                row.prop(obj.bevy_toolkit_obj, "lock_tx", text="Move X")
-                row.prop(obj.bevy_toolkit_obj, "lock_ty", text="Move Y")
-                row.prop(obj.bevy_toolkit_obj, "lock_tz", text="Move Z")
-                row = physics_box.row(align=True)
-                row.prop(obj.bevy_toolkit_obj, "lock_rx", text="Rot X")
-                row.prop(obj.bevy_toolkit_obj, "lock_ry", text="Rot Y")
-                row.prop(obj.bevy_toolkit_obj, "lock_rz", text="Rot Z")
-            else:
-                physics_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
-                physics_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
+            entity_box, entity_open = _collapsible_box(layout, settings, "ui_show_entity", "Entity", "PHYSICS")
+            if entity_open:
+                entity_box.prop(obj.bevy_toolkit_obj, "export_name")
+                entity_box.prop(obj.bevy_toolkit_obj, "is_col")
+                if is_collision_object(obj):
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_shape")
+                    entity_box.prop(obj.bevy_toolkit_obj, "mass")
+                    entity_box.prop(obj.bevy_toolkit_obj, "is_static")
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_climbable")
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_ladder")
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_material")
+                    entity_box.prop(obj.bevy_toolkit_obj, "friction")
+                    entity_box.prop(obj.bevy_toolkit_obj, "restitution")
+                    entity_box.prop(obj.bevy_toolkit_obj, "tags_csv")
+                    entity_box.label(text="Axis Locks")
+                    row = entity_box.row(align=True)
+                    row.prop(obj.bevy_toolkit_obj, "lock_tx", text="Move X")
+                    row.prop(obj.bevy_toolkit_obj, "lock_ty", text="Move Y")
+                    row.prop(obj.bevy_toolkit_obj, "lock_tz", text="Move Z")
+                    row = entity_box.row(align=True)
+                    row.prop(obj.bevy_toolkit_obj, "lock_rx", text="Rot X")
+                    row.prop(obj.bevy_toolkit_obj, "lock_ry", text="Rot Y")
+                    row.prop(obj.bevy_toolkit_obj, "lock_rz", text="Rot Z")
+                else:
+                    entity_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
+                    entity_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
 
-                export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
-                lod_level = _lod_level_from_name(export_name)
-                physics_box.label(
-                    text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
-                    icon="MOD_DECIM",
-                )
+                    export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
+                    lod_level = _lod_level_from_name(export_name)
+                    entity_box.label(
+                        text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
+                        icon="MOD_DECIM",
+                    )
 
-            paint_box = layout.box()
-            paint_box.label(text="Vertex Masks", icon="VPAINT_HLT")
+            paint_box, paint_open = _collapsible_box(layout, settings, "ui_show_vertex_masks", "Vertex Masks", "VPAINT_HLT")
+            if paint_open:
+                paint_box.label(text="bevy_masks  (COLOR_0)")
+                paint_box.label(text="R=NormSupp/L1  G=dirt  B=wet  A=palette")
+                paint_box.operator("bevy.init_project", text="Initialize bevy_masks")
+                row = paint_box.row(align=True)
+                row.operator("bevy.set_paint", text="Norm/L1 (R)").mode = "NORMAL_SUPP"
+                row.operator("bevy.set_paint", text="Dirt (G)").mode    = "DIRT"
+                row.operator("bevy.set_paint", text="Wet (B)").mode     = "WET"
+                row.operator("bevy.set_paint", text="Erase").mode       = "ERASE"
 
-            paint_box.label(text="bevy_masks  (COLOR_0)")
-            paint_box.label(text="R=NormSupp/L1  G=dirt  B=wet  A=palette")
-            paint_box.operator("bevy.init_project", text="Initialize bevy_masks")
-            row = paint_box.row(align=True)
-            row.operator("bevy.set_paint", text="Norm/L1 (R)").mode = "NORMAL_SUPP"
-            row.operator("bevy.set_paint", text="Dirt (G)").mode    = "DIRT"
-            row.operator("bevy.set_paint", text="Wet (B)").mode     = "WET"
-            row.operator("bevy.set_paint", text="Erase").mode       = "ERASE"
+                paint_box.separator(factor=0.4)
+                paint_box.label(text="Presets (fill all vertices):")
+                row = paint_box.row(align=True)
+                row.operator("bevy.apply_vertex_preset", text="Standard").preset = "standard"
+                row.operator("bevy.apply_vertex_preset", text="Metal").preset    = "metal"
+                row.operator("bevy.apply_vertex_preset", text="Wood").preset     = "wood"
+                row.operator("bevy.apply_vertex_preset", text="Brick").preset    = "brick"
+                row = paint_box.row(align=True)
+                row.prop(settings, "alpha_fill_value")
+                row.operator("bevy.fill_alpha_mask", text="Fill A (palette)")
 
-            paint_box.separator(factor=0.4)
-            paint_box.label(text="Presets (fill all vertices):")
-            row = paint_box.row(align=True)
-            row.operator("bevy.apply_vertex_preset", text="Standard").preset = "standard"
-            row.operator("bevy.apply_vertex_preset", text="Metal").preset    = "metal"
-            row.operator("bevy.apply_vertex_preset", text="Wood").preset     = "wood"
-            row.operator("bevy.apply_vertex_preset", text="Brick").preset    = "brick"
-            row = paint_box.row(align=True)
-            row.prop(settings, "alpha_fill_value")
-            row.operator("bevy.fill_alpha_mask", text="Fill A (palette)")
-
-            paint_box.separator(factor=0.5)
-            paint_box.label(text="bevy_masks2  (→ TEXCOORD_1)")
-            paint_box.label(text="R=AO (1=none)  G=emissive")
-            paint_box.operator("bevy.init_masks2", text="Initialize bevy_masks2")
-            row = paint_box.row(align=True)
-            row.operator("bevy.set_paint", text="AO (R)").mode       = "AO"
-            row.operator("bevy.set_paint", text="Emissive (G)").mode = "EMISSIVE"
-            row.operator("bevy.set_paint", text="Erase").mode        = "ERASE2"
+                paint_box.separator(factor=0.5)
+                paint_box.label(text="bevy_masks2  (→ TEXCOORD_1)")
+                paint_box.label(text="R=AO (1=none)  G=emissive")
+                paint_box.operator("bevy.init_masks2", text="Initialize bevy_masks2")
+                row = paint_box.row(align=True)
+                row.operator("bevy.set_paint", text="AO (R)").mode       = "AO"
+                row.operator("bevy.set_paint", text="Emissive (G)").mode = "EMISSIVE"
+                row.operator("bevy.set_paint", text="Erase").mode        = "ERASE2"
 
         self._draw_export_box(layout, settings)
 
     @staticmethod
     def _draw_export_box(layout, settings):
-        export_box = layout.box()
-        export_box.label(text="Import / Export", icon="EXPORT")
-        export_box.operator("bevy.import_drawable", text="Import Drawable", icon="IMPORT")
-        export_box.operator("bevy.find_missing_textures", text="Find Missing Textures", icon="VIEWZOOM")
-        export_box.separator(factor=0.5)
-        export_box.prop(settings, "export_scope")
-        export_box.prop(settings, "apply_modifiers")
-        export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
-        export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")
+        export_box, export_open = _collapsible_box(layout, settings, "ui_show_import_export", "Import / Export", "EXPORT")
+        if export_open:
+            export_box.operator("bevy.import_drawable", text="Import Drawable", icon="IMPORT")
+            export_box.operator("bevy.find_missing_textures", text="Find Missing Textures", icon="VIEWZOOM")
+            export_box.separator(factor=0.5)
+            export_box.prop(settings, "export_scope")
+            export_box.prop(settings, "apply_modifiers")
+            export_box.operator("bevy.export_project", text="Export ADS", icon="EXPORT")
+            export_box.operator("ads.export_adm", text="Export ADM + Drawable", icon="MESH_DATA")
 
-        lod_box = export_box.box()
-        lod_box.label(text="LOD Distances", icon="MOD_DECIM")
-        col = lod_box.column(align=True)
-        col.prop(settings, "lod_distance_0")
-        col.prop(settings, "lod_distance_1")
-        col.prop(settings, "lod_distance_2")
-        lod_box.prop(settings, "lod_cull_beyond_last")
+            lod_box, lod_open = _collapsible_box(export_box, settings, "ui_show_lod_distances", "LOD Distances", "MOD_DECIM")
+            if lod_open:
+                col = lod_box.column(align=True)
+                col.prop(settings, "lod_distance_0")
+                col.prop(settings, "lod_distance_1")
+                col.prop(settings, "lod_distance_2")
+                lod_box.prop(settings, "lod_cull_beyond_last")
 
-        map_box = layout.box()
-        map_box.label(text="Map Tools", icon="WORLD")
-        map_box.operator("bevy.export_map_manifest", text="Export Map TOML", icon="EXPORT")
-        map_box.operator("bevy.import_map_manifest", text="Import Map TOML", icon="IMPORT")
+        map_box, map_open = _collapsible_box(layout, settings, "ui_show_map_tools", "Map Tools", "WORLD")
+        if map_open:
+            map_box.operator("bevy.export_map_manifest", text="Export Map TOML", icon="EXPORT")
+            map_box.operator("bevy.import_map_manifest", text="Import Map TOML", icon="IMPORT")

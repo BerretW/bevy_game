@@ -1017,6 +1017,8 @@ fn install_runtime_api_inner(
     auth_bridge: &AuthBridge,
     crosshair: &CrosshairBridge,
     camera_bridge: &CameraBridge,
+    anim_set_cmds: &AnimSetCommandQueue,
+    anim_set_registry: &AnimSetRegistry,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -1650,15 +1652,15 @@ fn install_runtime_api_inner(
         Ok(out)
     })?)?;
 
-    let anim_set_cmds = anim_set_cmds.clone();
+    let anim_set_cmds_request = anim_set_cmds.clone();
     engine.set("RequestAnimSet", lua.create_function(move |_, path: String| {
-        anim_set_cmds.push(AnimSetCommand::Request(path));
+        anim_set_cmds_request.push(AnimSetCommand::Request(path));
         Ok(())
     })?)?;
 
-    let anim_set_cmds = anim_set_cmds.clone();
+    let anim_set_cmds_release = anim_set_cmds.clone();
     engine.set("SetAnimSetAsNoLongerNeeded", lua.create_function(move |_, path: String| {
-        anim_set_cmds.push(AnimSetCommand::Release(path));
+        anim_set_cmds_release.push(AnimSetCommand::Release(path));
         Ok(())
     })?)?;
 
