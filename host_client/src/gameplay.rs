@@ -967,6 +967,8 @@ fn update_player_state_driven_animations(
             .unwrap_or(false);
         if is_local_player && has_move_input {
             memory.move_intent_until = now + 0.22;
+        } else if is_local_player {
+            memory.move_intent_until = now;
         }
         let movement_intent_active = is_local_player && now < memory.move_intent_until;
 
@@ -977,40 +979,47 @@ fn update_player_state_driven_animations(
         let sprint_up = sprint_threshold + 0.20;
         let sprint_down = (sprint_threshold - 0.20).max(walk_up + 0.02);
 
-        memory.locomotion = match memory.locomotion {
-            LocomotionState::Idle => {
-                if memory.filtered_horiz_speed > idle_exit || (movement_intent_active && grounded) {
-                    LocomotionState::Walk
-                } else {
-                    LocomotionState::Idle
+        // Lokální hráč: po puštění movement inputu blendni okamžitě do Idle,
+        // aby model nedojížděl ve walk/run kvůli velocity smoothingu.
+        if is_local_player && grounded && !has_move_input {
+            memory.locomotion = LocomotionState::Idle;
+            memory.filtered_horiz_speed = 0.0;
+        } else {
+            memory.locomotion = match memory.locomotion {
+                LocomotionState::Idle => {
+                    if memory.filtered_horiz_speed > idle_exit || (movement_intent_active && grounded) {
+                        LocomotionState::Walk
+                    } else {
+                        LocomotionState::Idle
+                    }
                 }
-            }
-            LocomotionState::Walk => {
-                if memory.filtered_horiz_speed <= idle_threshold && !movement_intent_active {
-                    LocomotionState::Idle
-                } else if memory.filtered_horiz_speed >= walk_up {
-                    LocomotionState::Run
-                } else {
-                    LocomotionState::Walk
+                LocomotionState::Walk => {
+                    if memory.filtered_horiz_speed <= idle_threshold && !movement_intent_active {
+                        LocomotionState::Idle
+                    } else if memory.filtered_horiz_speed >= walk_up {
+                        LocomotionState::Run
+                    } else {
+                        LocomotionState::Walk
+                    }
                 }
-            }
-            LocomotionState::Run => {
-                if memory.filtered_horiz_speed <= walk_down {
-                    LocomotionState::Walk
-                } else if memory.filtered_horiz_speed >= sprint_up {
-                    LocomotionState::Sprint
-                } else {
-                    LocomotionState::Run
+                LocomotionState::Run => {
+                    if memory.filtered_horiz_speed <= walk_down {
+                        LocomotionState::Walk
+                    } else if memory.filtered_horiz_speed >= sprint_up {
+                        LocomotionState::Sprint
+                    } else {
+                        LocomotionState::Run
+                    }
                 }
-            }
-            LocomotionState::Sprint => {
-                if memory.filtered_horiz_speed <= sprint_down {
-                    LocomotionState::Run
-                } else {
-                    LocomotionState::Sprint
+                LocomotionState::Sprint => {
+                    if memory.filtered_horiz_speed <= sprint_down {
+                        LocomotionState::Run
+                    } else {
+                        LocomotionState::Sprint
+                    }
                 }
-            }
-        };
+            };
+        }
 
         let (desired_clip, looping, next_anim_state) = if !grounded {
             if vel.y < -0.2 {
