@@ -22,7 +22,7 @@ use bevy_gltf::{
     GltfMeshName,
     GltfSceneExtras,
 };
-use core_drawable::TwoBoneIkSolver;
+use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver};
 use core_net::{player_action, InputChannel, PlayerInput};
 use core_resources::{
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
@@ -164,6 +164,23 @@ struct FootIkBoneState {
     initialized: bool,
 }
 
+#[derive(Resource, Default)]
+struct TerrainDiag {
+    frame: u64,
+    was_grounded: bool,
+    last_normal_y: f32,
+}
+
+#[derive(Resource, Default)]
+struct MovementGroundState {
+    last_grounded_time: f32,
+}
+
+/// Grace period after losing ground contact before the movement system treats
+/// the player as airborne. Prevents single-frame contact gaps from turning off
+/// velocity projection and the bounce damping.
+const COYOTE_TIME_SECS: f32 = 0.15;
+
 pub struct ClientGameplayPlugin;
 
 impl Plugin for ClientGameplayPlugin {
@@ -194,6 +211,8 @@ impl Plugin for ClientGameplayPlugin {
         app.init_resource::<LuaAnimationGraphCache>();
         app.init_resource::<ModelAnimationDiscoveryCache>();
         app.init_resource::<AdaptiveIkSampleCache>();
+        app.init_resource::<TerrainDiag>();
+        app.init_resource::<MovementGroundState>();
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
         app.add_systems(OnExit(AppState::InGame), reset_connection_bridge);
@@ -239,6 +258,14 @@ impl Plugin for ClientGameplayPlugin {
                 collect_and_send_input,
             ).chain().run_if(in_state(AppState::InGame)),
         );
+        // Runs after Avian's Writeback phase (vel written back to LinearVelocity).
+        // Damps contact-response vel.y spikes before Update systems read them.
+        app.add_systems(
+            FixedPostUpdate,
+            post_physics_vel_y_damp
+                .after(PhysicsSystems::Writeback)
+                .run_if(in_state(AppState::InGame)),
+        );
         // Registrace replicated entity handles v LuaWorldState.
         // Musí běžet po process_lua_commands (lokální spawny) ale před sync_entity_state_cache
         // (aby replicated entity byly v cache ve stejném framu).
@@ -249,6 +276,10 @@ impl Plugin for ClientGameplayPlugin {
                 .before(sync_entity_state_cache),
         );
         // app.add_systems(Update, debug_player_movement.run_if(on_timer(std::time::Duration::from_secs(2))));
+        app.add_systems(
+            Update,
+            log_terrain_diag.run_if(in_state(AppState::InGame)),
+        );
     }
 }
 
@@ -274,8 +305,13 @@ const PLAYER_CROUCH_MULT: f32 = 0.5;
 const PLAYER_JUMP_VEL: f32 = 6.0;
 /// Fallback konstanty — použijí se pokud player.ped.toml není ještě načten.
 const GROUND_VEL_THRESHOLD: f32 = 0.25;
-const GROUND_CASTER_RADIUS: f32 = 0.28;
-const GROUND_CASTER_MAX_DISTANCE: f32 = 0.12;
+/// Small sphere radius so the shape cast only hits things directly underfoot,
+/// not walls or steep terrain edges that a larger sphere would catch.
+const GROUND_CASTER_RADIUS: f32 = 0.14;
+const GROUND_CASTER_MAX_DISTANCE: f32 = 0.20;
+/// cos(~49°) — surfaces steeper than this are not walkable and do not count as ground.
+/// Matches the ped profile's slope_max_angle (46°) with a small margin.
+const GROUND_NORMAL_Y_MIN: f32 = 0.65;
 
 /// (player.ped.toml) pokud je načten — jinak se použijí fallback konstanty.
 fn apply_player_movement(
@@ -286,9 +322,8 @@ fn apply_player_movement(
     local_client_id: Option<Res<LocalClientId>>,
     ped_reg: Res<PedPhysicsRegistry>,
     ped_assets: Res<Assets<PedPhysicsDef>>,
+    mut ground_state: ResMut<MovementGroundState>,
     mut players: Query<(&PlayerMarker, &mut LinearVelocity, Option<&ShapeHits>), With<Predicted>>,
-    stairs_q: Query<(), With<StairsCollider>>,
-    child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
 ) {
     let Some(lid) = local_client_id else { return };
     let bindings = &cfg.0.input.keys;
@@ -345,47 +380,46 @@ fn apply_player_movement(
         (world_x, world_z)
     };
 
+    let now = time.elapsed_secs();
+
     for (marker, mut vel, shape_hits) in players.iter_mut() {
         if marker.client_id != lid.0 { continue; }
-        let mut target_x = world_x * speed;
-        let mut target_z = world_z * speed;
 
-        let (on_stairs_contact, stairs_normal) = stairs_contact(shape_hits, &stairs_q, &child_of_q);
-        if on_stairs_contact {
-            let n = stairs_normal.unwrap_or(Vec3::Y);
-            let desired = Vec3::new(target_x, 0.0, target_z);
-            let tangent = desired - n * desired.dot(n);
-            target_x = tangent.x;
-            target_z = tangent.z;
+        let raw_grounded = has_ground_contact(shape_hits);
+        if raw_grounded {
+            ground_state.last_grounded_time = now;
         }
+        // Coyote time: treat the player as grounded for COYOTE_TIME_SECS after
+        // the last real ground contact. This absorbs single-frame contact gaps
+        // (physics jitter / dynamic-body bounce) so projection and bounce-damping
+        // stay active across the gap instead of turning off for one frame.
+        let grounded = raw_grounded || (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
+
+        let ground_normal = get_ground_normal(shape_hits);
+
+        // Project desired movement onto the ground surface normal.
+        // On slopes and uneven terrain this prevents velocity from fighting
+        // the contact constraint, which is the main cause of "sticking" on bumps.
+        let desired = Vec3::new(world_x * speed, 0.0, world_z * speed);
+        let projected = if grounded && ground_normal.y < 0.9999 {
+            desired - ground_normal * desired.dot(ground_normal)
+        } else {
+            desired
+        };
 
         if movement_smoothing <= 0.0 {
-            vel.x = target_x;
-            vel.z = target_z;
+            vel.x = projected.x;
+            vel.z = projected.z;
         } else {
-            // Exponenciální smoothing: vyšší rate = rychlejší dorovnání.
             let alpha = (1.0 - (-movement_smoothing * time.delta_secs()).exp()).clamp(0.0, 1.0);
-            vel.x = vel.x + (target_x - vel.x) * alpha;
-            vel.z = vel.z + (target_z - vel.z) * alpha;
-        }
-
-        let has_ground_contact = has_ground_contact(shape_hits);
-
-        if on_stairs_contact && has_ground_contact {
-            let n = stairs_normal.unwrap_or(Vec3::Y);
-            let desired = Vec3::new(target_x, 0.0, target_z);
-            let tangent = desired - n * desired.dot(n);
-            let climb_y = tangent.y.max(0.0);
-            vel.y = vel.y.max(climb_y * 1.05);
-            vel.y = vel.y.max(-0.20);
+            vel.x = vel.x + (projected.x - vel.x) * alpha;
+            vel.z = vel.z + (projected.z - vel.z) * alpha;
         }
 
         let can_jump = if double_jump_enabled {
-            // Legacy fallback: když je double-jump zapnutý, ponecháme i velocity gate.
-            has_ground_contact || vel.y.abs() < grounded_thresh
+            grounded || vel.y.abs() < grounded_thresh
         } else {
-            // Požadavek: bez double-jump musí být fyzický kontakt pod hráčem.
-            has_ground_contact
+            grounded
         };
 
         if jump && can_jump {
@@ -394,55 +428,112 @@ fn apply_player_movement(
     }
 }
 
-fn stairs_contact(
-    shape_hits: Option<&ShapeHits>,
-    stairs_q: &Query<(), With<StairsCollider>>,
-    child_of_q: &Query<&bevy::ecs::hierarchy::ChildOf>,
-) -> (bool, Option<Vec3>) {
-    let Some(hits) = shape_hits else {
-        return (false, None);
-    };
-
-    let mut best_normal: Option<Vec3> = None;
-    for hit in hits.iter() {
-        let mut current = hit.entity;
-        let mut on_stairs = false;
-        loop {
-            if stairs_q.get(current).is_ok() {
-                on_stairs = true;
-                break;
-            }
-            match child_of_q.get(current) {
-                Ok(co) => current = co.parent(),
-                Err(_) => break,
-            }
-        }
-        if !on_stairs {
-            continue;
-        }
-
-        let n = (-hit.normal2).normalize_or_zero();
-        if n.length_squared() > 0.0001 {
-            best_normal = Some(n);
-            if n.y > 0.35 {
-                break;
-            }
-        }
-    }
-
-    (best_normal.is_some(), best_normal)
-}
-
 fn has_ground_contact(shape_hits: Option<&ShapeHits>) -> bool {
     shape_hits
         .map(|hits| {
             hits.iter().any(|hit| {
-                // normal2 míří od druhého collideru směrem k casteru.
-                // Pro "zem pod hráčem" chceme výrazně upward normálu.
-                (-hit.normal2).dot(Vec3::Y) > 0.35
+                (-hit.normal2).dot(Vec3::Y) > GROUND_NORMAL_Y_MIN
             })
         })
         .unwrap_or(false)
+}
+
+/// Returns the best upward-facing ground normal from ShapeHits.
+/// Picks the hit whose normal has the highest Y component (most "floor-like").
+fn get_ground_normal(shape_hits: Option<&ShapeHits>) -> Vec3 {
+    let Some(hits) = shape_hits else { return Vec3::Y };
+    hits.iter()
+        .map(|hit| -hit.normal2)
+        .filter(|n| n.y > GROUND_NORMAL_Y_MIN)
+        .max_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|n| n.normalize_or(Vec3::Y))
+        .unwrap_or(Vec3::Y)
+}
+
+/// Runs in FixedPostUpdate — AFTER Avian's physics step for that fixed tick.
+/// Damps the upward velocity that Avian's contact-response solver added,
+/// Damps contact-response vel.y spikes after Avian's Writeback.
+/// Uses "recently grounded" (coyote window) because the spike itself causes
+/// ShapeHits=0 in the same tick — plain "grounded" check would always miss it.
+/// Real jump impulse (jump_impulse) is above the 0.90 threshold and passes through.
+fn post_physics_vel_y_damp(
+    mut ground_state: ResMut<MovementGroundState>,
+    time: Res<Time>,
+    local_client_id: Option<Res<LocalClientId>>,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
+    mut players: Query<(&PlayerMarker, &mut LinearVelocity, Option<&ShapeHits>), With<Predicted>>,
+) {
+    let Some(lid) = local_client_id else { return };
+    let now = time.elapsed_secs();
+
+    let jump_impulse = resolve_default_ped_profile(&ped_reg, &ped_assets)
+        .map(|p| p.jump.impulse)
+        .unwrap_or(PLAYER_JUMP_VEL);
+
+    for (marker, mut vel, shape_hits) in players.iter_mut() {
+        if marker.client_id != lid.0 { continue; }
+
+        let raw_grounded = has_ground_contact(shape_hits);
+        if raw_grounded {
+            ground_state.last_grounded_time = now;
+        }
+        let recently_grounded = (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
+
+        // Threshold: below 90% of jump impulse — contact-response spikes never reach jump level.
+        let spike_threshold = jump_impulse * 0.90;
+        if recently_grounded && vel.y > 0.15 && vel.y < spike_threshold {
+            // Hard-zero the spike: contact response vel_y has no place on the ground.
+            vel.y = 0.0;
+        } else if recently_grounded && vel.y > 0.0 && vel.y <= 0.15 {
+            // Small residual: gentle damp (uphill projection artefacts).
+            vel.y *= 0.1;
+        }
+    }
+}
+
+fn log_terrain_diag(
+    mut diag: ResMut<TerrainDiag>,
+    local_client_id: Option<Res<LocalClientId>>,
+    players: Query<(&PlayerMarker, &LinearVelocity, Option<&ShapeHits>), With<Predicted>>,
+) {
+    let Some(lid) = local_client_id else { return };
+    let Some((_, vel, shape_hits)) = players.iter().find(|(m, _, _)| m.client_id == lid.0) else { return };
+
+    diag.frame = diag.frame.wrapping_add(1);
+
+    let grounded = has_ground_contact(shape_hits);
+    let normal = get_ground_normal(shape_hits);
+    let hit_count = shape_hits.map(|h| h.iter().count()).unwrap_or(0);
+    let slope_deg = normal.y.clamp(-1.0, 1.0).acos().to_degrees();
+
+    // Log při změně grounded stavu
+    if grounded != diag.was_grounded {
+        info!(
+            "[terrain_diag] grounded={grounded} vel_y={:.3} normal=({:.3},{:.3},{:.3}) slope={slope_deg:.1}° hits={hit_count}",
+            vel.y, normal.x, normal.y, normal.z
+        );
+    }
+
+    // Log při výrazné změně normály (detekce přechodu na jiný povrch / hranu)
+    let normal_shift = (normal.y - diag.last_normal_y).abs();
+    if grounded && normal_shift > 0.05 {
+        info!(
+            "[terrain_diag] normal_shift={normal_shift:.3} normal=({:.3},{:.3},{:.3}) slope={slope_deg:.1}° vel=({:.2},{:.2},{:.2}) hits={hit_count}",
+            normal.x, normal.y, normal.z, vel.x, vel.y, vel.z
+        );
+    }
+
+    // Heartbeat každých 90 framů
+    if diag.frame % 90 == 0 {
+        info!(
+            "[terrain_diag] TICK frame={} grounded={grounded} vel=({:.2},{:.2},{:.2}) normal=({:.3},{:.3},{:.3}) slope={slope_deg:.1}° hits={hit_count}",
+            diag.frame, vel.x, vel.y, vel.z, normal.x, normal.y, normal.z
+        );
+    }
+
+    diag.was_grounded = grounded;
+    diag.last_normal_y = normal.y;
 }
 
 fn resolve_default_ped_profile<'a>(
@@ -608,9 +699,11 @@ fn attach_player_model_to_new_players(
             continue;
         }
 
-        let model_name = resolve_default_ped_profile(&ped_reg, &ped_assets)
-            .map(|p| p.identity.model.as_str())
-            .unwrap_or("player");
+        let ped = resolve_default_ped_profile(&ped_reg, &ped_assets);
+        let model_name = ped.map(|p| p.identity.model.as_str()).unwrap_or("player");
+        let cap_radius = ped.map(|p| p.capsule.radius).unwrap_or(0.35_f32);
+        let cap_height = ped.map(|p| p.capsule.height).unwrap_or(1.80_f32);
+        let cap_body = (cap_height - cap_radius * 2.0).max(0.001);
         let attached_anim_sets = ped_anim_index
             .0
             .get(model_name)
@@ -629,31 +722,41 @@ fn attach_player_model_to_new_players(
                 ViewVisibility::default(),
                 PlayerVisualAttached,
                 AutoPlayerAnimMemory::default(),
-                // FiveM-style: RigidBody přímo na root entitě hráče.
-                // COL_player z player.drawable bude compound collider tohoto těla.
                 RigidBody::Dynamic,
                 LockedAxes::new()
                     .lock_rotation_x()
                     .lock_rotation_y()
                     .lock_rotation_z(),
-                // Nulové tření s Multiply combine rule zabraňuje "wall-stick"
-                // při kontaktu se stěnou během skoku.
-                Friction::ZERO.with_combine_rule(CoefficientCombine::Multiply),
-                // Ground-check pro jump gating (double_jump=false vyžaduje kontakt se zemí).
+                // Ground-check: sphere origin above feet so it starts ABOVE terrain
+                // (sphere bottom at y=+0.04 when entity at y=0 = terrain level).
+                // Avoids underground overlap that causes edge-normal artefacts.
+                // Queries LayerMask::DEFAULT only — ignores player-body layer (0b10).
                 ShapeCaster::new(
                     Collider::sphere(GROUND_CASTER_RADIUS),
-                    Vec3::ZERO,
+                    Vec3::new(0.0, GROUND_CASTER_RADIUS + 0.04, 0.0),
                     Quat::IDENTITY,
                     Dir3::NEG_Y,
                 )
-                .with_max_distance(GROUND_CASTER_MAX_DISTANCE)
-                .with_max_hits(4),
+                .with_max_distance(0.30)
+                .with_max_hits(4)
+                .with_query_filter(SpatialQueryFilter::from_mask(LayerMask::DEFAULT)),
             ))
             .with_children(|p| {
+                // Capsule collider as child entity, offset upward so bottom = feet (y=0).
+                // On LayerMask(0b10) = player-body layer so ShapeCaster doesn't self-detect it.
+                p.spawn((
+                    Collider::capsule(cap_radius, cap_body),
+                    CollisionLayers::new(LayerMask(0b10), LayerMask::ALL),
+                    Friction::new(0.1).with_combine_rule(CoefficientCombine::Min),
+                    Restitution::ZERO,
+                    Transform::from_xyz(0.0, cap_height / 2.0, 0.0),
+                    GlobalTransform::default(),
+                ));
                 let mut child = p.spawn((
                     AdmSceneRoot(model_handle.clone()),
-                    // Bez DisableDrawableCollisions — COL_player z manifestu
-                    // se stane compound coliderem parent RigidBody.
+                    // Suppress COL_* mesh colliders from the model — the root entity
+                    // already has an explicit capsule from the ped profile.
+                    DisableDrawableCollisions,
                     ModelName(model_name.to_string()),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                     GlobalTransform::default(),
