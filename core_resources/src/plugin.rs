@@ -7,7 +7,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::cmd_queue::{
-    process_lua_commands, sync_entity_state_cache, CommandQueue, EntityStateCache,
+    assign_npc_owners, process_lua_commands, sync_entity_state_cache, CommandQueue, EntityStateCache,
     tick_npc_agents,
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
@@ -104,6 +104,7 @@ impl Plugin for ResourcesPlugin {
         app.add_message::<PendingDamageEvent>();
         app.add_systems(PostUpdate, process_lua_commands);
         app.add_systems(FixedUpdate, tick_npc_agents);
+        app.add_systems(Update, assign_npc_owners);
 
         // Phase 3.4 - Model Registry
         app.init_resource::<ModelRegistry>();

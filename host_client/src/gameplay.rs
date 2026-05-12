@@ -106,6 +106,13 @@ struct NpcCapsuleAttached;
 #[derive(Component)]
 struct NpcVisualAttached;
 
+#[derive(Component, Default)]
+struct NpcMotionTracker {
+    prev_pos: Vec3,
+    /// 0 = idle, 1 = walk, 2 = run
+    current_state: u8,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocomotionState {
     Idle,
@@ -271,6 +278,12 @@ impl Plugin for ClientGameplayPlugin {
             app.add_systems(
                 Update,
                 sync_npc_net_transform.run_if(in_state(AppState::InGame)),
+            );
+            app.add_systems(
+                Update,
+                drive_npc_animations
+                    .after(sync_npc_net_transform)
+                    .run_if(in_state(AppState::InGame)),
             );
         // IK foot placement: PostUpdate před propagací, aby animace (Update) kosti nastavila
         // a IK je přepsal dřív než se počítají GlobalTransforms pro render → žádný frame-lag.
@@ -1081,6 +1094,7 @@ fn attach_model_to_new_npcs(
 
         commands.entity(entity).insert((
             NpcVisualAttached,
+            NpcMotionTracker { prev_pos: spawn_transform.translation, current_state: 0 },
             spawn_transform,
             GlobalTransform::default(),
             Visibility::Visible,
@@ -1141,6 +1155,65 @@ fn sync_npc_net_transform(
     for (mut transform, net_tf) in &mut q {
         transform.translation = net_tf.translation;
         transform.rotation = net_tf.rotation;
+    }
+}
+
+fn drive_npc_animations(
+    time: Res<Time>,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
+    mut npcs: Query<(
+        &Transform,
+        &ModelName,
+        Option<&core_resources::PedProfileOverride>,
+        &mut NpcMotionTracker,
+        &Children,
+    ), With<NpcPedMarker>>,
+    mut adm_roots: Query<&mut AnimationState, With<AdmSceneRoot>>,
+) {
+    let dt = time.delta_secs().max(0.001);
+
+    for (tf, model_name, ped_override, mut tracker, children) in &mut npcs {
+        let speed = tf.translation.distance(tracker.prev_pos) / dt;
+        tracker.prev_pos = tf.translation;
+
+        let ped = if let Some(ov) = ped_override {
+            ped_reg.0.get(&ov.0).and_then(|h| ped_assets.get(h))
+                .or_else(|| resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets))
+        } else {
+            resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets)
+        };
+
+        let idle_threshold = ped.map(|p| p.movement.idle_threshold).unwrap_or(0.10);
+        let run_threshold = ped.map(|p| p.movement.run_speed * 0.6).unwrap_or(3.0);
+
+        let new_state = if speed <= idle_threshold {
+            0u8 // idle
+        } else if speed < run_threshold {
+            1u8 // walk
+        } else {
+            2u8 // run
+        };
+
+        if new_state == tracker.current_state {
+            continue;
+        }
+        tracker.current_state = new_state;
+
+        let clip = ped
+            .map(|p| match new_state {
+                1 => p.animations.walk.clone(),
+                2 => p.animations.run.clone(),
+                _ => p.animations.idle.clone(),
+            })
+            .unwrap_or_else(|| "clip:0".to_string());
+
+        for child in children.iter() {
+            if let Ok(mut anim) = adm_roots.get_mut(child) {
+                anim.current = Some(clip.clone());
+                anim.blend_time = 0.15;
+            }
+        }
     }
 }
 

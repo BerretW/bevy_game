@@ -631,6 +631,69 @@ impl NpcAgent {
     }
 }
 
+/// Vlastník NPC — client_id hráče, který simuluje toto NPC.
+/// `None` = žádný hráč v okolí, NPC je zmrazeno.
+/// Replikováno klientům přes lightyear.
+#[derive(Component, Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NpcOwner(pub Option<u64>);
+
+const NPC_OWNERSHIP_RADIUS: f32 = 200.0;
+const NPC_OWNERSHIP_ASSIGN_INTERVAL: f32 = 2.0;
+
+/// Přiřazuje vlastnictví NPC nejbližšímu hráči v `NPC_OWNERSHIP_RADIUS`.
+/// Spouštěno periodicky (každé 2 s) pouze na serveru; na klientovi query
+/// vrátí 0 výsledků, protože NpcAgent není replikovaný.
+///
+/// Logika:
+/// - NPC s platným ownerem (hráč existuje a je v dosahu) → beze změny.
+/// - NPC bez ownera nebo s ownerem co vypadl (odpojil se / opustil dosah)
+///   → hledáme nejbližšího hráče; pokud nikdo není, NPC zůstane/bude zmrazeno.
+pub fn assign_npc_owners(
+    time: Res<Time>,
+    mut timer: Local<f32>,
+    mut npcs: Query<(&Transform, &mut NpcOwner), With<NpcAgent>>,
+    players: Query<(&Transform, &PlayerMarker)>,
+) {
+    *timer += time.delta_secs();
+    if *timer < NPC_OWNERSHIP_ASSIGN_INTERVAL {
+        return;
+    }
+    *timer = 0.0;
+
+    for (npc_tf, mut owner) in &mut npcs {
+        // Ověř, zda stávající owner stále existuje a je v dosahu.
+        let owner_still_valid = owner.0.map(|id| {
+            players.iter().any(|(ptf, pm)| {
+                pm.client_id == id
+                    && ptf.translation.distance(npc_tf.translation) <= NPC_OWNERSHIP_RADIUS
+            })
+        }).unwrap_or(false);
+
+        if owner_still_valid {
+            continue; // Owner platný → nic neměníme.
+        }
+
+        // Owner chybí nebo vypadl — najdeme nejbližšího hráče.
+        let nearest = players
+            .iter()
+            .filter_map(|(ptf, pm)| {
+                let dist = ptf.translation.distance(npc_tf.translation);
+                if dist <= NPC_OWNERSHIP_RADIUS { Some((dist, pm.client_id)) } else { None }
+            })
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let new_owner = nearest.map(|(_, id)| id);
+        if owner.0 != new_owner {
+            if let Some(id) = new_owner {
+                debug!("[npc_owner] NPC at {:?} → client {}", npc_tf.translation, id);
+            } else {
+                debug!("[npc_owner] NPC at {:?} → frozen (no player nearby)", npc_tf.translation);
+            }
+            owner.0 = new_owner;
+        }
+    }
+}
+
 /// Message emitovaná při zpracování `World.ApplyDamage`.
 /// Phase 3.3 combat systémy ji čtou přes `MessageReader<PendingDamageEvent>`.
 #[derive(Message, Debug, Clone)]
@@ -1554,7 +1617,7 @@ pub fn process_lua_commands(
 pub fn tick_npc_agents(
     time: Res<Time<Fixed>>,
     world_state: Res<LuaWorldState>,
-    mut npcs: Query<(&EntityHandle, &mut Transform, Option<&mut NetTransform>, &mut NpcAgent)>,
+    mut npcs: Query<(&EntityHandle, &mut Transform, Option<&mut NetTransform>, &mut NpcAgent, Option<&NpcOwner>)>,
     globals: Query<&GlobalTransform>,
 ) {
     let dt = time.delta_secs();
@@ -1562,7 +1625,13 @@ pub fn tick_npc_agents(
         return;
     }
 
-    for (_handle, mut transform, net_tf_opt, mut agent) in &mut npcs {
+    for (_handle, mut transform, net_tf_opt, mut agent, owner) in &mut npcs {
+        // Frozen: žádný hráč v okolí, nesimulujeme pohyb.
+        if let Some(o) = owner {
+            if o.0.is_none() {
+                continue;
+            }
+        }
         let mut stop_distance = agent.arrive_distance.max(0.01);
         let mut complete_goal = false;
 
