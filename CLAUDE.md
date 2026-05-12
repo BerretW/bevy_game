@@ -75,7 +75,7 @@ files { 'assets/ui_icons.png' }
 | **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`: idle/walk/run/sprint/jump/fall/land) |
 | **Phase 3.2** — Lua Bridge | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate) |
 | **Phase 3.3** — Combat | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped` |
-| **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`) |
+| **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`), ADM v5 animation dictionary metadata cache (`Engine.GetAnimDictNames/GetAnimDictClips`) |
 | **Phase 3.5** — World Objects | `SpawnNetworkedObject`, `NetworkedObjectMarker`, lightyear replication observer |
 | **Phase 3.7** — Raycast API | `RaycastBridge`, `Raycast.GetGroundPosition()`, yaw v `PlayerInput.look[0]` |
 | **Phase 3.8** — Event Bus | `LocalEventBus`, `TriggerEvent`, JSON payloads, `input:state` bridge, `sq:ready` init pattern, Lua-safe string player IDs |
@@ -89,6 +89,7 @@ files { 'assets/ui_icons.png' }
 **Phase 4 zbývá:**
 - [X] ADM runtime crossfade: `apply_adm_animations` respektuje `AnimationState.blend_time` a plynule blenduje předchozí/aktuální klip (`lerp` pozice/scale, `slerp` rotace)
 - [X] ADM v4 animation notifies: loader/export/import podporuje `notify_count`, runtime emituje `onAnimNotify { handle, clip_name, notify_name }` přes `LocalEventBus`
+- [X] ADM v5 animation dictionaries: export/import/loader podporují sekci dictionary (`dict_name -> clip indices`), runtime podporuje selector `dict:<dict_name>:<clip_name>` a Lua API `Engine.RequestAnimDict/HasAnimDictLoaded/GetAnimDictNames/GetAnimDictClips`
 - [ ] Blend Spaces infrastruktura: `BlendSpaceState` komponenta, `PlayBlendSpace` command, Lua API, ale runtime evaluace vah zatím není (TODO pro Phase 4.x)
 - [ ] Integrovat `sqlx` (stub `Database.*` API přítomen)
 - [ ] Vlastní WGSL shadery z Lua resources
@@ -361,7 +362,7 @@ Hitbox.Register('player_default', {
   material.rs                    DrawableMaterial, shader extensions (standard_pbr/layered_env/vehicle_glass)
   hook.rs                        DrawableSpawnIntent, DrawableCollision, hook systémy, LOD systém
 /model_viewer/src/
-  main.rs                        ADS model viewer (CLI args), grid gizmos
+  main.rs                        ADS model viewer (CLI args), grid gizmos, ADM dict browser + clip overlay
   camera.rs                      OrbitCamera (orbit/pan/zoom)
 /host_client/src/
   main.rs                        DefaultPlugins + client plugins
@@ -402,7 +403,7 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `World.SpawnNetworkedObject(model, pos, rot)` | server | Replikovaná entita → handle |
 | `World.DeleteObject(handle)` | both | Despawn |
 | `World.SetTransform/SetPosition/SetRotation/SetScale/SetModel` | both | Transformace |
-| `World.PlayAnimation(h, name, blend?)` nebo `World.PlayAnimation(h, name, loop?, speed?, blend?)` / `StopAnimation` | both | Animace (`name` podporuje `clip:N`/`anim:N`/`N`; GLTF = clip index, ADM = clip index nebo clip name) |
+| `World.PlayAnimation(h, name, blend?)` nebo `World.PlayAnimation(h, name, loop?, speed?, blend?)` / `StopAnimation` | both | Animace (`name` podporuje `clip:N`/`anim:N`/`N`; GLTF = clip index, ADM = clip index nebo clip name; ADM v5 navíc `dict:<dict_name>:<clip_name>`) |
 | `World.Attach(child, child_socket, parent, parent_socket)` / `World.Detach(child)` | both | Socket-to-socket attachment |
 | `World.GetSocketTransform(handle, socket)` | both | World-space socket transform |
 | `World.IsValid/IsAlive/GetHealth/GetModel` | both | State dotazy |
@@ -410,6 +411,8 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 | `World.ApplyDamage(target, amount, source?)` | server | Damage intent |
 | `Engine.RequestModel/HasModelLoaded/SetModelAsNoLongerNeeded` | both | Model ref-counting |
 | `Engine.GetModelClipCount/GetModelClipNames` | both | Počet a názvy animačních clipů modelu |
+| `Engine.RequestAnimDict(model, dict)` / `Engine.HasAnimDictLoaded(model)` | both | Request/load kontrola dictionary (reuse model load pipeline) |
+| `Engine.GetAnimDictNames(model)` / `Engine.GetAnimDictClips(model, dict)` | both | Dostupné dictionary a clipy pro konkrétní model |
 | `Raycast.GetGroundPosition()` | client | World-pos kurzoru (Y=0 rovina) |
 | `Gui.DrawRect/Text/Line/Circle/Disc/RoundedRect/Border/Shadow/Sprite` | client | Immediate-mode GUI (0–1 souřadnice) |
 | `Gui.GetCursorPos/IsMouseOver/IsMouseDown/IsMouseClicked` | client | GUI input |

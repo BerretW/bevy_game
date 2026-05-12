@@ -1637,6 +1637,50 @@ fn install_runtime_api_inner(
         Ok(out)
     })?)?;
 
+    // Engine.RequestAnimDict(model_name, dict_name) — požádej o load animation dictionary
+    // Na klientovi: asynchronně requestuje preload modelu (pokud ne cached).
+    // Na serveru: fallback na okamžitý `true`.
+    let mc = model_cmds.clone();
+    let ma = model_anims.clone();
+    engine.set("RequestAnimDict", lua.create_function(move |_, (model_name, dict_name): (String, String)| {
+        // Ověř, že dictionary existuje v modelu
+        let clips = ma.get_dictionary_clips(&model_name, &dict_name);
+        if clips.is_empty() {
+            warn!("[Engine.RequestAnimDict] dictionary '{}:{}' not found", model_name, dict_name);
+        }
+        // Request model load pokud není cached
+        mc.push(ModelCommand::Request(model_name));
+        Ok(())
+    })?)?;
+
+    // Engine.HasAnimDictLoaded(model_name) — vrátí true, pokud je model (a tedy dict) dostupný
+    let mr = model_registry.clone();
+    engine.set("HasAnimDictLoaded", lua.create_function(move |_, model_name: String| -> mlua::Result<bool> {
+        Ok(mr.has_loaded(&model_name))
+    })?)?;
+
+    // Engine.GetAnimDictClips(model_name, dict_name) → tabulka clipů | prázdná tabulka
+    let ma = model_anims.clone();
+    engine.set("GetAnimDictClips", lua.create_function(move |lua, (model_name, dict_name): (String, String)| -> mlua::Result<mlua::Table> {
+        let clips = ma.get_dictionary_clips(&model_name, &dict_name);
+        let out = lua.create_table()?;
+        for (idx, clip_name) in clips.iter().enumerate() {
+            out.set(idx + 1, clip_name.clone())?;
+        }
+        Ok(out)
+    })?)?;
+
+    // Engine.GetAnimDictNames(model_name) → tabulka dictionary názvů
+    let ma = model_anims.clone();
+    engine.set("GetAnimDictNames", lua.create_function(move |lua, model_name: String| -> mlua::Result<mlua::Table> {
+        let dicts = ma.get_dictionary_names(&model_name);
+        let out = lua.create_table()?;
+        for (idx, dict_name) in dicts.iter().enumerate() {
+            out.set(idx + 1, dict_name.clone())?;
+        }
+        Ok(out)
+    })?)?;
+
     let mc = model_cmds.clone();
     engine.set("SetModelAsNoLongerNeeded", lua.create_function(move |_, name: String| {
         mc.push(ModelCommand::Release(name));

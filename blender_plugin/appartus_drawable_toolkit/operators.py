@@ -240,6 +240,44 @@ def _push_action_to_nla(armature_obj, action, strip_name=None):
     return strip
 
 
+def _sanitize_anim_dict_name(name):
+    raw = (name or "").strip()
+    if not raw:
+        return "default"
+    return bpy.path.clean_name(raw)
+
+
+def _get_or_create_anim_dict(settings, dict_name):
+    dict_name = _sanitize_anim_dict_name(dict_name)
+    for item in settings.animation_dictionaries:
+        if item.name == dict_name:
+            return item
+    item = settings.animation_dictionaries.add()
+    item.name = dict_name
+    settings.active_anim_dict_index = max(0, len(settings.animation_dictionaries) - 1)
+    return item
+
+
+def _dict_has_clip(dict_item, clip_name):
+    for clip in dict_item.clips:
+        if clip.clip_name == clip_name:
+            return True
+    return False
+
+
+def _add_clip_to_dict(settings, dict_name, clip_name):
+    clip_name = (clip_name or "").strip()
+    if not clip_name:
+        return False
+    dict_item = _get_or_create_anim_dict(settings, dict_name)
+    if _dict_has_clip(dict_item, clip_name):
+        return False
+    clip = dict_item.clips.add()
+    clip.clip_name = clip_name
+    dict_item.active_clip_index = max(0, len(dict_item.clips) - 1)
+    return True
+
+
 class BEVY_OT_InitProject(bpy.types.Operator):
     bl_idname     = "bevy.init_project"
     bl_label      = "Initialize Masks"
@@ -1012,6 +1050,130 @@ class BEVY_OT_ImportDrawable(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class BEVY_OT_AnimDictAdd(bpy.types.Operator):
+    bl_idname = "ads.anim_dict_add"
+    bl_label = "Add Animation Dictionary"
+    bl_description = "Create a new animation dictionary on current scene"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        dict_name = _sanitize_anim_dict_name(settings.new_anim_dict_name)
+        _get_or_create_anim_dict(settings, dict_name)
+        self.report({'INFO'}, f"Animation dictionary '{dict_name}' ready")
+        return {'FINISHED'}
+
+
+class BEVY_OT_AnimDictRemove(bpy.types.Operator):
+    bl_idname = "ads.anim_dict_remove"
+    bl_label = "Remove Animation Dictionary"
+    bl_description = "Remove active animation dictionary"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.animation_dictionaries:
+            self.report({'WARNING'}, "No animation dictionary to remove")
+            return {'CANCELLED'}
+        idx = min(max(0, settings.active_anim_dict_index), len(settings.animation_dictionaries) - 1)
+        name = settings.animation_dictionaries[idx].name
+        settings.animation_dictionaries.remove(idx)
+        settings.active_anim_dict_index = max(0, min(idx, len(settings.animation_dictionaries) - 1))
+        self.report({'INFO'}, f"Removed animation dictionary '{name}'")
+        return {'FINISHED'}
+
+
+class BEVY_OT_AnimDictPrev(bpy.types.Operator):
+    bl_idname = "ads.anim_dict_prev"
+    bl_label = "Previous Animation Dictionary"
+    bl_description = "Select previous animation dictionary"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.animation_dictionaries:
+            self.report({'WARNING'}, "No animation dictionary")
+            return {'CANCELLED'}
+        settings.active_anim_dict_index = max(0, min(settings.active_anim_dict_index - 1, len(settings.animation_dictionaries) - 1))
+        return {'FINISHED'}
+
+
+class BEVY_OT_AnimDictNext(bpy.types.Operator):
+    bl_idname = "ads.anim_dict_next"
+    bl_label = "Next Animation Dictionary"
+    bl_description = "Select next animation dictionary"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.animation_dictionaries:
+            self.report({'WARNING'}, "No animation dictionary")
+            return {'CANCELLED'}
+        settings.active_anim_dict_index = max(0, min(settings.active_anim_dict_index + 1, len(settings.animation_dictionaries) - 1))
+        return {'FINISHED'}
+
+
+class BEVY_OT_AnimDictAddClip(bpy.types.Operator):
+    bl_idname = "ads.anim_dict_add_clip"
+    bl_label = "Add Clip To Dictionary"
+    bl_description = "Add clip name into active animation dictionary"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.animation_dictionaries:
+            self.report({'WARNING'}, "Create animation dictionary first")
+            return {'CANCELLED'}
+        idx = min(max(0, settings.active_anim_dict_index), len(settings.animation_dictionaries) - 1)
+        dict_name = settings.animation_dictionaries[idx].name
+        clip_name = settings.anim_dict_clip_name.strip()
+        if not clip_name:
+            active_action = getattr(getattr(context.object, 'animation_data', None), 'action', None) if context.object else None
+            if active_action is not None:
+                clip_name = active_action.name
+        if not clip_name:
+            self.report({'WARNING'}, "Set clip name first")
+            return {'CANCELLED'}
+        added = _add_clip_to_dict(settings, dict_name, clip_name)
+        if not added:
+            self.report({'INFO'}, f"Clip '{clip_name}' already exists in '{dict_name}'")
+            return {'FINISHED'}
+        self.report({'INFO'}, f"Added clip '{clip_name}' to '{dict_name}'")
+        return {'FINISHED'}
+
+
+class BEVY_OT_AnimDictRemoveClip(bpy.types.Operator):
+    bl_idname = "ads.anim_dict_remove_clip"
+    bl_label = "Remove Clip From Dictionary"
+    bl_description = "Remove clip from active animation dictionary"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not settings.animation_dictionaries:
+            self.report({'WARNING'}, "No animation dictionary")
+            return {'CANCELLED'}
+        idx = min(max(0, settings.active_anim_dict_index), len(settings.animation_dictionaries) - 1)
+        dict_item = settings.animation_dictionaries[idx]
+        if not dict_item.clips:
+            self.report({'WARNING'}, "No clips in active dictionary")
+            return {'CANCELLED'}
+
+        clip_name = settings.anim_dict_clip_name.strip()
+        remove_index = -1
+        if clip_name:
+            for i, clip in enumerate(dict_item.clips):
+                if clip.clip_name == clip_name:
+                    remove_index = i
+                    break
+        else:
+            remove_index = min(max(0, dict_item.active_clip_index), len(dict_item.clips) - 1)
+
+        if remove_index < 0:
+            self.report({'WARNING'}, "Clip not found in active dictionary")
+            return {'CANCELLED'}
+
+        removed_name = dict_item.clips[remove_index].clip_name
+        dict_item.clips.remove(remove_index)
+        dict_item.active_clip_index = max(0, min(remove_index, len(dict_item.clips) - 1))
+        self.report({'INFO'}, f"Removed clip '{removed_name}'")
+        return {'FINISHED'}
+
+
 class BEVY_OT_RenameMixamoRig(bpy.types.Operator):
     bl_idname = "ads.rename_mixamo_rig"
     bl_label = "Auto Rename Mixamo Rig"
@@ -1055,12 +1217,14 @@ class BEVY_OT_ImportMixamoAnimations(bpy.types.Operator):
     auto_rename: bpy.props.BoolProperty(name="Auto Rename Rig", default=True)
     merge_to_target: bpy.props.BoolProperty(name="Merge To Target Armature", default=True)
     cleanup_imported: bpy.props.BoolProperty(name="Delete Imported Animation Rig", default=True)
+    assign_to_active_dict: bpy.props.BoolProperty(name="Assign To Active Anim Dict", default=True)
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
         paths = []
         if self.files:
             for file_item in self.files:
@@ -1125,6 +1289,10 @@ class BEVY_OT_ImportMixamoAnimations(bpy.types.Operator):
 
             if self.merge_to_target and target_armature is not None:
                 _push_action_to_nla(target_armature, source_action, clip_name)
+                if self.assign_to_active_dict and settings.animation_dictionaries:
+                    dict_idx = min(max(0, settings.active_anim_dict_index), len(settings.animation_dictionaries) - 1)
+                    dict_name = settings.animation_dictionaries[dict_idx].name
+                    _add_clip_to_dict(settings, dict_name, clip_name)
                 imported_actions += 1
 
                 if self.cleanup_imported:

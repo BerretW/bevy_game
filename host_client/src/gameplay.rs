@@ -1392,6 +1392,18 @@ fn update_model_animation_registry(
             if let Some(scene) = adm_assets.get(&handle) {
                 let clip_names = scene.animations.iter().map(|c| c.name.clone()).collect();
                 anim_registry.set_clip_names(&model_name, clip_names);
+
+                // Nastaví animation dictionaries
+                let dicts: Vec<_> = scene.animation_dictionaries.iter().map(|dict| {
+                    let clip_names = dict.clip_indices.iter()
+                        .filter_map(|&idx| scene.animations.get(idx).map(|c| c.name.clone()))
+                        .collect();
+                    core_resources::ModelAnimationDictionary {
+                        name: dict.name.clone(),
+                        clip_names,
+                    }
+                }).collect();
+                anim_registry.set_animation_dictionaries(&model_name, dicts);
             }
             continue;
         }

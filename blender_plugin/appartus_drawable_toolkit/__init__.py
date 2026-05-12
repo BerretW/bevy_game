@@ -10,7 +10,13 @@ bl_info = {
 
 import bpy
 
-from .properties import BevyObjectProps, BevyMaterialProps, BevyExportProps
+from .properties import (
+    BevyAnimDictClipRef,
+    BevyAnimDictionary,
+    BevyExportProps,
+    BevyMaterialProps,
+    BevyObjectProps,
+)
 from .operators import (
     BEVY_OT_InitProject,
     BEVY_OT_InitMasks2,
@@ -32,6 +38,12 @@ from .operators import (
     BEVY_OT_SetAllMaterialsUnembedded,
     BEVY_OT_Export,
     BEVY_OT_ImportDrawable,
+    BEVY_OT_AnimDictAdd,
+    BEVY_OT_AnimDictRemove,
+    BEVY_OT_AnimDictPrev,
+    BEVY_OT_AnimDictNext,
+    BEVY_OT_AnimDictAddClip,
+    BEVY_OT_AnimDictRemoveClip,
     BEVY_OT_RenameMixamoRig,
     BEVY_OT_ImportMixamoAnimations,
     BEVY_OT_ExportMapManifest,
@@ -40,11 +52,13 @@ from .operators import (
     BEVY_OT_FindMissingTextures,
     BEVY_OT_BrowseTexture,
 )
-from .panels import BEVY_PT_MaterialPanel, BEVY_PT_ObjectPanel, BEVY_PT_Panel
+from .panels import BEVY_PT_MaterialPanel, BEVY_PT_ObjectPanel, BEVY_PT_Panel, BEVY_UL_AnimationDictionaries
 
 classes = (
     BevyObjectProps,
     BevyMaterialProps,
+    BevyAnimDictClipRef,
+    BevyAnimDictionary,
     BevyExportProps,
     BEVY_OT_InitProject,
     BEVY_OT_InitMasks2,
@@ -66,6 +80,12 @@ classes = (
     BEVY_OT_SetAllMaterialsUnembedded,
     BEVY_OT_Export,
     BEVY_OT_ImportDrawable,
+    BEVY_OT_AnimDictAdd,
+    BEVY_OT_AnimDictRemove,
+    BEVY_OT_AnimDictPrev,
+    BEVY_OT_AnimDictNext,
+    BEVY_OT_AnimDictAddClip,
+    BEVY_OT_AnimDictRemoveClip,
     BEVY_OT_RenameMixamoRig,
     BEVY_OT_ImportMixamoAnimations,
     BEVY_OT_ExportMapManifest,
@@ -75,6 +95,7 @@ classes = (
     BEVY_OT_BrowseTexture,
     BEVY_PT_MaterialPanel,
     BEVY_PT_ObjectPanel,
+    BEVY_UL_AnimationDictionaries,
     BEVY_PT_Panel,
 )
 

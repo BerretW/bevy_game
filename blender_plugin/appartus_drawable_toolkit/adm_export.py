@@ -452,6 +452,54 @@ def _write_animations(buf, clips):
     return buf
 
 
+def _write_animation_dictionaries(buf, dictionaries):
+    """Zapíše animation dictionaries sekci pro ADM v5.
+
+    Formát:
+      u32 dict_count
+      for dict:
+        str name
+        u32 clip_count
+        u32 clip_index[clip_count]
+    """
+    buf += struct.pack('<I', len(dictionaries))
+    for dictionary in dictionaries:
+        buf += _pack_str(dictionary['name'])
+        clip_indices = dictionary['clip_indices']
+        buf += struct.pack('<I', len(clip_indices))
+        for clip_index in clip_indices:
+            buf += struct.pack('<I', int(clip_index))
+    return buf
+
+
+def _collect_animation_dictionaries_from_scene():
+    scene = getattr(bpy.context, 'scene', None)
+    if scene is None:
+        return []
+    settings = getattr(scene, 'bevy_toolkit_export', None)
+    if settings is None or not hasattr(settings, 'animation_dictionaries'):
+        return []
+
+    dictionaries = []
+    for dict_item in settings.animation_dictionaries:
+        dict_name = bpy.path.clean_name((dict_item.name or '').strip())
+        if not dict_name:
+            continue
+        clips = []
+        seen = set()
+        for clip in dict_item.clips:
+            clip_name = (clip.clip_name or '').strip()
+            if not clip_name or clip_name in seen:
+                continue
+            seen.add(clip_name)
+            clips.append(clip_name)
+        dictionaries.append({
+            'name': dict_name,
+            'clips': clips,
+        })
+    return dictionaries
+
+
 def _bone_track_flags(node_name):
     name = node_name.split(':')[-1]
     low = name.lower()
@@ -761,7 +809,7 @@ def _get_image_bytes(img):
     raise RuntimeError(f"Textura '{img.name}' není na disku ani packed")
 
 
-def export_adm(filepath, objects=None, export_textures=True, armature_object=None):
+def export_adm(filepath, objects=None, export_textures=True, armature_object=None, animation_dictionaries=None):
     """
     Exportuje objekty do .adm souboru.
     objects: seznam bpy.types.Object; None = všechny mesh objekty ve scéně.
@@ -978,12 +1026,37 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
     if not clips:
         clips = _collect_scene_animation(objects)
 
+    if animation_dictionaries is None:
+        animation_dictionaries = _collect_animation_dictionaries_from_scene()
+
+    clip_index_by_name = {clip['name']: idx for idx, clip in enumerate(clips)}
+    resolved_dictionaries = []
+    for dictionary in animation_dictionaries:
+        dict_name = bpy.path.clean_name((dictionary.get('name', '') or '').strip())
+        if not dict_name:
+            continue
+        clip_indices = []
+        seen = set()
+        for clip_name in dictionary.get('clips', []):
+            idx = clip_index_by_name.get(clip_name)
+            if idx is None:
+                print(f"[adm_export] warning: dictionary '{dict_name}' references unknown clip '{clip_name}'")
+                continue
+            if idx in seen:
+                continue
+            seen.add(idx)
+            clip_indices.append(idx)
+        if clip_indices:
+            resolved_dictionaries.append({'name': dict_name, 'clip_indices': clip_indices})
+
+    adm_version = 5 if resolved_dictionaries else 4
+
     # Build binary — bytearray is mutable so += never copies the whole buffer
     buf = bytearray()
 
     # Header
     buf += b'ADM\x00'
-    buf += struct.pack('<I', 4)   # version
+    buf += struct.pack('<I', adm_version)
     buf += struct.pack('<I', len(mesh_data_list))
     buf += struct.pack('<I', len(node_list))
     buf += struct.pack('<I', 1 if embedded_textures else 0)
@@ -1009,9 +1082,14 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
     # Animation sekce (v4)
     buf = _write_animations(buf, clips)
 
+    # Animation dictionaries sekce (v5)
+    if resolved_dictionaries:
+        buf = _write_animation_dictionaries(buf, resolved_dictionaries)
+
     with open(filepath, 'wb') as f:
         f.write(buf)
 
         print(f"[adm_export] zapsáno {len(mesh_data_list)} meshů, {len(node_list)} uzlů, "
-            f"{len(embedded_textures)} embedded textur, {len(clips)} clipů → {filepath}")
+            f"{len(embedded_textures)} embedded textur, {len(clips)} clipů, "
+            f"{len(resolved_dictionaries)} dictionary → {filepath}")
     return len(mesh_data_list), len(node_list)

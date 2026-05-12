@@ -37,6 +37,7 @@ const VERSION_V1: u32 = 1;
 const VERSION_V2: u32 = 2;
 const VERSION_V3: u32 = 3;
 const VERSION_V4: u32 = 4;
+const VERSION_V5: u32 = 5;
 
 const ATTR_POS:    u32 = 1 << 0;
 const ATTR_NRM:    u32 = 1 << 1;
@@ -88,6 +89,9 @@ pub struct AdmScene {
     pub nodes:       Vec<AdmNode>,
     pub animations:  Vec<AdmAnimationClip>,
     pub blend_spaces: Vec<AdmBlendSpace>,
+    /// Animation dictionaries — pojmenované kolekce animací pro dynamické volby.
+    /// Dict name → seznam clipů v tomto dictioary.
+    pub animation_dictionaries: Vec<AdmAnimationDictionary>,
     pub embedded:    HashMap<String, Handle<Image>>,
     pub source_path: String,
 }
@@ -106,7 +110,16 @@ pub struct AdmAnimationNotify {
     pub name: String,
 }
 
-/// Blend Space — míchání více klipů podle 2D/1D vektoru pohybu.
+/// Animation Dictionary — pojmenovaná kolekce animačních klipů.
+/// Umožňuje seskupovat animace (např. chůze: walk_calm, walk_casual, walk_athletic)
+/// a dynamicky je volit v Lua skriptu.
+#[derive(Debug, Clone)]
+pub struct AdmAnimationDictionary {
+    pub name: String,
+    /// Indexy do `AdmScene.animations` — každý clip v tomto dictionary.
+    pub clip_indices: Vec<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdmBlendSpace {
     pub name: String,
@@ -252,7 +265,12 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
     }
 
     let version      = read_u32(&mut cur)?;
-    if version != VERSION_V1 && version != VERSION_V2 && version != VERSION_V3 && version != VERSION_V4 {
+    if version != VERSION_V1
+        && version != VERSION_V2
+        && version != VERSION_V3
+        && version != VERSION_V4
+        && version != VERSION_V5
+    {
         return Err(AdmError::BadVersion(version));
     }
 
@@ -320,12 +338,20 @@ fn parse_adm(bytes: &[u8], load_context: &mut LoadContext<'_>, source_path: Stri
         Vec::new()
     };
 
+    // ADM v5+ optional animation dictionaries section.
+    let animation_dictionaries = if version >= VERSION_V5 && (cur.position() as usize) < bytes.len() {
+        parse_animation_dictionaries(&mut cur)?
+    } else {
+        Vec::new()
+    };
+
     Ok(AdmScene {
         meshes: mesh_handles,
         mesh_aabbs,
         nodes,
         animations,
         blend_spaces: Vec::new(),  // TODO: implementovat blend space parsing
+        animation_dictionaries,
         embedded,
         source_path,
     })
@@ -381,6 +407,29 @@ fn parse_animations(cur: &mut Cursor<&[u8]>, version: u32) -> Result<Vec<AdmAnim
     }
 
     Ok(clips)
+}
+
+fn parse_animation_dictionaries(cur: &mut Cursor<&[u8]>) -> Result<Vec<AdmAnimationDictionary>, AdmError> {
+    let dict_count = read_u32(cur)? as usize;
+    let mut dictionaries = Vec::with_capacity(dict_count);
+
+    for _ in 0..dict_count {
+        let name = read_string(cur)?;
+        let clip_count = read_u32(cur)? as usize;
+        let mut clip_indices = Vec::with_capacity(clip_count);
+
+        for _ in 0..clip_count {
+            let clip_index = read_u32(cur)? as usize;
+            clip_indices.push(clip_index);
+        }
+
+        dictionaries.push(AdmAnimationDictionary {
+            name,
+            clip_indices,
+        });
+    }
+
+    Ok(dictionaries)
 }
 
 fn parse_mesh(cur: &mut Cursor<&[u8]>) -> Result<(String, Mesh, Option<(Vec3, Vec3)>), AdmError> {
@@ -1120,6 +1169,29 @@ fn animation_track_matches_flags(track_flags: u32, animation_flags: u32) -> bool
 }
 
 fn resolve_clip_index(scene: &AdmScene, selector: &str) -> Option<usize> {
+    // dict:dict_name:clip_name — animation dictionary lookuplet
+    if let Some(rest) = selector.strip_prefix("dict:") {
+        if let Some(colon_pos) = rest.find(':') {
+            let dict_name = &rest[..colon_pos];
+            let clip_name = &rest[colon_pos + 1..];
+            // Najdi dictionary
+            for dict in &scene.animation_dictionaries {
+                if dict.name == dict_name {
+                    // Najdi clip v tomto dictionary
+                    for &clip_idx in &dict.clip_indices {
+                        if clip_idx < scene.animations.len() {
+                            if scene.animations[clip_idx].name == clip_name {
+                                return Some(clip_idx);
+                            }
+                        }
+                    }
+                    return None;  // Dictionary found, ale clip ne
+                }
+            }
+            return None;  // Dictionary not found
+        }
+    }
+
     if let Some(rest) = selector.strip_prefix("clip:") {
         if let Ok(i) = rest.parse::<usize>() {
             if i < scene.animations.len() {

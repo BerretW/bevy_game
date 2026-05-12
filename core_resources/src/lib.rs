@@ -35,7 +35,7 @@ pub use db_bridge::{
 pub use gui::{DrawCommand, FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest, SpriteFit};
 pub use manifest::{FontDef, ImageDef, Manifest, ManifestError, ResourceKind};
 pub use model_registry::{
-    ModelAnimationInfo, ModelAnimationRegistry,
+    ModelAnimationDictionary, ModelAnimationDictionaries, ModelAnimationInfo, ModelAnimationRegistry,
     ModelCommand, ModelCommandQueue, ModelRegistry, process_model_commands,
 };
 pub use ace::AceRegistry;

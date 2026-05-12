@@ -178,6 +178,8 @@ struct RigViewerState {
 struct AdmAnimationBrowser {
     root: Option<Entity>,
     model_name: Option<String>,
+    dictionaries: Vec<String>,
+    selected_dict_idx: usize,
     clips: Vec<String>,
     selected_idx: usize,
     flags: u32,
@@ -802,6 +804,25 @@ fn handle_animation_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     mut browser: ResMut<AdmAnimationBrowser>,
 ) {
+    if browser.root.is_none() {
+        return;
+    }
+
+    if !browser.dictionaries.is_empty() {
+        if keys.just_pressed(KeyCode::PageUp) {
+            browser.selected_dict_idx = if browser.selected_dict_idx == 0 {
+                browser.dictionaries.len().saturating_sub(1)
+            } else {
+                browser.selected_dict_idx.saturating_sub(1)
+            };
+            browser.selected_idx = 0;
+        }
+        if keys.just_pressed(KeyCode::PageDown) {
+            browser.selected_dict_idx = (browser.selected_dict_idx + 1) % browser.dictionaries.len();
+            browser.selected_idx = 0;
+        }
+    }
+
     if browser.clips.is_empty() {
         return;
     }
@@ -835,6 +856,29 @@ fn handle_animation_keyboard(
     }
 }
 
+fn selected_dict_name(browser: &AdmAnimationBrowser) -> Option<&str> {
+    browser.dictionaries.get(browser.selected_dict_idx).map(String::as_str)
+}
+
+fn collect_animation_clip_names(
+    scene: &AdmScene,
+    selected_dict_idx: Option<usize>,
+) -> Vec<String> {
+    if let Some(dict_idx) = selected_dict_idx {
+        if let Some(dict) = scene.animation_dictionaries.get(dict_idx) {
+            let mut names = Vec::new();
+            for &clip_idx in &dict.clip_indices {
+                if let Some(clip) = scene.animations.get(clip_idx) {
+                    names.push(clip.name.clone());
+                }
+            }
+            return names;
+        }
+    }
+
+    scene.animations.iter().map(|clip| clip.name.clone()).collect()
+}
+
 fn sync_adm_animation_browser(
     mut browser: ResMut<AdmAnimationBrowser>,
     roots: Query<(Entity, &AdmSceneRoot, &ModelName), With<AnimationState>>,
@@ -856,7 +900,18 @@ fn sync_adm_animation_browser(
 
             browser.root = Some(entity);
             browser.model_name = Some(model_name.0.clone());
-            browser.clips = scene.animations.iter().map(|clip| clip.name.clone()).collect();
+            browser.dictionaries = scene
+                .animation_dictionaries
+                .iter()
+                .map(|dict| dict.name.clone())
+                .collect();
+            if browser.selected_dict_idx >= browser.dictionaries.len() {
+                browser.selected_dict_idx = 0;
+            }
+            browser.clips = collect_animation_clip_names(
+                scene,
+                (!browser.dictionaries.is_empty()).then_some(browser.selected_dict_idx),
+            );
             browser.selected_idx = 0;
             browser.flags = ADM_ANIM_MASK_ALL;
             browser.speed = 1.0;
@@ -870,7 +925,23 @@ fn sync_adm_animation_browser(
         if let Ok((_, adm_root, model_name)) = roots.get(root) {
             browser.model_name = Some(model_name.0.clone());
             if let Some(scene) = adm_assets.get(&adm_root.0) {
-                let clips: Vec<String> = scene.animations.iter().map(|clip| clip.name.clone()).collect();
+                let dictionaries: Vec<String> = scene
+                    .animation_dictionaries
+                    .iter()
+                    .map(|dict| dict.name.clone())
+                    .collect();
+                if dictionaries != browser.dictionaries {
+                    browser.dictionaries = dictionaries;
+                    if browser.selected_dict_idx >= browser.dictionaries.len() {
+                        browser.selected_dict_idx = 0;
+                    }
+                    browser.selected_idx = 0;
+                }
+
+                let clips = collect_animation_clip_names(
+                    scene,
+                    (!browser.dictionaries.is_empty()).then_some(browser.selected_dict_idx),
+                );
                 if clips != browser.clips {
                     browser.clips = clips;
                     if browser.selected_idx >= browser.clips.len() {
@@ -914,7 +985,7 @@ fn update_animation_overlay(
 ) {
     let Ok((mut txt, mut vis)) = panel.single_mut() else { return };
 
-    if browser.root.is_none() || browser.clips.is_empty() {
+    if browser.root.is_none() {
         *vis = Visibility::Hidden;
         txt.0 = String::new();
         return;
@@ -922,18 +993,30 @@ fn update_animation_overlay(
 
     *vis = Visibility::Visible;
     let model_name = browser.model_name.as_deref().unwrap_or("ADM");
+    let dict_name = selected_dict_name(&browser).unwrap_or("ALL");
+    let dict_total = browser.dictionaries.len().max(1);
+    let clip_total = browser.clips.len().max(1);
     let clip_name = browser.clips.get(browser.selected_idx).map(|s| s.as_str()).unwrap_or("-");
     let mut lines = vec![
         format!("── Animace ({}) ──", model_name),
-        format!("Clip: {}  [{}/{}]", clip_name, browser.selected_idx + 1, browser.clips.len()),
+        format!("Dict: {}  [{}/{}]", dict_name, browser.selected_dict_idx + 1, dict_total),
+        format!("Clip: {}  [{}/{}]", clip_name, browser.selected_idx + 1, clip_total),
         format!("Flags: {}  Speed: {:.2}  Loop: {}  Paused: {}", browser.flags, browser.speed, browser.looping, browser.paused),
+        "PageUp/PageDown dict | N/→ next clip | B/← prev clip | Space pause".to_string(),
         "1 all | 2 lower body | 3 upper body | 4 right arm | 5 left arm | 6 ride+smoke".to_string(),
-        "Space pause | N/→ next | B/← prev".to_string(),
     ];
+
+    if !browser.dictionaries.is_empty() {
+        lines.push("Dicty:".to_string());
+        for (idx, name) in browser.dictionaries.iter().enumerate() {
+            let marker = if idx == browser.selected_dict_idx { ">" } else { " " };
+            lines.push(format!("{} {}", marker, name));
+        }
+    }
 
     // Notifies aktuálního klipu
     if browser.notifies.is_empty() {
-        lines.push("Notifies: žádné (ADM v3 nebo žádné pose markery)".to_string());
+        lines.push("Notifies: žádné (ADM v3/v5 nebo žádné pose markery)".to_string());
     } else {
         lines.push(format!("Notifies: {}x", browser.notifies.len()));
         for (t, name) in &browser.notifies {
@@ -941,7 +1024,7 @@ fn update_animation_overlay(
         }
     }
 
-    if browser.clips.len() > 1 {
+    if !browser.clips.is_empty() {
         lines.push("Clipy:".to_string());
         for (idx, name) in browser.clips.iter().enumerate() {
             let notify_badge = {

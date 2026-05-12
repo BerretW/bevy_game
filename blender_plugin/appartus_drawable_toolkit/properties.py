@@ -139,6 +139,16 @@ class BevyMaterialProps(bpy.types.PropertyGroup):
     dirt_level: bpy.props.FloatProperty(name="Dirt Level",default=0.0, min=0.0, max=1.0, update=_on_param_update)
 
 
+class BevyAnimDictClipRef(bpy.types.PropertyGroup):
+    clip_name: bpy.props.StringProperty(name="Clip Name", default="")
+
+
+class BevyAnimDictionary(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty(name="Dictionary", default="default")
+    clips: bpy.props.CollectionProperty(type=BevyAnimDictClipRef)
+    active_clip_index: bpy.props.IntProperty(name="Active Clip", default=0, min=0)
+
+
 class BevyExportProps(bpy.types.PropertyGroup):
     export_scope: bpy.props.EnumProperty(
         name="Scope",
@@ -176,3 +186,21 @@ class BevyExportProps(bpy.types.PropertyGroup):
         description="Skryj model za poslední LOD vzdáleností",
         default=False,
     )
+
+    ui_show_drawables: bpy.props.BoolProperty(name="Show Drawables", default=True)
+    ui_show_convert: bpy.props.BoolProperty(name="Show Convert", default=True)
+    ui_show_create: bpy.props.BoolProperty(name="Show Create", default=True)
+    ui_show_shader_tools: bpy.props.BoolProperty(name="Show Shader Tools", default=True)
+    ui_show_tools: bpy.props.BoolProperty(name="Show Tools", default=True)
+    ui_show_mixamo_tools: bpy.props.BoolProperty(name="Show Mixamo Tools", default=True)
+    ui_show_animation_dictionaries: bpy.props.BoolProperty(name="Show Animation Dictionaries", default=True)
+    ui_show_entity: bpy.props.BoolProperty(name="Show Entity", default=True)
+    ui_show_import_export: bpy.props.BoolProperty(name="Show Import Export", default=True)
+    ui_show_lod_distances: bpy.props.BoolProperty(name="Show LOD Distances", default=True)
+    ui_show_map_tools: bpy.props.BoolProperty(name="Show Map Tools", default=True)
+
+    # Animation dictionary workflow (ADM v5)
+    animation_dictionaries: bpy.props.CollectionProperty(type=BevyAnimDictionary)
+    active_anim_dict_index: bpy.props.IntProperty(name="Active Anim Dict", default=0, min=0)
+    new_anim_dict_name: bpy.props.StringProperty(name="New Dict", default="move")
+    anim_dict_clip_name: bpy.props.StringProperty(name="Clip", default="")

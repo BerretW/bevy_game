@@ -236,6 +236,39 @@ def _parse_animations_v2(f, version=2):
     return clips
 
 
+def _parse_animation_dictionaries_v5(f):
+    dictionaries = []
+    dict_count = _u32(f)
+    for _ in range(dict_count):
+        dict_name = _str(f)
+        clip_count = _u32(f)
+        clip_indices = [_u32(f) for _ in range(clip_count)]
+        dictionaries.append((dict_name, clip_indices))
+    return dictionaries
+
+
+def _apply_animation_dictionaries_to_scene(dictionaries, animations):
+    scene = getattr(bpy.context, 'scene', None)
+    if scene is None:
+        return
+    settings = getattr(scene, 'bevy_toolkit_export', None)
+    if settings is None or not hasattr(settings, 'animation_dictionaries'):
+        return
+
+    clip_names = [clip[0] for clip in animations]
+    settings.animation_dictionaries.clear()
+
+    for dict_name, clip_indices in dictionaries:
+        item = settings.animation_dictionaries.add()
+        item.name = bpy.path.clean_name((dict_name or '').strip()) or 'default'
+        for clip_index in clip_indices:
+            if 0 <= clip_index < len(clip_names):
+                clip = item.clips.add()
+                clip.clip_name = clip_names[clip_index]
+
+    settings.active_anim_dict_index = 0
+
+
 def _find_view3d_context():
     """Return (window, area, region) for a VIEW_3D area, or (None,None,None)."""
     for window in bpy.context.window_manager.windows:
@@ -798,7 +831,7 @@ def import_adm(filepath, merge_material_splits=False):
             raise ValueError("Neplatný soubor: špatné magic bytes (očekáváno ADM\\0)")
 
         version = _u32(f)
-        if version not in (1, 2, 3, 4):
+        if version not in (1, 2, 3, 4, 5):
             raise ValueError(f"Nepodporovaná verze ADM: {version}")
 
         mesh_count   = _u32(f)
@@ -825,6 +858,16 @@ def import_adm(filepath, merge_material_splits=False):
                 animations = _parse_animations_v2(f, version=version)
             except Exception as e:
                 print(f"[adm_import] warning: animační sekce je poškozená: {e}")
+
+        animation_dictionaries = []
+        if version >= 5:
+            try:
+                animation_dictionaries = _parse_animation_dictionaries_v5(f)
+            except Exception as e:
+                print(f"[adm_import] warning: animation dictionary sekce je poškozená: {e}")
+
+    if animation_dictionaries:
+        _apply_animation_dictionaries_to_scene(animation_dictionaries, animations)
 
     # Vytvoř Blender mesh assets
     bl_meshes = []

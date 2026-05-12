@@ -194,23 +194,37 @@ impl ModelAnimationInfo {
     }
 }
 
+/// Animation Dictionary info — seznam dostupných slovníků a jejich klipů.
+#[derive(Debug, Clone, Default)]
+pub struct ModelAnimationDictionary {
+    pub name: String,
+    pub clip_names: Vec<String>,  // Názvy klipů v tomto slovníku
+}
+
+/// Metadata o animation dictionaries pro model.
+#[derive(Debug, Clone, Default)]
+pub struct ModelAnimationDictionaries {
+    pub dictionaries: Vec<ModelAnimationDictionary>,
+}
+
 /// Sdílená cache animačních clip metadat po modelech.
 /// Naplňuje ji klientský runtime (host_client) z ADM/GLTF assetů.
 #[derive(Resource, Default, Debug, Clone)]
 pub struct ModelAnimationRegistry {
-    inner: Arc<Mutex<HashMap<String, ModelAnimationInfo>>>,
+    animations: Arc<Mutex<HashMap<String, ModelAnimationInfo>>>,
+    dictionaries: Arc<Mutex<HashMap<String, ModelAnimationDictionaries>>>,
 }
 
 impl ModelAnimationRegistry {
     pub fn set_clip_names(&self, model_name: &str, clip_names: Vec<String>) {
-        self.inner
+        self.animations
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(model_name.to_string(), ModelAnimationInfo { clip_names });
     }
 
     pub fn get_clip_names(&self, model_name: &str) -> Vec<String> {
-        self.inner
+        self.animations
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(model_name)
@@ -219,7 +233,7 @@ impl ModelAnimationRegistry {
     }
 
     pub fn get_clip_count(&self, model_name: &str) -> usize {
-        self.inner
+        self.animations
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(model_name)
@@ -227,9 +241,42 @@ impl ModelAnimationRegistry {
             .unwrap_or(0)
     }
 
+    /// Nastaví animation dictionaries pro model.
+    pub fn set_animation_dictionaries(&self, model_name: &str, dictionaries: Vec<ModelAnimationDictionary>) {
+        self.dictionaries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(model_name.to_string(), ModelAnimationDictionaries { dictionaries });
+    }
+
+    /// Vrátí seznam dostupných animation dictionary názvů pro model.
+    pub fn get_dictionary_names(&self, model_name: &str) -> Vec<String> {
+        self.dictionaries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(model_name)
+            .map(|m| m.dictionaries.iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Vrátí seznam clipů v daném dictionary pro model.
+    pub fn get_dictionary_clips(&self, model_name: &str, dict_name: &str) -> Vec<String> {
+        self.dictionaries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(model_name)
+            .and_then(|m| m.dictionaries.iter().find(|d| d.name == dict_name))
+            .map(|d| d.clip_names.clone())
+            .unwrap_or_default()
+    }
+
     /// Zahodí metadata pro modely, které už nejsou v registru.
     pub fn retain_models(&self, keep: &HashSet<String>) {
-        self.inner
+        self.animations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|name, _| keep.contains(name));
+        self.dictionaries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain(|name, _| keep.contains(name));
