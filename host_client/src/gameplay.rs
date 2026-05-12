@@ -23,13 +23,13 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_net::{player_action, InputChannel, PlayerInput};
-use core_resources::{AnimationState, CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
+use core_resources::{AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit, EntityHandle, GameBridges, InputSnapshot, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName, ModelRegistry, process_lua_commands, sync_entity_state_cache};
 use core_shared::{NetTransform, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
-use crate::native_assets::AdmHandleCache;
+use crate::native_assets::{AdmHandleCache, PedAdsAnimIndex};
 use crate::drawable::AdmSceneRoot;
 use crate::AppState;
 use crate::drawable::{GltfHandleCache, PedPhysicsDef, PedPhysicsRegistry};
@@ -379,21 +379,6 @@ fn resolve_ped_profile_for_model<'a>(
         .or_else(|| resolve_default_ped_profile(ped_reg, ped_assets))
 }
 
-fn choose_existing_adm_clip(
-    scene: &crate::drawable::AdmScene,
-    preferred: &str,
-    fallback: &str,
-) -> Option<String> {
-    if scene.animations.iter().any(|c| c.name == preferred) {
-        return Some(preferred.to_string());
-    }
-    if scene.animations.iter().any(|c| c.name == fallback) {
-        return Some(fallback.to_string());
-    }
-    scene.animations.first().map(|c| c.name.clone())
-}
-
-
 fn setup_scene_and_camera(
     mut commands: Commands,
 ) {
@@ -506,6 +491,7 @@ fn apply_cursor_mode(
 fn attach_player_model_to_new_players(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    ped_anim_index: Res<PedAdsAnimIndex>,
     ped_reg: Res<PedPhysicsRegistry>,
     ped_assets: Res<Assets<PedPhysicsDef>>,
     predicted_players: Query<&PlayerMarker, With<Predicted>>,
@@ -529,6 +515,11 @@ fn attach_player_model_to_new_players(
         let model_name = resolve_default_ped_profile(&ped_reg, &ped_assets)
             .map(|p| p.identity.model.as_str())
             .unwrap_or("player");
+        let attached_anim_sets = ped_anim_index
+            .0
+            .get(model_name)
+            .cloned()
+            .unwrap_or_default();
         let model_path = format!("models/{}.adm", model_name);
         let model_handle = asset_server.load::<crate::drawable::AdmScene>(model_path);
 
@@ -563,7 +554,7 @@ fn attach_player_model_to_new_players(
                 .with_max_hits(4),
             ))
             .with_children(|p| {
-                p.spawn((
+                let mut child = p.spawn((
                     AdmSceneRoot(model_handle.clone()),
                     // Bez DisableDrawableCollisions — COL_player z manifestu
                     // se stane compound coliderem parent RigidBody.
@@ -574,6 +565,11 @@ fn attach_player_model_to_new_players(
                     InheritedVisibility::default(),
                     ViewVisibility::default(),
                 ));
+                if !attached_anim_sets.is_empty() {
+                    child.insert(AttachedAnimSets {
+                        sets: attached_anim_sets.clone(),
+                    });
+                }
             });
 
         info!(
@@ -589,7 +585,6 @@ fn update_player_state_driven_animations(
     cfg: Res<ClientConfigResource>,
     ped_reg: Res<PedPhysicsRegistry>,
     ped_assets: Res<Assets<PedPhysicsDef>>,
-    adm_assets: Res<Assets<crate::drawable::AdmScene>>,
     local_bus: Res<LocalEventBus>,
     local_client_id: Option<Res<LocalClientId>>,
     mut commands: Commands,
@@ -732,12 +727,10 @@ fn update_player_state_driven_animations(
             }
         };
 
-        let resolved_clip = if let Some(scene) = adm_assets.get(&adm_root.0) {
-            choose_existing_adm_clip(scene, desired_clip, &ped.animations.idle)
-        } else {
-            Some(desired_clip.clone())
-        };
-        let Some(clip) = resolved_clip else { continue };
+        if desired_clip.is_empty() {
+            continue;
+        }
+        let clip = desired_clip.clone();
 
         let blend_time = match next_anim_state {
             PlayerAnimState::Land => 0.08,

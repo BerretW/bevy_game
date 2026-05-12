@@ -24,6 +24,9 @@ pub struct PedPhysicsDef {
     pub animations: PedAnimations,
 
     #[serde(default)]
+    pub animation_sets: PedAnimationSets,
+
+    #[serde(default)]
     pub capsule: PedCapsule,
 
     #[serde(default)]
@@ -55,6 +58,17 @@ pub struct PedPhysicsDef {
 
     #[serde(default)]
     pub ragdoll: PedRagdoll,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PedAnimationSets {
+    /// Seznam ADS animačních setů použitých ped profilem.
+    /// Podporuje:
+    /// - "player"           -> models/player.ads_anim
+    /// - "player.ads_anim"  -> models/player.ads_anim
+    /// - "models/x.ads_anim" -> beze změny
+    #[serde(default)]
+    pub ads_anim: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

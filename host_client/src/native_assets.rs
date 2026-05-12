@@ -9,12 +9,13 @@
 //! Model ID = název souboru bez přípony (case-sensitive).
 
 use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
 use core_resources::ModelRegistry;
 
-use crate::drawable::{AdmScene, DrawableManifestRegistry, GltfHandleCache};
+use crate::drawable::{AdmScene, AnimationSet, DrawableManifestRegistry, GltfHandleCache};
 use crate::drawable::{PedPhysicsDef, PedPhysicsRegistry};
 use crate::gui_render::GuiFontRegistry;
 
@@ -26,12 +27,22 @@ pub struct AdmHandleCache(pub std::collections::HashMap<String, Handle<AdmScene>
 #[derive(Resource, Default)]
 pub struct PedPhysicsHandleCache(pub Vec<Handle<PedPhysicsDef>>);
 
+/// Index ADS animačních setů podle modelu načtený z `.ped.toml` profilů.
+#[derive(Resource, Default)]
+pub struct PedAdsAnimIndex(pub HashMap<String, Vec<String>>);
+
+/// Silné handly na ADS anim-sety použitých ped profilů (preload + keep-alive).
+#[derive(Resource, Default)]
+pub struct PedAdsAnimHandleCache(pub HashMap<String, Handle<AnimationSet>>);
+
 pub struct NativeAssetsPlugin;
 
 impl Plugin for NativeAssetsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AdmHandleCache>()
             .init_resource::<PedPhysicsHandleCache>()
+            .init_resource::<PedAdsAnimIndex>()
+            .init_resource::<PedAdsAnimHandleCache>()
             .add_systems(Startup, load_native_assets)
             .add_systems(Update, sync_ped_physics_registry);
     }
@@ -69,9 +80,12 @@ fn load_native_assets(
 /// Průběžně plní `PedPhysicsRegistry` z `PedPhysicsHandleCache`.
 /// Čeká dokud není asset plně načtený, pak ho přesune do registry.
 fn sync_ped_physics_registry(
+    asset_server: Res<AssetServer>,
     ped_assets: Res<Assets<PedPhysicsDef>>,
     handle_cache: Res<PedPhysicsHandleCache>,
     mut ped_reg: ResMut<PedPhysicsRegistry>,
+    mut ads_anim_index: ResMut<PedAdsAnimIndex>,
+    mut ads_anim_handles: ResMut<PedAdsAnimHandleCache>,
 ) {
     for handle in &handle_cache.0 {
         if ped_reg.0.values().any(|h| h.id() == handle.id()) {
@@ -83,7 +97,55 @@ fn sync_ped_physics_registry(
                 ped_reg.0.insert(key.clone(), handle.clone());
                 info!("[native_assets] ped physics ready: '{}'", key);
             }
+
+            if !ads_anim_index.0.contains_key(&key) {
+                let mut unique_paths = Vec::new();
+                let mut seen = HashSet::new();
+                for raw in &ped.animation_sets.ads_anim {
+                    let normalized = normalize_ads_anim_path(raw);
+                    if normalized.is_empty() {
+                        continue;
+                    }
+                    if !seen.insert(normalized.clone()) {
+                        continue;
+                    }
+                    unique_paths.push(normalized.clone());
+                    ads_anim_handles
+                        .0
+                        .entry(normalized.clone())
+                        .or_insert_with(|| asset_server.load::<AnimationSet>(normalized.clone()));
+                }
+                ads_anim_index.0.insert(key.clone(), unique_paths.clone());
+                if unique_paths.is_empty() {
+                    info!("[native_assets] ped ads_anim index '{}' -> 0 entries", key);
+                } else {
+                    info!(
+                        "[native_assets] ped ads_anim index '{}' -> {} entries",
+                        key,
+                        unique_paths.len()
+                    );
+                }
+            }
         }
+    }
+}
+
+fn normalize_ads_anim_path(raw: &str) -> String {
+    let trimmed = raw.trim().replace('\\', "/");
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let with_ext = if trimmed.ends_with(".ads_anim") {
+        trimmed
+    } else {
+        format!("{}.ads_anim", trimmed)
+    };
+
+    if with_ext.contains('/') {
+        with_ext
+    } else {
+        format!("models/{}", with_ext)
     }
 }
 

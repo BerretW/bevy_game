@@ -72,7 +72,7 @@ files { 'assets/ui_icons.png' }
 |------|---------|
 | **Phase 1** — Shell & VFS | Cargo workspace, VFS scanner, manifest.lua DSL parser, dependency resolver (Kahn), per-resource Lua sandbox |
 | **Phase 2** — Network Handshake | `core_net`, lightyear UDP, Axum HTTP file server, blake3 digest handshake, Lua RPC bridge |
-| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`: idle/walk/run/sprint/jump/fall/land) |
+| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`) jako autoritativní selector (`clip:*`/`dict:*`), startup preload + index ADS animačních setů z `player.ped.toml` (`[animation_sets].ads_anim`) a auto-attach `AttachedAnimSets` na player ADM root |
 | **Phase 3.2** — Lua Bridge | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate) |
 | **Phase 3.3** — Combat | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped` |
 | **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`), ADM v5 animation dictionary metadata cache (`Engine.GetAnimDictNames/GetAnimDictClips`) |
@@ -94,7 +94,7 @@ files { 'assets/ui_icons.png' }
 - [X] Blender import split: `.adm` importuje geometrii, `.ads_anim` importuje samostatné animace do armatury
 - [X] model_viewer ADMv6 path: `.adm` rooty auto-attachují sibling/CLI `.ads_anim`, animation browser čte klipy/dictionaries/notifies z `AnimationSet`
 - [X] model_viewer top toolbar: runtime tlačítka pro otevření `.adm/.glb` a `.ads_anim` + rychlé debug přepínače (grid/colliders/skeleton/reset cam)
-- [X] model_viewer modularizace: původní `main.rs` rozdělen do menších modulů (`state.rs`, `scene.rs`, `loader.rs`, `animation.rs`) pro lepší čitelnost a údržbu
+- [X] model_viewer modularizace: původní `main.rs` rozdělen do menších modulů (`state.rs`, `scene.rs`, `loader.rs`, `animation.rs`, `runtime.rs`) pro lepší čitelnost a údržbu
 - [ ] Blend Spaces infrastruktura: `BlendSpaceState` komponenta, `PlayBlendSpace` command, Lua API, ale runtime evaluace vah zatím není (TODO pro Phase 4.x)
 - [ ] Integrovat `sqlx` (stub `Database.*` API přítomen)
 - [ ] Vlastní WGSL shadery z Lua resources

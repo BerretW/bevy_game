@@ -13,20 +13,23 @@ model        = "player"
 # Pozn.: názvy klipů musí odpovídat tomu, co vrací Engine.GetModelClipNames("player").
 # ---------------------------------------------------------------------------
 [animations]
-idle        = "player_breathing_idle"
-walk        = "player_walking"
-run         = "player_walking"
-sprint      = "player_run_fast"
-crouch_idle = "player_crouch_idle"
-crouch_move = "player_crouch_walk"
-prone_idle  = "player_prone_idle"
-prone_move  = "player_prone_move"
-jump_start  = "player_jumping"
-jump_loop   = "player_jump_loop"
-fall_loop   = "player_fall"
-land        = "player_land"
-vault       = "player_vault"
-reload      = "player_reload"
+idle        = "dict:idle:Idle"
+walk        = "dict:walking:Walking"
+run         = "dict:walking:Walking1"
+sprint      = "dict:walking:Walking1"
+crouch_idle = "dict:idle:Idle"
+crouch_move = "dict:walking:Walking"
+prone_idle  = "dict:idle:Idle"
+prone_move  = "dict:walking:Walking"
+jump_start  = "dict:idle:Idle"
+jump_loop   = "dict:idle:Idle"
+fall_loop   = "dict:idle:Idle"
+land        = "dict:idle:Idle"
+vault       = "dict:walking:Walking"
+reload      = "dict:idle:Idle"
+
+[animation_sets]
+ads_anim = ["Armature.ads_anim"]
 
 # ---------------------------------------------------------------------------
 # Fyzikální tvar kapsle (Avian RigidBody)
