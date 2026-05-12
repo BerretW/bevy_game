@@ -72,7 +72,7 @@ files { 'assets/ui_icons.png' }
 |------|---------|
 | **Phase 1** — Shell & VFS | Cargo workspace, VFS scanner, manifest.lua DSL parser, dependency resolver (Kahn), per-resource Lua sandbox |
 | **Phase 2** — Network Handshake | `core_net`, lightyear UDP, Axum HTTP file server, blake3 digest handshake, Lua RPC bridge |
-| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`) jako autoritativní selector (`clip:*`/`dict:*`), startup preload + index ADS animačních setů z `player.ped.toml` (`[animation_sets].ads_anim`) a auto-attach `AttachedAnimSets` na player ADM root |
+| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`) jako autoritativní selector (`clip:*`/`dict:*`), startup preload + index ADS animačních setů z `player.ped.toml` (`[animation_sets].ads_anim`) a auto-attach `AttachedAnimSets` na player ADM root, **počáteční idle animace nastavená hned při spawnu** (řeší t-pose na připojení) |
 | **Phase 3.2** — Lua Bridge | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate) |
 | **Phase 3.3** — Combat | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped` |
 | **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`), ADM v5 animation dictionary metadata cache (`Engine.GetAnimDictNames/GetAnimDictClips`) |
@@ -90,6 +90,7 @@ files { 'assets/ui_icons.png' }
 - [X] ADM runtime crossfade: `apply_adm_animations` respektuje `AnimationState.blend_time` a plynule blenduje předchozí/aktuální klip (`lerp` pozice/scale, `slerp` rotace)
 - [X] ADM v4 animation notifies: loader/export/import podporuje `notify_count`, runtime emituje `onAnimNotify { handle, clip_name, notify_name }` přes `LocalEventBus`
 - [X] ADM v5 animation dictionaries: export/import/loader podporují sekci dictionary (`dict_name -> clip indices`), runtime podporuje selector `dict:<dict_name>:<clip_name>` a Lua API `Engine.RequestAnimDict/HasAnimDictLoaded/GetAnimDictNames/GetAnimDictClips`
+- [X] ADMv6 `.ads_anim` runtime selector parity: `apply_adm_animations` resolver podporuje `dict:*`, `clip:*`, `anim:*`, index i clip-name (fix T-pose při ped selektorech z `player.ped.toml`)
 - [X] Blender export split: `.adm` je geometrie a `.ads_anim` je samostatný animační set
 - [X] Blender import split: `.adm` importuje geometrii, `.ads_anim` importuje samostatné animace do armatury
 - [X] model_viewer ADMv6 path: `.adm` rooty auto-attachují sibling/CLI `.ads_anim`, animation browser čte klipy/dictionaries/notifies z `AnimationSet`
@@ -103,6 +104,7 @@ files { 'assets/ui_icons.png' }
 - V5 kompatibilita se dál neudržuje jako cíl.
 - Nový formát je `*.adm` pro geometrii a `*.ads_anim` pro animace.
 - Runtime má preferovat late binding přes připojené anim-sety, ne embedded klipy v modelu.
+- Klientská `ModelAnimationRegistry` pro ADM modely bere clipy/dictionaries pouze z `AttachedAnimSets` (`.ads_anim`), embedded ADM animace se ignorují.
 
 ---
 

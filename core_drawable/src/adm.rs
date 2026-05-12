@@ -1345,6 +1345,46 @@ fn normalize_anim_set_path(path: &str) -> String {
     }
 }
 
+fn resolve_anim_set_clip_index(anim_set: &AnimationSet, selector: &str) -> Option<usize> {
+    // dict:dict_name:clip_name
+    if let Some(rest) = selector.strip_prefix("dict:") {
+        if let Some(colon_pos) = rest.find(':') {
+            let dict_name = &rest[..colon_pos];
+            let clip_name = &rest[colon_pos + 1..];
+            if let Some(dict) = anim_set.dictionaries.iter().find(|d| d.name == dict_name) {
+                return dict
+                    .clip_names
+                    .iter()
+                    .find(|name| name.as_str() == clip_name)
+                    .and_then(|name| anim_set.clips.iter().position(|c| c.name == *name));
+            }
+            return None;
+        }
+    }
+
+    if let Some(rest) = selector.strip_prefix("clip:") {
+        if let Ok(i) = rest.parse::<usize>() {
+            if i < anim_set.clips.len() {
+                return Some(i);
+            }
+        }
+    }
+    if let Some(rest) = selector.strip_prefix("anim:") {
+        if let Ok(i) = rest.parse::<usize>() {
+            if i < anim_set.clips.len() {
+                return Some(i);
+            }
+        }
+    }
+    if let Ok(i) = selector.parse::<usize>() {
+        if i < anim_set.clips.len() {
+            return Some(i);
+        }
+    }
+
+    anim_set.clips.iter().position(|c| c.name == selector)
+}
+
 fn resolve_anim_set_clip<'a>(
     clip_name: &str,
     attached_sets: Option<&'a AttachedAnimSets>,
@@ -1356,8 +1396,10 @@ fn resolve_anim_set_clip<'a>(
         let bevy_path = normalize_anim_set_path(set_path);
         let handle: Handle<AnimationSet> = asset_server.load(bevy_path);
         let Some(anim_set) = anim_set_assets.get(&handle) else { continue };
-        if let Some(clip) = anim_set.clips.iter().find(|clip| clip.name == clip_name) {
-            return Some(clip);
+        if let Some(clip_index) = resolve_anim_set_clip_index(anim_set, clip_name) {
+            if let Some(clip) = anim_set.clips.get(clip_index) {
+                return Some(clip);
+            }
         }
     }
     None

@@ -2,7 +2,8 @@ asset_name = "player"
 version = "1.1"
 
 [materials]
-"VanguardBodyMat.002" = { template = "standard_pbr", textures = {}, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
+"standard" = { template = "standard_pbr", textures = { albedo = { name = "vanguard_ab", source = "embedded" }, mrao = { name = "vanguard_ao", source = "embedded" }, normal = { name = "vanguard_nm", source = "embedded" } }, params = { tint = [1.0, 1.0, 1.0, 1.0], tiling = 1.0, l0_tiling = 1.0, l1_tiling = 1.0, porosity = 0.0, wetness = 0.0, snow_level = 0.0, dirt_level = 0.0, opacity_mode = "OPAQUE", alpha_threshold = 0.5 } }
 
 [entities]
 "player" = { type = "MESH", cast_shadows = true }
+"COL_player" = { type = "COLLISION", shape = "CONVEX", half_extents = [51.6983, 42.5022, 86.7952], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, false, false] }

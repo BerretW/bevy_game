@@ -565,6 +565,23 @@ fn attach_player_model_to_new_players(
                     InheritedVisibility::default(),
                     ViewVisibility::default(),
                 ));
+                
+                // Přidej počáteční idle animaci z player.ped.toml — 
+                // zajistí, že model hraje animaci hned po spawnu, místo aby zůstal v t-pose
+                if let Some(ped) = resolve_ped_profile_for_model(model_name, &ped_reg, &ped_assets) {
+                    let idle_clip = ped.animations.idle.clone();
+                    if !idle_clip.is_empty() {
+                        child.insert(AnimationState {
+                            current: Some(idle_clip),
+                            speed: 1.0,
+                            looping: true,
+                            paused: false,
+                            blend_time: 0.0,
+                            flags: 1,
+                        });
+                    }
+                }
+                
                 if !attached_anim_sets.is_empty() {
                     child.insert(AttachedAnimSets {
                         sets: attached_anim_sets.clone(),
@@ -1359,6 +1376,9 @@ fn update_model_animation_registry(
     gltf_cache: Res<GltfHandleCache>,
     adm_assets: Res<Assets<crate::drawable::AdmScene>>,
     gltf_assets: Res<Assets<bevy::gltf::Gltf>>,
+    anim_set_assets: Res<Assets<crate::drawable::AnimationSet>>,
+    ped_anim_index: Res<crate::native_assets::PedAdsAnimIndex>,
+    ped_anim_handles: Res<crate::native_assets::PedAdsAnimHandleCache>,
     mut discovery_cache: ResMut<ModelAnimationDiscoveryCache>,
 ) {
     let mut keep = HashSet::new();
@@ -1382,21 +1402,50 @@ fn update_model_animation_registry(
                 h
             };
 
-            if let Some(scene) = adm_assets.get(&handle) {
-                let clip_names = scene.animations.iter().map(|c| c.name.clone()).collect();
-                anim_registry.set_clip_names(&model_name, clip_names);
+            if adm_assets.get(&handle).is_some() {
+                // ADMv6: metadata animací pro ADM modely bereme pouze z připojených .ads_anim setů.
+                // Embedded klipy v .adm se už nepoužívají.
+                let mut all_clip_names: Vec<String> = Vec::new();
+                let mut all_dicts: Vec<core_resources::ModelAnimationDictionary> = Vec::new();
 
-                // Nastaví animation dictionaries
-                let dicts: Vec<_> = scene.animation_dictionaries.iter().map(|dict| {
-                    let clip_names = dict.clip_indices.iter()
-                        .filter_map(|&idx| scene.animations.get(idx).map(|c| c.name.clone()))
-                        .collect();
-                    core_resources::ModelAnimationDictionary {
-                        name: dict.name.clone(),
-                        clip_names,
+                if let Some(anim_paths) = ped_anim_index.0.get(&model_name) {
+                    for path in anim_paths {
+                        if let Some(handle) = ped_anim_handles.0.get(path) {
+                            if let Some(anim_set) = anim_set_assets.get(handle) {
+                                for clip in &anim_set.clips {
+                                    if !all_clip_names.contains(&clip.name) {
+                                        all_clip_names.push(clip.name.clone());
+                                    }
+                                }
+
+                                for dict_set in &anim_set.dictionaries {
+                                    let mut found = false;
+                                    for existing in &mut all_dicts {
+                                        if existing.name == dict_set.name {
+                                            for clip_name in &dict_set.clip_names {
+                                                if !existing.clip_names.contains(clip_name) {
+                                                    existing.clip_names.push(clip_name.clone());
+                                                }
+                                            }
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if !found {
+                                        all_dicts.push(core_resources::ModelAnimationDictionary {
+                                            name: dict_set.name.clone(),
+                                            clip_names: dict_set.clip_names.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
                     }
-                }).collect();
-                anim_registry.set_animation_dictionaries(&model_name, dicts);
+                }
+
+                // Přepiš cache i prázdnými daty, aby nezůstávaly stale legacy hodnoty.
+                anim_registry.set_clip_names(&model_name, all_clip_names);
+                anim_registry.set_animation_dictionaries(&model_name, all_dicts);
             }
             continue;
         }
