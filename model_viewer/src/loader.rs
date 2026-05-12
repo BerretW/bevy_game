@@ -9,7 +9,7 @@ use rfd::FileDialog;
 use core_drawable::{AdmScene, AdmSceneRoot, AnimationSet, DrawableManifestRegistry};
 use core_resources::{AnimationState, AttachedAnimSets, ModelName, ModelRegistry};
 
-use crate::state::{AnimDebugState, GltfHandleCache, ModelPaths, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton, ViewerSessionAnimHandles};
+use crate::state::{AnimDebugState, GltfHandleCache, ModelPaths, ModelSourcePaths, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton, ViewerSessionAnimHandles};
 
 pub(crate) fn handle_loader_buttons(
     adm_q: Query<&Interaction, (Changed<Interaction>, With<UiLoadAdmButton>)>,
@@ -20,6 +20,7 @@ pub(crate) fn handle_loader_buttons(
     mut gltf_cache: ResMut<GltfHandleCache>,
     mut model_reg: ResMut<ModelRegistry>,
     mut anim_handles: ResMut<ViewerSessionAnimHandles>,
+    mut model_source_paths: ResMut<ModelSourcePaths>,
     mut commands: Commands,
     roots: Query<Entity, With<AdmSceneRoot>>,
     mut query_anim_roots: Query<&mut AttachedAnimSets>,
@@ -47,6 +48,7 @@ pub(crate) fn handle_loader_buttons(
                 &mut gltf_cache,
                 &mut model_reg,
                 &mut anim_handles,
+                &mut model_source_paths,
                 &mut commands,
                 &[],
             );
@@ -119,6 +121,7 @@ pub(crate) fn load_models(
     mut gltf_cache: ResMut<GltfHandleCache>,
     mut model_reg: ResMut<ModelRegistry>,
     mut anim_handles: ResMut<ViewerSessionAnimHandles>,
+    mut model_source_paths: ResMut<ModelSourcePaths>,
     mut commands: Commands,
     mut overlay: Query<&mut Text, With<crate::state::InfoOverlay>>,
 ) {
@@ -155,6 +158,7 @@ pub(crate) fn load_models(
             &mut gltf_cache,
             &mut model_reg,
             &mut anim_handles,
+            &mut model_source_paths,
             &mut commands,
             &explicit_anim_sets,
         );
@@ -180,6 +184,7 @@ pub(crate) fn load_one_model(
     gltf_cache: &mut GltfHandleCache,
     model_reg: &mut ModelRegistry,
     anim_handles: &mut ViewerSessionAnimHandles,
+    model_source_paths: &mut ModelSourcePaths,
     commands: &mut Commands,
     explicit_anim_sets: &[String],
 ) {
@@ -204,6 +209,7 @@ pub(crate) fn load_one_model(
     if ext == "adm" {
         let adm_handle: Handle<AdmScene> = asset_server.load(bevy_path.clone());
         model_reg.register_native(stem.clone(), bevy_path.clone());
+        model_source_paths.0.insert(stem.clone(), path.clone());
 
         let mut attached_sets: Vec<String> = explicit_anim_sets.to_vec();
 

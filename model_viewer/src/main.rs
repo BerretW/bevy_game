@@ -17,30 +17,16 @@
 //!   W                     → cyklovat weather presety (clean → dirty → wet → snowy)
 //!   V                     → cyklovat vertex color debug kanály (off → RGB → R → G → B → A)
 
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::{Cursor, Read};
 use std::path::PathBuf;
 
 use bevy::asset::UnapprovedPathMode;
-use bevy::ecs::hierarchy::ChildOf;
-use bevy::gltf::{Gltf, GltfLoaderSettings};
-use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
-use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
-use rfd::FileDialog;
 
 use core_drawable::{
-    AdmScene, AdmSceneRoot, AnimationSet,
-    AdsNodeKind,
-    CollisionShape, DrawableCollision,
-    LodGroup,
-    DrawableManifest, DrawableManifestRegistry, DrawablePlugin, EntityDef,
-    TextureSource,
-    StandardPbrMaterial, LayeredEnvMaterial,
+    DrawablePlugin,
 };
-use core_resources::{AnimationState, AttachedAnimSets, ModelName, ModelRegistry};
+use core_resources::ModelRegistry;
 
 mod camera;
 mod state;
@@ -106,6 +92,7 @@ fn main() {
         .init_resource::<ModelRegistry>()
         .init_resource::<camera::OrbitState>()
         .init_resource::<textures::TextureBrowser>()
+        .init_resource::<state::ModelSourcePaths>()
         .init_resource::<AdmAnimationBrowser>()
         .init_resource::<RigViewerState>()
         .init_resource::<ViewerSessionAnimHandles>()
@@ -136,6 +123,16 @@ fn main() {
                 animation::update_anim_debug_overlay,
                 runtime::update_rig_overlay,
                 runtime::update_collider_panel,
+            ),
+        )
+        .add_systems(Update, runtime::handle_rig_mouse_drag)
+        .add_systems(
+            Update,
+            (
+                textures::init_texture_browser,
+                textures::handle_texture_keys,
+                textures::rebuild_panel,
+                textures::show_extract_status,
             ),
         )
         .add_systems(

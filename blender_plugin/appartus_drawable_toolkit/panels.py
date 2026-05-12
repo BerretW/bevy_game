@@ -33,6 +33,13 @@ class BEVY_UL_AnimationDictionaries(bpy.types.UIList):
         row.label(text=str(len(dict_item.clips)))
 
 
+class BEVY_UL_IkChains(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "enabled", text="")
+        row.label(text=item.name or "(unnamed)", icon="CONSTRAINT_BONE")
+
+
 def _draw_bevy_material_props(layout, mat):
     props    = mat.bevy_toolkit
     template = props.template
@@ -234,34 +241,46 @@ class BEVY_PT_Panel(bpy.types.Panel):
 
             ik_box, ik_open = _collapsible_box(mixamo_box, settings, "ui_show_ik_tools", "IK Chains", "CONSTRAINT_BONE")
             if ik_open:
-                ik_box.prop(settings, "ik_export_sidecar")
-                ik_box.prop(settings, "new_ik_chain_name", text="Chain")
-                row = ik_box.row(align=True)
-                row.operator("ads.ik_chain_add", text="Add Chain", icon="ADD")
-                row.operator("ads.ik_chain_remove", text="Remove Chain", icon="REMOVE")
-                row = ik_box.row(align=True)
-                row.operator("ads.ik_chain_prev", text="", icon="TRIA_LEFT")
-                row.operator("ads.ik_chain_next", text="", icon="TRIA_RIGHT")
-                row.operator("ads.ik_chain_autofill_biped", text="Autofill Biped", icon="ARMATURE_DATA")
-                ik_box.operator("ads.ik_chain_validate", text="Validate Against Armature", icon="CHECKMARK")
+                # One-click biped setup
+                ik_box.operator("ads.ik_chain_setup_biped", text="Setup Biped IK (bones + chains)", icon="ARMATURE_DATA")
 
+                # List view with add/remove
+                ik_box.template_list(
+                    "BEVY_UL_IkChains", "",
+                    settings, "ik_chains",
+                    settings, "active_ik_chain_index",
+                    rows=min(4, max(2, len(settings.ik_chains))),
+                )
+                row = ik_box.row(align=True)
+                row.prop(settings, "new_ik_chain_name", text="")
+                row.operator("ads.ik_chain_add", text="", icon="ADD")
+                row.operator("ads.ik_chain_remove", text="", icon="REMOVE")
+
+                # Actions
+                act_row = ik_box.row(align=True)
+                act_row.operator("ads.ik_chain_create_bones", text="Create IK Bones", icon="BONE_DATA")
+                act_row.operator("ads.ik_chain_validate", text="Validate", icon="CHECKMARK")
+                ik_box.prop(settings, "ik_export_sidecar")
+
+                # Active chain detail
                 if settings.ik_chains:
-                    max_idx = len(settings.ik_chains) - 1
-                    active_idx = min(max(0, settings.active_ik_chain_index), max_idx)
+                    active_idx = min(max(0, settings.active_ik_chain_index), len(settings.ik_chains) - 1)
                     chain = settings.ik_chains[active_idx]
-                    ik_box.label(text=f"Selected: {chain.name}")
-                    ik_box.prop(chain, "name")
-                    ik_box.prop(chain, "enabled")
-                    ik_box.prop(chain, "parent_bone_name")
-                    ik_box.prop(chain, "ik_target_name")
-                    ik_box.prop(chain, "effector_bone_name")
-                    ik_box.prop(chain, "pole_bone_name")
-                    ik_box.prop(chain, "chain_length")
-                    ik_box.prop(chain, "solver_iterations")
-                    ik_box.prop(chain, "min_knee_angle")
-                    ik_box.prop(chain, "max_knee_angle")
+                    box = ik_box.box()
+                    box.prop(chain, "name")
+                    col = box.column(align=True)
+                    col.prop(chain, "parent_bone_name")
+                    col.prop(chain, "ik_target_name")
+                    col.prop(chain, "effector_bone_name")
+                    col.prop(chain, "pole_bone_name")
+                    col = box.column(align=True)
+                    col.prop(chain, "chain_length")
+                    col.prop(chain, "solver_iterations")
+                    row = box.row(align=True)
+                    row.prop(chain, "min_knee_angle")
+                    row.prop(chain, "max_knee_angle")
                 else:
-                    ik_box.label(text="(no IK chains)")
+                    ik_box.label(text="(no IK chains — click Setup Biped IK)")
 
             dict_box, dict_open = _collapsible_box(mixamo_box, settings, "ui_show_animation_dictionaries", "Animation Dictionaries", "ACTION")
             if dict_open:

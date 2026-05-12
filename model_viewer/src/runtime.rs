@@ -3,6 +3,7 @@ use bevy::gltf::Gltf;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 use core_drawable::{
     AdsNodeKind,
@@ -207,11 +208,30 @@ pub(crate) fn handle_rig_keyboard(
     mut state: ResMut<ViewerState>,
     mut rig: ResMut<RigViewerState>,
     mut transforms: Query<&mut Transform>,
+    mut debug_status: Query<(&mut Text, &mut Visibility), With<DebugStatus>>,
 ) {
-    if keys.just_pressed(KeyCode::KeyZ) {
+    if keys.just_pressed(KeyCode::KeyI) {
         rig.ik_mode = !rig.ik_mode;
+        rig.dragging_ik = false;
         if rig.ik_mode {
             state.skeleton_visible = true;
+        }
+
+        if let Ok((mut txt, mut vis)) = debug_status.single_mut() {
+            *vis = Visibility::Visible;
+            if rig.ik_names.is_empty() {
+                txt.0 = format!(
+                    "IK režim: {}\nIK prvky: 0\nSeznam: (žádné IK targety)",
+                    if rig.ik_mode { "ON" } else { "OFF" }
+                );
+            } else {
+                txt.0 = format!(
+                    "IK režim: {}\nIK prvky: {}\nSeznam: {}",
+                    if rig.ik_mode { "ON" } else { "OFF" },
+                    rig.ik_names.len(),
+                    rig.ik_names.join(", ")
+                );
+            }
         }
     }
 
@@ -248,13 +268,88 @@ pub(crate) fn handle_rig_keyboard(
 
     if keys.pressed(KeyCode::KeyJ) { delta.x -= step; }
     if keys.pressed(KeyCode::KeyL) { delta.x += step; }
-    if keys.pressed(KeyCode::KeyI) { delta.y += step; }
-    if keys.pressed(KeyCode::KeyK) { delta.y -= step; }
+    if keys.pressed(KeyCode::ArrowUp) { delta.y += step; }
+    if keys.pressed(KeyCode::ArrowDown) { delta.y -= step; }
     if keys.pressed(KeyCode::KeyU) { delta.z -= step; }
     if keys.pressed(KeyCode::KeyO) { delta.z += step; }
 
     if delta != Vec3::ZERO {
         transform.translation += delta;
+    }
+}
+
+pub(crate) fn handle_rig_mouse_drag(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    mut rig: ResMut<RigViewerState>,
+    ik_globals: Query<(Entity, &GlobalTransform, Option<&ChildOf>)>,
+    parent_globals: Query<&GlobalTransform>,
+    mut ik_locals: Query<&mut Transform>,
+) {
+    if !rig.ik_mode || rig.ik_targets.is_empty() {
+        rig.hovered_ik = None;
+        rig.dragging_ik = false;
+        return;
+    }
+
+    let Ok(window) = windows.single() else { return };
+    let Some(cursor) = window.cursor_position() else {
+        rig.hovered_ik = None;
+        rig.dragging_ik = false;
+        return;
+    };
+    let Ok((camera, camera_gt)) = camera_q.single() else { return };
+
+    let mut hovered: Option<(usize, f32)> = None;
+    for (idx, entity) in rig.ik_targets.iter().enumerate() {
+        let Ok((_, target_gt, _)) = ik_globals.get(*entity) else { continue };
+        let Ok(screen_pos) = camera.world_to_viewport(camera_gt, target_gt.translation()) else { continue };
+        let d = screen_pos.distance(cursor);
+        if d <= 24.0 {
+            match hovered {
+                Some((_, best_d)) if d >= best_d => {}
+                _ => hovered = Some((idx, d)),
+            }
+        }
+    }
+    rig.hovered_ik = hovered.map(|(idx, _)| idx);
+
+    if mouse.just_pressed(MouseButton::Left) {
+        if let Some(idx) = rig.hovered_ik {
+            rig.selected_ik = idx;
+            if let Some(&entity) = rig.ik_targets.get(idx) {
+                if let Ok((_, target_gt, _)) = ik_globals.get(entity) {
+                    rig.drag_distance = (target_gt.translation() - camera_gt.translation()).length().max(0.05);
+                    rig.dragging_ik = true;
+                }
+            }
+        } else {
+            rig.dragging_ik = false;
+        }
+    }
+
+    if mouse.just_released(MouseButton::Left) {
+        rig.dragging_ik = false;
+    }
+
+    if !rig.dragging_ik || !mouse.pressed(MouseButton::Left) {
+        return;
+    }
+
+    let Some(&selected) = rig.ik_targets.get(rig.selected_ik) else { return };
+    let Ok(ray) = camera.viewport_to_world(camera_gt, cursor) else { return };
+    let target_world = ray.origin + *ray.direction * rig.drag_distance;
+
+    let Ok((_, _, child_of)) = ik_globals.get(selected) else { return };
+    let local_target = if let Some(parent) = child_of.and_then(|c| parent_globals.get(c.parent()).ok()) {
+        parent.to_matrix().inverse().transform_point3(target_world)
+    } else {
+        target_world
+    };
+
+    if let Ok(mut local_t) = ik_locals.get_mut(selected) {
+        local_t.translation = local_target;
     }
 }
 
@@ -274,13 +369,19 @@ pub(crate) fn update_rig_overlay(
 
     *vis = Visibility::Visible;
     let selected_name = rig.ik_names.get(rig.selected_ik).map(String::as_str).unwrap_or("-");
+    let hovered_name = rig
+        .hovered_ik
+        .and_then(|idx| rig.ik_names.get(idx))
+        .map(String::as_str)
+        .unwrap_or("-");
     let rig_entity_count = nodes.iter().count();
     let lines = vec![
         format!("── Rig ──  Skeleton:{}  IK edit:{}", state.skeleton_visible, rig.ik_mode),
         format!("IK targets: {}  Selected: {}", rig.ik_targets.len(), selected_name),
+        format!("Hover: {}  Drag: {}", hovered_name, if rig.dragging_ik { "ON" } else { "OFF" }),
         format!("Move step: {:.2}", rig.move_step),
-        "X show bones | Z IK mode | Tab next target | Shift+Tab prev".to_string(),
-        "I/K Y+/- | J/L X-/+ | U/O Z-/+ | Shift = faster move".to_string(),
+        "X show bones | I IK mode | LMB pick+drag | Tab next target".to_string(),
+        "ArrowUp/ArrowDown Y+/- | J/L X-/+ | U/O Z-/+ | Shift = faster move".to_string(),
         format!("Rig entities: {}", rig_entity_count),
     ];
     txt.0 = lines.join("\n");
@@ -297,6 +398,7 @@ pub(crate) fn draw_skeleton_overlay(
     }
 
     let selected = rig.ik_targets.get(rig.selected_ik).copied();
+    let hovered = rig.hovered_ik.and_then(|idx| rig.ik_targets.get(idx)).copied();
 
     for (entity, kind, gt, parent) in &nodes {
         let pos = gt.translation();
@@ -305,6 +407,8 @@ pub(crate) fn draw_skeleton_overlay(
             AdsNodeKind::IkTarget => {
                 if Some(entity) == selected {
                     Color::srgb(1.0, 0.95, 0.2)
+                } else if Some(entity) == hovered {
+                    Color::srgb(1.0, 0.7, 0.25)
                 } else {
                     Color::srgb(1.0, 0.45, 0.2)
                 }

@@ -66,6 +66,12 @@ files { 'assets/ui_icons.png' }
 
 ## Roadmap
 
+### Recent Fixes
+
+- [x] **2026-05-12**: Model Viewer texture browser/export tool — Registrace chybějících systémů `init_texture_browser`, `handle_texture_keys`, `rebuild_panel`, `show_extract_status` do `Update` scheduling. Nástroj na zobrazení a export textur (T pro toggle, E pro export) znovu plně funkční.
+- [x] **2026-05-12 (oprava)**: Export textur — Oprava cest: ADM cesty byly relativní. Přidán `ModelSourcePaths` Resource, který si pamatuje absolutní cestu na disk pro každý načtený model. Export teď používá absolutní cesty namísto relativních bevy paths.
+- [x] **2026-05-12**: Model Viewer IK edit rozšíření — IK režim přepnut na klávese I (místo Z), přidán mouse pick+drag IK targetů (LMB, hover highlight, výběr nejbližšího cíle pod kurzorem), overlay rozšířen o hover/drag stav a aktualizovány help texty.
+
 ### Fáze 1–4 ✅ Dokončeno
 
 | Fáze | Výsledky |

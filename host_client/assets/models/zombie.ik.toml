@@ -1,0 +1,27 @@
+version = "1.0"
+asset = "zombie"
+armature = "Armature"
+
+[[chains]]
+name = "leg_l"
+enabled = true
+parent_bone = "DEF_thigh_l"
+ik_target = "IK_foot_l"
+effector_bone = "DEF_foot_l"
+pole_bone = "IK_knee_l"
+chain_length = 1
+solver_iterations = 2
+min_knee_angle = 5
+max_knee_angle = 175
+
+[[chains]]
+name = "leg_r"
+enabled = true
+parent_bone = "DEF_thigh_r"
+ik_target = "IK_foot_r"
+effector_bone = "DEF_foot_r"
+pole_bone = "IK_knee_r"
+chain_length = 1
+solver_iterations = 2
+min_knee_angle = 5
+max_knee_angle = 175

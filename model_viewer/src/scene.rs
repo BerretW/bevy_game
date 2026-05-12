@@ -70,7 +70,7 @@ pub(crate) fn setup_scene(mut commands: Commands) {
         Text::new(
             "Pravé drag: orbit  |  Střední drag: pan  |  Kolečko: zoom  \
              |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export\n\
-               W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  X: kostra  |  Z: IK edit  |  L: LOD úroveň",
+             W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  X: kostra  |  I: IK edit + drag  |  L: LOD úroveň",
         ),
         TextFont { font_size: 13.0, ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),

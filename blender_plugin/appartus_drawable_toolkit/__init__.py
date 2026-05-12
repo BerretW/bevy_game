@@ -50,6 +50,8 @@ from .operators import (
     BEVY_OT_IkChainPrev,
     BEVY_OT_IkChainNext,
     BEVY_OT_IkChainAutofillBiped,
+    BEVY_OT_IkChainCreateBones,
+    BEVY_OT_IkChainSetupBiped,
     BEVY_OT_IkChainValidate,
     BEVY_OT_RenameMixamoRig,
     BEVY_OT_ImportMixamoAnimations,
@@ -61,7 +63,7 @@ from .operators import (
     BEVY_OT_FindMissingTextures,
     BEVY_OT_BrowseTexture,
 )
-from .panels import BEVY_PT_MaterialPanel, BEVY_PT_ObjectPanel, BEVY_PT_Panel, BEVY_UL_AnimationDictionaries
+from .panels import BEVY_PT_MaterialPanel, BEVY_PT_ObjectPanel, BEVY_PT_Panel, BEVY_UL_AnimationDictionaries, BEVY_UL_IkChains
 
 classes = (
     BevyObjectProps,
@@ -101,6 +103,8 @@ classes = (
     BEVY_OT_IkChainPrev,
     BEVY_OT_IkChainNext,
     BEVY_OT_IkChainAutofillBiped,
+    BEVY_OT_IkChainCreateBones,
+    BEVY_OT_IkChainSetupBiped,
     BEVY_OT_IkChainValidate,
     BEVY_OT_RenameMixamoRig,
     BEVY_OT_ImportMixamoAnimations,
@@ -114,6 +118,7 @@ classes = (
     BEVY_PT_MaterialPanel,
     BEVY_PT_ObjectPanel,
     BEVY_UL_AnimationDictionaries,
+    BEVY_UL_IkChains,
     BEVY_PT_Panel,
 )
 

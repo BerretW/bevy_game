@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bevy::gltf::{Gltf, GltfAssetLabel};
 use bevy::prelude::*;
@@ -30,8 +30,6 @@ pub struct TextureBrowser {
     pub scroll:         usize,
     pub loaded:         bool,
     pub extract_status: Option<String>,
-    /// Cesty ADM souborů pro E-export (jméno modelu → cesta na disku).
-    pub adm_paths:      std::collections::HashMap<String, String>,
 }
 
 #[derive(Component)]
@@ -114,11 +112,8 @@ pub fn init_texture_browser(
     }
 
     // ── ADM embedded textury ──────────────────────────────────────────────────
-    for (adm_root, model_name) in &adm_roots {
+    for (adm_root, _) in &adm_roots {
         let Some(adm) = adm_assets.get(&adm_root.0) else { continue };
-
-        // Ulož cestu pro E-export
-        browser.adm_paths.insert(model_name.0.clone(), adm.source_path.clone());
 
         let mut names: Vec<&String> = adm.embedded.keys().collect();
         names.sort();
@@ -153,6 +148,7 @@ fn shorten(s: &str) -> String {
 pub fn handle_texture_keys(
     keys:        Res<ButtonInput<KeyCode>>,
     gltf_cache:  Res<GltfHandleCache>,
+    model_paths: Res<crate::state::ModelSourcePaths>,
     mut browser: ResMut<TextureBrowser>,
 ) {
     if keys.just_pressed(KeyCode::KeyT) && browser.loaded {
@@ -171,7 +167,7 @@ pub fn handle_texture_keys(
     }
 
     if keys.just_pressed(KeyCode::KeyE) && browser.loaded {
-        let msg = export_all(&gltf_cache, &browser.adm_paths);
+        let msg = export_all(&gltf_cache, &model_paths.0);
         browser.extract_status = Some(msg);
     }
 }
@@ -327,7 +323,7 @@ pub fn show_extract_status(
 
 fn export_all(
     gltf_cache: &GltfHandleCache,
-    adm_paths:  &std::collections::HashMap<String, String>,
+    adm_paths:  &std::collections::HashMap<String, PathBuf>,
 ) -> String {
     let mut total = 0usize;
     let mut errors: Vec<String> = Vec::new();
@@ -336,18 +332,19 @@ fn export_all(
         let path = std::path::PathBuf::from(bevy_path.replace('/', std::path::MAIN_SEPARATOR_STR));
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("model");
         let out_dir = path.parent().unwrap_or(Path::new(".")).join(format!("{}_textures", stem));
+        warn!("[export] GLB cesta: {:?} → výstupní dir: {:?}", path, out_dir);
         match extract_glb(&path, &out_dir) {
-            Ok(n)  => total += n,
-            Err(e) => errors.push(format!("{stem}: {e}")),
+            Ok(n)  => { total += n; warn!("[export] GLB OK: {} textur", n); },
+            Err(e) => { warn!("[export] GLB chyba: {}", e); errors.push(format!("{stem}: {e}")); },
         }
     }
 
-    for (stem, source_path) in adm_paths {
-        let path = std::path::PathBuf::from(source_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    for (stem, path) in adm_paths {
         let out_dir = path.parent().unwrap_or(Path::new(".")).join(format!("{}_textures", stem));
-        match extract_adm(&path, &out_dir) {
-            Ok(n)  => total += n,
-            Err(e) => errors.push(format!("{stem}: {e}")),
+        warn!("[export] ADM cesta: {:?} → výstupní dir: {:?}", path, out_dir);
+        match extract_adm(path, &out_dir) {
+            Ok(n)  => { total += n; warn!("[export] ADM OK: {} textur", n); },
+            Err(e) => { warn!("[export] ADM chyba: {}", e); errors.push(format!("{stem}: {e}")); },
         }
     }
 

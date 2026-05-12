@@ -10,6 +10,9 @@ pub use core_drawable::GltfHandleCache;
 pub struct ModelPaths(pub Vec<PathBuf>);
 
 #[derive(Resource, Default)]
+pub struct ModelSourcePaths(pub HashMap<String, PathBuf>);
+
+#[derive(Resource, Default)]
 pub struct LodViewerState {
     pub forced: Option<u8>,
     pub panel_active: bool,
@@ -29,6 +32,9 @@ pub struct RigViewerState {
     pub ik_targets: Vec<Entity>,
     pub ik_names: Vec<String>,
     pub selected_ik: usize,
+    pub hovered_ik: Option<usize>,
+    pub dragging_ik: bool,
+    pub drag_distance: f32,
     pub move_step: f32,
 }
 

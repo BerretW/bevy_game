@@ -1384,6 +1384,91 @@ class BEVY_OT_IkChainAutofillBiped(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# Bone specs: (new_bone_name, source_def_bone, head_frac, tail_frac, offset_vec)
+# head/tail_frac: 0.0 = source head, 1.0 = source tail
+# offset_vec: (x, y, z) in world-space added to position
+_BIPED_IK_BONE_SPECS = [
+    ('IK_foot_l',  'DEF_foot_l',  0.0, 0.5, (0.0,  0.0, 0.0)),
+    ('IK_foot_r',  'DEF_foot_r',  0.0, 0.5, (0.0,  0.0, 0.0)),
+    ('IK_knee_l',  'DEF_shin_l',  0.5, 1.0, (0.0, -0.4, 0.0)),
+    ('IK_knee_r',  'DEF_shin_r',  0.5, 1.0, (0.0, -0.4, 0.0)),
+]
+
+
+class BEVY_OT_IkChainCreateBones(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_create_bones"
+    bl_label = "Create IK Bones in Armature"
+    bl_description = (
+        "Creates IK_foot_l/r and IK_knee_l/r bones in the active armature "
+        "based on the positions of DEF_ deform bones. Skips bones that already exist."
+    )
+
+    def execute(self, context):
+        import mathutils
+
+        armature = _find_target_armature(context)
+        if armature is None:
+            self.report({'WARNING'}, "No armature found — select an armature first")
+            return {'CANCELLED'}
+
+        prev_active = context.view_layer.objects.active
+        prev_mode = context.object.mode if context.object else 'OBJECT'
+
+        context.view_layer.objects.active = armature
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        edit_bones = armature.data.edit_bones
+        created = []
+        skipped = []
+
+        for new_name, src_name, h_frac, t_frac, offset in _BIPED_IK_BONE_SPECS:
+            if new_name in edit_bones:
+                skipped.append(new_name)
+                continue
+
+            src = edit_bones.get(src_name)
+            if src is None:
+                self.report({'WARNING'}, f"Source bone '{src_name}' not found — skipping {new_name}")
+                continue
+
+            head_pos = src.head.lerp(src.tail, h_frac) + mathutils.Vector(offset)
+            tail_pos = src.head.lerp(src.tail, t_frac) + mathutils.Vector(offset)
+
+            bone = edit_bones.new(new_name)
+            bone.head = head_pos
+            bone.tail = tail_pos
+            bone.use_deform = False
+            bone.use_connect = False
+            created.append(new_name)
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+        context.view_layer.objects.active = prev_active
+
+        if skipped:
+            self.report({'INFO'}, f"Created {created} | already existed: {skipped}")
+        else:
+            self.report({'INFO'}, f"Created {len(created)} IK bone(s): {created}")
+        return {'FINISHED'}
+
+
+class BEVY_OT_IkChainSetupBiped(bpy.types.Operator):
+    bl_idname = "ads.ik_chain_setup_biped"
+    bl_label = "Setup Biped IK"
+    bl_description = (
+        "One-click biped IK setup: fills chain definitions AND creates "
+        "IK_foot_l/r + IK_knee_l/r bones in the armature"
+    )
+
+    def execute(self, context):
+        bpy.ops.ads.ik_chain_autofill_biped()
+        result = bpy.ops.ads.ik_chain_create_bones()
+        if result == {'CANCELLED'}:
+            self.report({'WARNING'}, "Chain templates filled; bone creation skipped (no armature)")
+        else:
+            self.report({'INFO'}, "Biped IK setup complete — chains filled and bones created")
+        return {'FINISHED'}
+
+
 class BEVY_OT_IkChainValidate(bpy.types.Operator):
     bl_idname = "ads.ik_chain_validate"
     bl_label = "Validate IK Chains"
