@@ -25,6 +25,11 @@ use crate::gui::{FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, 
 use crate::sandbox::{GameBridges, LocalEventBus, LuaSandbox};
 use crate::weapons::{AmmoRegistry, AttachmentRegistry, HitboxRegistry, MaterialRegistry, WeaponRegistry};
 
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ResourceLoadFilter {
+    pub root_resource: Option<ResourceId>,
+}
+
 /// All passthrough resources for `rebuild()` bundled into one SystemParam.
 /// Keeps `initial_load` / `hot_reload_on_dirty` well under Bevy's 16-param limit.
 #[derive(SystemParam)]
@@ -43,7 +48,6 @@ struct RebuildParams<'w> {
     draw_buffer:   Res<'w, GuiDrawBuffer>,
     font_queue:    Res<'w, FontLoadQueue>,
     image_queue:   Res<'w, ImageLoadQueue>,
-    allowlist:     Res<'w, ServerResourceAllowlist>,
     weapon_registry: Res<'w, WeaponRegistry>,
     ammo_registry: Res<'w, AmmoRegistry>,
     attachment_registry: Res<'w, AttachmentRegistry>,
@@ -97,6 +101,58 @@ pub struct ResourcesSide(pub Side);
 pub struct ServerResourceAllowlist {
     pub ids: Option<HashSet<ResourceId>>,
     pub file_hashes: HashMap<ResourceId, HashMap<String, [u8; 32]>>,
+}
+
+fn collect_dependency_closure(
+    manifests: &HashMap<ResourceId, crate::manifest::Manifest>,
+    root: &ResourceId,
+) -> Result<HashSet<ResourceId>, String> {
+    if !manifests.contains_key(root) {
+        return Err(format!("root resource '{}' not found", root));
+    }
+
+    let mut allowed = HashSet::new();
+    let mut stack = vec![root.clone()];
+    while let Some(id) = stack.pop() {
+        if !allowed.insert(id.clone()) {
+            continue;
+        }
+
+        let Some(manifest) = manifests.get(&id) else {
+            return Err(format!("resource '{}' disappeared while collecting dependencies", id));
+        };
+
+        for dep in &manifest.dependencies {
+            let dep_id = ResourceId::new(dep.clone());
+            if !manifests.contains_key(&dep_id) {
+                return Err(format!("resource '{}' depends on missing '{}'", id, dep_id));
+            }
+            stack.push(dep_id);
+        }
+    }
+
+    Ok(allowed)
+}
+
+fn sync_server_allowlist_from_filter(
+    side: Side,
+    vfs: &Vfs,
+    allowlist: &mut ServerResourceAllowlist,
+    filter: &ResourceLoadFilter,
+) -> Result<(), String> {
+    if side != Side::Server {
+        return Ok(());
+    }
+
+    allowlist.file_hashes.clear();
+
+    let Some(root_resource) = filter.root_resource.as_ref() else {
+        allowlist.ids = None;
+        return Ok(());
+    };
+
+    allowlist.ids = Some(collect_dependency_closure(vfs.manifests(), root_resource)?);
+    Ok(())
 }
 
 
@@ -174,6 +230,7 @@ impl Plugin for ResourcesPlugin {
 
         // Server resource allowlist — klient sem dostane seznam povolených IDs po handshaku
         app.init_resource::<ServerResourceAllowlist>();
+        app.init_resource::<ResourceLoadFilter>();
 
         // Console / chat příkazy — dispatch do sandboxů (PostUpdate)
         app.add_systems(PostUpdate, dispatch_console_commands);
@@ -208,8 +265,27 @@ fn initial_load(
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
     mut model_registry: ResMut<ModelRegistry>,
+    mut allowlist: ResMut<ServerResourceAllowlist>,
+    load_filter: Res<ResourceLoadFilter>,
     p: RebuildParams,
 ) {
+    let report = vfs.rescan();
+    for err in &report.errors {
+        error!("[core_resources] scan error: {err}");
+    }
+    info!(
+        "[core_resources] scanned {} resource(s) from {}",
+        report.loaded.len(),
+        vfs.root().display()
+    );
+
+    if let Err(err) = sync_server_allowlist_from_filter(side.0, &vfs, &mut allowlist, &load_filter) {
+        error!("[core_resources] failed to apply resource filter: {err}");
+        registry.sandboxes.clear();
+        registry.order.clear();
+        return;
+    }
+
     rebuild(
         &mut vfs, side.0, &mut registry,
         p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
@@ -222,7 +298,7 @@ fn initial_load(
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
         Some((p.font_queue.clone(), p.image_queue.clone())),
         p.weapon_registry.clone(), p.ammo_registry.clone(), p.attachment_registry.clone(), p.material_registry.clone(), p.hitbox_registry.clone(),
-        &p.allowlist,
+        &allowlist,
     );
 }
 
@@ -232,6 +308,8 @@ fn hot_reload_on_dirty(
     side: Res<ResourcesSide>,
     mut registry: NonSendMut<SandboxRegistry>,
     mut model_registry: ResMut<ModelRegistry>,
+    mut allowlist: ResMut<ServerResourceAllowlist>,
+    load_filter: Res<ResourceLoadFilter>,
     p: RebuildParams,
 ) {
     if events.is_empty() {
@@ -242,6 +320,14 @@ fn hot_reload_on_dirty(
         "[core_resources] filesystem change ({count} event{}), reloading",
         if count == 1 { "" } else { "s" }
     );
+
+    if let Err(err) = sync_server_allowlist_from_filter(side.0, &vfs, &mut allowlist, &load_filter) {
+        error!("[core_resources] failed to apply resource filter: {err}");
+        registry.sandboxes.clear();
+        registry.order.clear();
+        return;
+    }
+
     rebuild(
         &mut vfs, side.0, &mut registry,
         p.cmd_queue.clone(), p.local_bus.clone(), p.model_cmds.clone(),
@@ -254,7 +340,7 @@ fn hot_reload_on_dirty(
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
         Some((p.font_queue.clone(), p.image_queue.clone())),
         p.weapon_registry.clone(), p.ammo_registry.clone(), p.attachment_registry.clone(), p.material_registry.clone(), p.hitbox_registry.clone(),
-        &p.allowlist,
+        &allowlist,
     );
 }
 
@@ -283,16 +369,6 @@ fn rebuild(
     hitbox_registry: HitboxRegistry,
     allowlist: &ServerResourceAllowlist,
 ) {
-    let report = vfs.rescan();
-    for err in &report.errors {
-        error!("[core_resources] scan error: {err}");
-    }
-    info!(
-        "[core_resources] scanned {} resource(s) from {}",
-        report.loaded.len(),
-        vfs.root().display()
-    );
-
     let stream_models = vfs.scan_stream_models();
     model_registry.rebuild_from_scan(stream_models);
 
@@ -313,7 +389,8 @@ fn rebuild(
         }
     };
 
-    // Filtr: na klientovi načíst jen resources, které server poslal v ServerHello
+    // Filtr: klient načte jen resources, které server poslal v ServerHello.
+    // Server může stejný allowlist používat pro root gamemode + dependency closure.
     if let Some(ref allowed) = allowlist.ids {
         let before = order.len();
         order.retain(|id| allowed.contains(id));

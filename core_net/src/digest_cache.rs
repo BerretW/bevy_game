@@ -10,7 +10,7 @@
 //! `IoTaskPool` (sledujeme jako Phase 4 follow-up).
 
 use bevy::prelude::*;
-use core_resources::Vfs;
+use core_resources::{ServerResourceAllowlist, Vfs};
 
 use crate::digest::{compute_resource_digest, ResourceDigestSet};
 
@@ -52,7 +52,11 @@ impl Plugin for DigestPlugin {
     }
 }
 
-fn refresh_on_vfs_change(vfs: Res<Vfs>, mut cache: ResMut<ResourceDigestCache>) {
+fn refresh_on_vfs_change(
+    vfs: Res<Vfs>,
+    allowlist: Res<ServerResourceAllowlist>,
+    mut cache: ResMut<ResourceDigestCache>,
+) {
     // Zatím i initial Startup load zachytíme — Vfs::new vytvoří prázdnou,
     // potom Startup `initial_load` system zavolá rescan a tím změní stav.
     // V dalším Update tickovém kroku tu projdeme s `is_changed() == true`.
@@ -61,6 +65,9 @@ fn refresh_on_vfs_change(vfs: Res<Vfs>, mut cache: ResMut<ResourceDigestCache>) 
     }
 
     let mut manifests: Vec<&core_resources::Manifest> = vfs.manifests().values().collect();
+    if let Some(allowed) = allowlist.ids.as_ref() {
+        manifests.retain(|manifest| allowed.contains(&manifest.id));
+    }
     manifests.sort_by(|a, b| a.id.cmp(&b.id));
 
     let mut set = ResourceDigestSet::default();

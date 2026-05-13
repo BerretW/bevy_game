@@ -318,6 +318,12 @@ pub enum LuaCommand {
         slot: String,
         armor: Option<ArmorPiece>,
     },
+    /// Phase 5 — nastaví aktuální/max HP hráče.
+    SetPlayerHealth {
+        player_id: u64,
+        current: f32,
+        max: Option<f32>,
+    },
     /// Phase 5 — zapne nebo vypne kolizi entity a jejích potomků.
     /// Fyzikální backend reaguje přes `CollisionEnabled` komponent.
     SetCollisionEnabled {
@@ -2369,6 +2375,7 @@ pub fn process_lua_commands(
     mut attached_anim_sets: Query<&mut AttachedAnimSets>,
     mut player_stats: Query<(
         &PlayerMarker,
+        &mut Health,
         &mut Stats,
         &mut Inventory,
         &mut ArmorComponent,
@@ -3291,7 +3298,7 @@ pub fn process_lua_commands(
 
             LuaCommand::SetStat { player_id, name, value } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, mut stats, _, _, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, mut stats, _, _, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
                         stats.0.insert(name.clone(), value);
                         debug!("[cmd_queue] SetStat player={} {}={}", player_id, name, value);
                     } else {
@@ -3304,7 +3311,7 @@ pub fn process_lua_commands(
 
             LuaCommand::GiveItem { player_id, item, count } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, _, mut inv, _, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, _, mut inv, _, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
                         let entry = inv.0.entry(item.clone()).or_insert(0);
                         if count >= 0 {
                             *entry = entry.saturating_add(count as u32);
@@ -3330,7 +3337,7 @@ pub fn process_lua_commands(
                 equipped,
             } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, _, _, _, mut slots, _, _, _, _, _)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, _, _, _, mut slots, _, _, _, _, _)) = player_stats.get_mut(entity) {
                         let equipped = equipped.map(|mut equipped| {
                             if equipped.fire_mode.trim().is_empty() {
                                 if let Some(weapon_def) = player_runtime.weapon_registry.get(&equipped.weapon_id) {
@@ -3367,7 +3374,7 @@ pub fn process_lua_commands(
                 count,
             } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, _, _, _, _, mut reserve, _, _, _, _)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, _, _, _, _, mut reserve, _, _, _, _)) = player_stats.get_mut(entity) {
                         reserve.0.insert(ammo_type_id.clone(), count);
                         debug!(
                             "[cmd_queue] SetAmmoReserve player={} ammo={} count={}",
@@ -3385,7 +3392,7 @@ pub fn process_lua_commands(
 
             LuaCommand::SetActiveWeaponSlot { player_id, slot } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, _, _, _, slots, _, active_slot, mut fire_state, mut reload_state, mut weapon_swap)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, _, _, _, slots, _, active_slot, mut fire_state, mut reload_state, mut weapon_swap)) = player_stats.get_mut(entity) {
                         if slot < 4 {
                             *fire_state = FireState::default();
                             if reload_state.remaining > 0.0 {
@@ -3424,7 +3431,7 @@ pub fn process_lua_commands(
                 fire_mode,
             } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, _, _, _, mut slots, _, active_slot, mut fire_state, _, _)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, _, _, _, mut slots, _, active_slot, mut fire_state, _, _)) = player_stats.get_mut(entity) {
                         let target_slot = slot.unwrap_or(active_slot.0);
                         if let Some(equipped) = slots.get_mut(target_slot) {
                             equipped.fire_mode = fire_mode.clone();
@@ -3448,7 +3455,7 @@ pub fn process_lua_commands(
 
             LuaCommand::ForceReload { player_id } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, _, _, _, slots, reserve, active_slot, mut fire_state, mut reload_state, mut weapon_swap)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, _, _, _, slots, reserve, active_slot, mut fire_state, mut reload_state, mut weapon_swap)) = player_stats.get_mut(entity) {
                         *fire_state = FireState::default();
                         *weapon_swap = WeaponSwapState::default();
                         if let Some(duration) = reload_duration_for_slot(
@@ -3485,7 +3492,7 @@ pub fn process_lua_commands(
                 armor,
             } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
-                    if let Ok((_, _, _, mut armor_component, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
+                    if let Ok((_, _, _, _, mut armor_component, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
                         let target = match slot.as_str() {
                             "helmet" => &mut armor_component.helmet,
                             "vest" => &mut armor_component.vest,
@@ -3501,6 +3508,27 @@ pub fn process_lua_commands(
                     }
                 } else {
                     warn!("[cmd_queue] SetPlayerArmor: unknown player_id {}", player_id);
+                }
+            }
+
+            LuaCommand::SetPlayerHealth { player_id, current, max } => {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, mut health, _, _, _, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
+                        if let Some(max_health) = max {
+                            health.max = max_health.max(1.0);
+                        }
+                        health.current = current.clamp(0.0, health.max.max(1.0));
+                        debug!(
+                            "[cmd_queue] SetPlayerHealth player={} current={} max={}",
+                            player_id,
+                            health.current,
+                            health.max
+                        );
+                    } else {
+                        warn!("[cmd_queue] SetPlayerHealth: player {} missing Health", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] SetPlayerHealth: unknown player_id {}", player_id);
                 }
             }
 

@@ -46,14 +46,14 @@ public = false
 [gameplay]
 
 # Maximum simultánně připojených hráčů.
-max_players = 32
+max_players = 8
 
 # Velikost čekací fronty nad rámec max_players. 0 = fronta vypnutá.
 queue_max = 0
 
 # Kořenový gamemode resource (Phase 3+). Když uvedený, server ho ohlásí
 # v ServerHello, klient si tak může zkontrolovat, že má správný build.
-# gamemode = "modes/extraction"
+gamemode = "modes/arena_mvp"
 
 # Po jaké době nečinnosti (gameplay-level) hráče kickneme. Tohle není
 # netcode timeout — ten řídí [net].connection_timeout_sec.

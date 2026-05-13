@@ -25,7 +25,7 @@ use core_net::{
     ServerHandshakeConfig, ServerHandshakePlugin, ServerLuaRpcPlugin,
     ServerNetConfig, ServerNetPlugin, ServerSimPlugin,
 };
-use core_resources::{ResourcesPlugin, Side};
+use core_resources::{ResourceId, ResourceLoadFilter, ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
 
 use crate::config::{
@@ -125,6 +125,9 @@ fn main() {
         .insert_resource(ServerInfoResource(cfg.server.clone()))
         .insert_resource(GameplayResource(cfg.gameplay.clone()))
         .insert_resource(DevResource(cfg.dev.clone()))
+        .insert_resource(ResourceLoadFilter {
+            root_resource: cfg.gameplay.gamemode.as_ref().map(ResourceId::new),
+        })
         .add_plugins((
             MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(tick_duration)),
             LogPlugin {

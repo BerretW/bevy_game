@@ -2933,6 +2933,41 @@ fn install_runtime_api_inner(
         },
     )?)?;
 
+    // Player.SetHealth(player_id, current, max?) — server only
+    let cq = cmd_queue.clone();
+    player_ns.set("SetHealth", lua.create_function(
+        move |_, args: MultiValue| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("Player.SetHealth is server-only".into()));
+            }
+            if args.len() < 2 {
+                return Err(mlua::Error::RuntimeError(
+                    "Player.SetHealth(player_id, current, max?) requires player_id and current".into(),
+                ));
+            }
+
+            let player_id = lua_value_to_u64(&args[0]).unwrap_or(0);
+            let current = match &args[1] {
+                mlua::Value::Integer(v) => *v as f32,
+                mlua::Value::Number(v) => *v as f32,
+                _ => return Err(mlua::Error::RuntimeError("Player.SetHealth: current must be a number".into())),
+            };
+            let max = match args.get(2) {
+                Some(mlua::Value::Integer(v)) => Some(*v as f32),
+                Some(mlua::Value::Number(v)) => Some(*v as f32),
+                Some(mlua::Value::Nil) | None => None,
+                _ => return Err(mlua::Error::RuntimeError("Player.SetHealth: max must be a number".into())),
+            };
+
+            cq.push(LuaCommand::SetPlayerHealth {
+                player_id,
+                current,
+                max,
+            });
+            Ok(())
+        },
+    )?)?;
+
     // Player.GetArmor(player_id) -> table|nil
     let sc = stats_cache.clone();
     player_ns.set("GetArmor", lua.create_function(

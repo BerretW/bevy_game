@@ -9,7 +9,7 @@
 //!   změny, až je doplníme.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -17,6 +17,23 @@ use serde::Deserialize;
 /// Default jméno config souboru. Server ho hledá nejprve vedle `.exe`,
 /// teprve potom v CWD (viz [`resolve_path_relative_to_exe`]).
 pub const DEFAULT_CONFIG_FILE: &str = "server.toml";
+
+fn is_dev_target_exe(exe: &Path) -> bool {
+    let mut components = exe.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(part) = component else { continue };
+        if part != "target" {
+            continue;
+        }
+
+        let Some(Component::Normal(profile)) = components.next() else {
+            return false;
+        };
+        return profile == "debug" || profile == "release";
+    }
+
+    false
+}
 
 /// Vrátí absolutní cestu pro daný (typicky relativní) path s fallback mechanismem:
 ///
@@ -76,6 +93,17 @@ pub fn resolve_path_relative_to_exe(rel: &Path) -> PathBuf {
 
 /// Default config path s exe-adjacent fallbackem (viz [`resolve_path_relative_to_exe`]).
 pub fn resolve_default_config_path() -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_candidate = cwd.join(DEFAULT_CONFIG_FILE);
+        if cwd_candidate.exists() {
+            if let Ok(exe) = std::env::current_exe() {
+                if is_dev_target_exe(&exe) {
+                    return cwd_candidate;
+                }
+            }
+        }
+    }
+
     resolve_path_relative_to_exe(Path::new(DEFAULT_CONFIG_FILE))
 }
 

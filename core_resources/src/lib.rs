@@ -61,7 +61,7 @@ pub use model_registry::{
     refresh_model_load_states,
 };
 pub use ace::AceRegistry;
-pub use plugin::{ResourcesPlugin, ResourcesSide, SandboxRegistry, ServerResourceAllowlist};
+pub use plugin::{ResourceLoadFilter, ResourcesPlugin, ResourcesSide, SandboxRegistry, ServerResourceAllowlist};
 pub use resolver::{resolve_load_order, ResolveError};
 pub use sandbox::{
     AuthBridge, PendingAuthCredentials, PendingAuthResult,
