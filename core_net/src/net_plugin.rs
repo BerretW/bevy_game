@@ -36,7 +36,7 @@ use core_shared::{NetTransform, NetVelocity, PlayerMarker};
 
 use crate::protocol::{
     AuthChallenge, AuthCredentials, AuthResult,
-    ClientReady, LuaEventMessage, PlayerInput, PlayerStatsUpdate, ServerHello,
+    ClientReady, LuaEventMessage, NpcTransformUpdate, PlayerInput, PlayerStatsUpdate, ServerHello,
     TileStreamingCommand,
 };
 
@@ -78,6 +78,10 @@ pub struct LuaRpcChannel;
 /// → konzistentní latency. Vhodné pro tick-rate inputy, ne pro reliable RPC.
 pub struct InputChannel;
 
+/// Phase 5 — sequenced unreliable kanál pro client-owned NPC transformy.
+/// Zastaralé pakety se zahodí, důležitý je jen nejnovější stav.
+pub struct NpcTransformChannel;
+
 /// Phase 4 — sequenced unreliable kanál pro `PlayerStatsUpdate` (~10 Hz, server→klient).
 /// Vždy zajímá jen poslední stav; ztráta paketu je přijatelná.
 pub struct StatsChannel;
@@ -114,6 +118,8 @@ impl Plugin for ProtocolPlugin {
         // Phase 3 — tick-rate input messages.
         app.register_message::<PlayerInput>()
             .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<NpcTransformUpdate>()
+            .add_direction(NetworkDirection::ClientToServer);
 
         // Phase 4 — stats update (server → client).
         app.register_message::<PlayerStatsUpdate>()
@@ -137,6 +143,12 @@ impl Plugin for ProtocolPlugin {
         // Inputs — sequenced unreliable: zastaralé pakety dropujeme,
         // čerstvý tick state nahradí starší.
         app.add_channel::<InputChannel>(ChannelSettings {
+            mode: ChannelMode::SequencedUnreliable,
+            ..default()
+        })
+        .add_direction(NetworkDirection::ClientToServer);
+
+        app.add_channel::<NpcTransformChannel>(ChannelSettings {
             mode: ChannelMode::SequencedUnreliable,
             ..default()
         })
@@ -198,6 +210,7 @@ impl Plugin for ProtocolPlugin {
         app.register_component::<core_resources::ModelName>();
         app.register_component::<core_resources::NpcPedMarker>();
         app.register_component::<core_resources::NpcOwner>();
+        app.register_component::<core_resources::ReplicatedNpcBrain>();
         app.register_component::<core_resources::PedProfileOverride>();
         app.register_component::<core_resources::DummyObjectMarker>();
         app.register_component::<core_resources::ColliderObjectMarker>();

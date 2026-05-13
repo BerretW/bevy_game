@@ -7,13 +7,13 @@
 //! * Lua eventy: `playerConnecting`, `playerDropped`, `onPlayerHit`, `onPlayerDeath`.
 
 use bevy::prelude::*;
-use core_resources::{GameBridges, LocalEventBus};
+use core_resources::{GameBridges, LocalEventBus, LuaWorldState, NpcOwner, NpcPedMarker};
 use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::server::LinkOf;
 
 use crate::net_plugin::StatsChannel;
-use crate::protocol::{player_action, PlayerInput, PlayerStatsUpdate};
+use crate::protocol::{NpcTransformUpdate, player_action, PlayerInput, PlayerStatsUpdate};
 
 pub const PLAYER_MOVE_SPEED: f32 = 5.0;
 pub const PLAYER_SPRINT_MULTIPLIER: f32 = 1.35;
@@ -86,6 +86,7 @@ impl Plugin for ServerSimPlugin {
         // collect_last_inputs bezi v Update, drainuje MessageReceiver.
         // apply_inputs + process_combat cte LastPlayerInputs v FixedUpdate.
         app.add_systems(Update, collect_last_inputs);
+        app.add_systems(Update, receive_npc_transform_updates);
         app.add_systems(
             FixedUpdate,
             (
@@ -454,6 +455,49 @@ pub fn collect_last_inputs(
         };
         for input in rx.receive() {
             last.update(client_id, input);
+        }
+    }
+}
+
+pub fn receive_npc_transform_updates(
+    mut receivers: Query<(&mut MessageReceiver<NpcTransformUpdate>, &RemoteId)>,
+    world_state: Res<LuaWorldState>,
+    mut npcs: Query<(&mut Transform, &mut NetTransform, &NpcOwner), With<NpcPedMarker>>,
+) {
+    for (mut rx, remote_id) in receivers.iter_mut() {
+        let client_id = match remote_id.0 {
+            PeerId::Netcode(id) => id,
+            _ => continue,
+        };
+
+        for update in rx.receive() {
+            let Some(entity) = world_state.entity_for(update.handle) else {
+                continue;
+            };
+            let Ok((mut transform, mut net_transform, owner)) = npcs.get_mut(entity) else {
+                continue;
+            };
+            if owner.0 != Some(client_id) {
+                continue;
+            }
+
+            let [px, py, pz] = update.translation;
+            let [rx, ry, rz, rw] = update.rotation;
+            if !(px.is_finite() && py.is_finite() && pz.is_finite() && rx.is_finite() && ry.is_finite() && rz.is_finite() && rw.is_finite()) {
+                continue;
+            }
+
+            let raw_rotation = Quat::from_xyzw(rx, ry, rz, rw);
+            let rotation = if raw_rotation.length_squared() > 1.0e-6 {
+                raw_rotation.normalize()
+            } else {
+                Quat::IDENTITY
+            };
+            let translation = Vec3::new(px, py, pz);
+            transform.translation = translation;
+            transform.rotation = rotation;
+            net_transform.translation = translation;
+            net_transform.rotation = rotation;
         }
     }
 }

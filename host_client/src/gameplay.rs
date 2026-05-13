@@ -30,12 +30,12 @@ use bevy_gltf::{
     GltfSceneExtras,
 };
 use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver, OnStairs};
-use core_net::{player_action, InputChannel, PlayerInput};
+use core_net::{player_action, InputChannel, NpcTransformChannel, NpcTransformUpdate, PlayerInput};
 use core_resources::{
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
     DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
     IkEnabledComponent, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
-    NpcPedMarker,
+    NpcAgent, NpcOwner, NpcPedMarker, ReplicatedNpcBrain,
     ModelRegistry, StairsCollider, process_lua_commands, sync_entity_state_cache,
 };
 use core_shared::{NetTransform, PlayerMarker};
@@ -249,10 +249,19 @@ impl Plugin for ClientGameplayPlugin {
                 attach_player_model_to_new_players,
                 prefer_predicted_player_visuals,
                 sync_net_transform_to_render,
+                bootstrap_owned_npc_agents,
+                cleanup_unowned_npc_agents,
                 update_camera_follow,
                 update_raycast_bridge,
                 update_crosshair_entity,
                 update_input_bridge,
+            )
+                .chain()
+                .run_if(in_state(AppState::InGame)),
+        );
+        app.add_systems(
+            Update,
+            (
                 update_connection_bridge,
                 update_local_player_visibility,
                 publish_input_state_to_lua,
@@ -305,8 +314,10 @@ impl Plugin for ClientGameplayPlugin {
         // Damps contact-response vel.y spikes before Update systems read them.
         app.add_systems(
             FixedPostUpdate,
-            post_physics_vel_y_damp
-                .after(PhysicsSystems::Writeback)
+            (
+                post_physics_vel_y_damp.after(PhysicsSystems::Writeback),
+                send_owned_npc_transforms,
+            )
                 .run_if(in_state(AppState::InGame)),
         );
         // Registrace replicated entity handles v LuaWorldState.
@@ -1150,11 +1161,75 @@ fn attach_model_to_new_npcs(
 }
 
 fn sync_npc_net_transform(
-    mut q: Query<(&mut Transform, &NetTransform), (With<NpcPedMarker>, With<NpcVisualAttached>)>,
+    local_client_id: Option<Res<LocalClientId>>,
+    mut q: Query<(&mut Transform, &NetTransform, Option<&NpcOwner>), (With<NpcPedMarker>, With<NpcVisualAttached>)>,
 ) {
-    for (mut transform, net_tf) in &mut q {
+    let local_id = local_client_id.map(|v| v.0);
+    for (mut transform, net_tf, owner) in &mut q {
+        if let (Some(local_id), Some(owner)) = (local_id, owner) {
+            if owner.0 == Some(local_id) {
+                continue;
+            }
+        }
         transform.translation = net_tf.translation;
         transform.rotation = net_tf.rotation;
+    }
+}
+
+fn bootstrap_owned_npc_agents(
+    local_client_id: Option<Res<LocalClientId>>,
+    mut commands: Commands,
+    npcs: Query<(Entity, &EntityHandle, &Transform, &NpcOwner), (With<NpcPedMarker>, With<ReplicatedNpcBrain>, Without<NpcAgent>)>,
+) {
+    let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
+
+    for (entity, handle, transform, owner) in &npcs {
+        if owner.0 != Some(local_id) {
+            continue;
+        }
+        commands.entity(entity).insert(NpcAgent::new(handle.0, transform.translation));
+    }
+}
+
+fn cleanup_unowned_npc_agents(
+    local_client_id: Option<Res<LocalClientId>>,
+    mut commands: Commands,
+    npcs: Query<(Entity, &NpcOwner), (With<NpcPedMarker>, With<NpcAgent>)>,
+) {
+    let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
+
+    for (entity, owner) in &npcs {
+        if owner.0 == Some(local_id) {
+            continue;
+        }
+        commands.entity(entity).remove::<NpcAgent>();
+    }
+}
+
+fn send_owned_npc_transforms(
+    local_client_id: Option<Res<LocalClientId>>,
+    owned_npcs: Query<(&EntityHandle, &Transform, &NpcOwner), (With<NpcPedMarker>, With<NpcAgent>)>,
+    mut senders: Query<&mut MessageSender<NpcTransformUpdate>>,
+) {
+    let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
+
+    for (handle, transform, owner) in &owned_npcs {
+        if owner.0 != Some(local_id) {
+            continue;
+        }
+        let translation = transform.translation;
+        let rotation = transform.rotation.normalize();
+        if !(translation.x.is_finite() && translation.y.is_finite() && translation.z.is_finite()) {
+            continue;
+        }
+        let msg = NpcTransformUpdate {
+            handle: handle.0,
+            translation: [translation.x, translation.y, translation.z],
+            rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+        };
+        for mut sender in &mut senders {
+            let _ = sender.send::<NpcTransformChannel>(msg.clone());
+        }
     }
 }
 

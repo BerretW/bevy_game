@@ -19,3 +19,7 @@ dependencies {
 shared_scripts {
     'shared/main.lua',
 }
+
+server_scripts {
+    'server/npc_demo.lua',
+}

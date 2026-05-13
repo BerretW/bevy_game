@@ -34,6 +34,7 @@ use crate::model_registry::{
     ModelAnimationRegistry,
     ModelCommand, ModelCommandQueue, ModelRegistry,
 };
+use crate::npc_brain::{NpcBrainDef, NpcTaskKind};
 use crate::types::{ResourceId, Side};
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1032,24 @@ fn parse_npc_wander_kind(name: &str) -> NpcWanderKind {
     }
 }
 
+fn parse_npc_task_kind(name: &str) -> NpcTaskKind {
+    match name.to_ascii_lowercase().as_str() {
+        "ambient" => NpcTaskKind::Ambient,
+        "wander_zone" | "wander" => NpcTaskKind::WanderZone,
+        "patrol_route" | "patrol" => NpcTaskKind::PatrolRoute,
+        "use_scenario_point" | "scenario" => NpcTaskKind::UseScenarioPoint,
+        "follow_target" | "follow" => NpcTaskKind::FollowTarget,
+        "chase_target" | "chase" => NpcTaskKind::ChaseTarget,
+        "flee" => NpcTaskKind::Flee,
+        "investigate" => NpcTaskKind::Investigate,
+        "combat" => NpcTaskKind::Combat,
+        "drive_route" | "drive" => NpcTaskKind::DriveRoute,
+        "fly_route" | "fly" => NpcTaskKind::FlyRoute,
+        "swim_route" | "swim" => NpcTaskKind::SwimRoute,
+        _ => NpcTaskKind::Idle,
+    }
+}
+
 /// Převede Lua table parametrů (nebo nil) na Vec<Json> pro DB executor.
 fn json_params(v: mlua::Value) -> Vec<Json> {
     match v {
@@ -1910,6 +1929,113 @@ fn install_runtime_api_inner(
         cq.push(LuaCommand::NpcStop { handle });
         Ok(())
     })?)?;
+
+    // World.NpcSetBrain(handle, brain_id)
+    let cq = cmd_queue.clone();
+    world.set("NpcSetBrain", lua.create_function(
+        move |_, (handle, brain_id): (u64, String)| {
+            cq.push(LuaCommand::SetNpcBrain { handle, brain_id });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcRegisterBrain(brain_id, def)
+    let cq = cmd_queue.clone();
+    world.set("NpcRegisterBrain", lua.create_function(
+        move |_, (brain_id, def_v): (String, mlua::Value)| {
+            let mlua::Value::Table(def_t) = def_v else {
+                return Err(mlua::Error::RuntimeError(
+                    "NpcRegisterBrain expects a definition table".into(),
+                ));
+            };
+
+            let json = lua_table_to_json(def_t);
+            let mut def: NpcBrainDef = serde_json::from_value(json)
+                .map_err(|e| mlua::Error::RuntimeError(format!("NpcRegisterBrain: {e}")))?;
+            if def.id.trim().is_empty() {
+                def.id = brain_id.clone();
+            }
+
+            cq.push(LuaCommand::RegisterNpcBrain { brain_id, def });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcSetTask(handle, task, opts?)
+    // opts: { scenario_id?, target_handle?, target_pos?, stop_distance?, radius?, retarget_sec?, orbit_angular_speed?, patrol_point?, clockwise?, ... }
+    let cq = cmd_queue.clone();
+    world.set("NpcSetTask", lua.create_function(
+        move |_, args: MultiValue| {
+            if args.len() < 2 {
+                return Err(mlua::Error::RuntimeError(
+                    "World.NpcSetTask(handle, task, opts?) requires handle and task".into(),
+                ));
+            }
+
+            let handle = match &args[0] {
+                mlua::Value::Integer(v) if *v >= 0 => *v as u64,
+                mlua::Value::Number(v) if *v >= 0.0 => *v as u64,
+                _ => return Err(mlua::Error::RuntimeError("NpcSetTask: invalid handle".into())),
+            };
+
+            let task = match &args[1] {
+                mlua::Value::String(s) => parse_npc_task_kind(s.to_str()?.as_ref()),
+                _ => return Err(mlua::Error::RuntimeError("NpcSetTask: invalid task".into())),
+            };
+
+            let mut scenario_id = None;
+            let mut target_handle = None;
+            let mut target_pos = None;
+            let mut params = Json::Object(Default::default());
+
+            if args.len() >= 3 {
+                if let mlua::Value::Table(opts) = &args[2] {
+                    scenario_id = opts.get::<String>("scenario_id").ok();
+                    target_handle = opts.get::<u64>("target_handle").ok();
+                    if let Ok(pos_t) = opts.get::<mlua::Table>("target_pos") {
+                        target_pos = Some(table_to_vec3(&pos_t));
+                    }
+                    params = lua_table_to_json(opts.clone());
+                }
+            }
+
+            cq.push(LuaCommand::SetNpcTask {
+                handle,
+                task,
+                scenario_id,
+                target_handle,
+                target_pos,
+                params,
+            });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcSetScenario(handle, scenario_id, opts?)
+    let cq = cmd_queue.clone();
+    world.set("NpcSetScenario", lua.create_function(
+        move |_, (handle, scenario_id, opts): (u64, String, Option<mlua::Table>)| {
+            let mut target_handle = None;
+            let mut target_pos = None;
+            let mut params = Json::Object(Default::default());
+            if let Some(opts) = opts {
+                target_handle = opts.get::<u64>("target_handle").ok();
+                if let Ok(pos_t) = opts.get::<mlua::Table>("target_pos") {
+                    target_pos = Some(table_to_vec3(&pos_t));
+                }
+                params = lua_table_to_json(opts);
+            }
+            cq.push(LuaCommand::SetNpcTask {
+                handle,
+                task: NpcTaskKind::UseScenarioPoint,
+                scenario_id: Some(scenario_id),
+                target_handle,
+                target_pos,
+                params,
+            });
+            Ok(())
+        },
+    )?)?;
 
     // -- Phase 5 extensions ---------------------------------------------------
 

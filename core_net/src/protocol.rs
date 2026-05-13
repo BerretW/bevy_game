@@ -132,6 +132,15 @@ pub struct PlayerStatsUpdate {
     pub max_hp: f32,
 }
 
+/// **Client → Server** — transform update od owning klienta pro NPC.
+/// Server přijímá pouze zprávy od aktuálního `NpcOwner` dané entity.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NpcTransformUpdate {
+    pub handle: u64,
+    pub translation: [f32; 3],
+    pub rotation: [f32; 4],
+}
+
 /// Konstanty pro `PlayerInput::actions` bitfield. Phase 3+ scripty
 /// (Lua weapon definice) si je můžou číst přes Bevy resource registry.
 pub mod player_action {

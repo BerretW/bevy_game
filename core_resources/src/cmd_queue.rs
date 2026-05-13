@@ -24,8 +24,15 @@ use bevy::prelude::*;
 use bevy::reflect::Reflect;
 use core_shared::{Health, NetTransform, PlayerMarker};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map as JsonMap, Value as Json};
 
+use crate::npc_brain::{
+    NpcBrainDef, NpcBrainRegistry, NpcBrainState, NpcBrainTarget, NpcTaskKind,
+    ReplicatedNpcBrain,
+};
+use crate::plugin::ResourcesSide;
 use crate::model_registry::AnimSetCommandQueue;
+use crate::types::Side;
 
 // ---------------------------------------------------------------------------
 // LuaCommand — záměry, které Lua enqueuje přes World.* API
@@ -200,6 +207,22 @@ pub enum LuaCommand {
     /// AI: zastaví aktivní movement goal NPC.
     NpcStop {
         handle: u64,
+    },
+    RegisterNpcBrain {
+        brain_id: String,
+        def: NpcBrainDef,
+    },
+    SetNpcBrain {
+        handle: u64,
+        brain_id: String,
+    },
+    SetNpcTask {
+        handle: u64,
+        task: NpcTaskKind,
+        scenario_id: Option<String>,
+        target_handle: Option<u64>,
+        target_pos: Option<[f32; 3]>,
+        params: Json,
     },
     /// Připojí child entitu k parent entitě přes dvojici socketů.
     Attach {
@@ -568,7 +591,7 @@ pub enum NpcWanderKind {
     Orbit,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NpcMoveGoal {
     Idle,
     GoToCoord {
@@ -654,13 +677,193 @@ impl NpcAgent {
     }
 }
 
+fn json_number(value: f32) -> Json {
+    serde_json::Number::from_f64(value as f64)
+        .map(Json::Number)
+        .unwrap_or(Json::Null)
+}
+
+fn active_brain_id_for_entity(
+    entity: Entity,
+    npc_brain_states: &Query<&NpcBrainState>,
+    npc_brains: &NpcBrainRegistry,
+) -> String {
+    npc_brain_states
+        .get(entity)
+        .map(|state| npc_brains.canonical_brain_id(&state.brain_id))
+        .unwrap_or_else(|_| npc_brains.canonical_brain_id("core/human"))
+}
+
+fn brain_from_goal(brain_id: String, goal: &NpcMoveGoal) -> ReplicatedNpcBrain {
+    match goal {
+        NpcMoveGoal::Idle => ReplicatedNpcBrain::new(brain_id, NpcTaskKind::Idle),
+        NpcMoveGoal::GoToCoord { target, stop_distance } => {
+            let mut params = JsonMap::new();
+            params.insert("stop_distance".to_string(), json_number(*stop_distance));
+            ReplicatedNpcBrain::new(brain_id, NpcTaskKind::Investigate)
+                .with_target(NpcBrainTarget::Position(*target))
+                .with_params(Json::Object(params))
+        }
+        NpcMoveGoal::GoToEntity { target_handle, stop_distance } => {
+            let mut params = JsonMap::new();
+            params.insert("stop_distance".to_string(), json_number(*stop_distance));
+            ReplicatedNpcBrain::new(brain_id, NpcTaskKind::FollowTarget)
+                .with_target(NpcBrainTarget::Entity(*target_handle))
+                .with_params(Json::Object(params))
+        }
+        NpcMoveGoal::Wander { kind, radius, retarget_sec, orbit_angular_speed, patrol_point, clockwise } => {
+            let mut params = JsonMap::new();
+            let kind_name = match kind {
+                NpcWanderKind::Random => "random",
+                NpcWanderKind::Patrol => "patrol",
+                NpcWanderKind::Orbit => "orbit",
+            };
+            params.insert("wander_kind".to_string(), Json::String(kind_name.to_string()));
+            params.insert("radius".to_string(), json_number(*radius));
+            params.insert("retarget_sec".to_string(), json_number(*retarget_sec));
+            params.insert("orbit_angular_speed".to_string(), json_number(*orbit_angular_speed));
+            params.insert("clockwise".to_string(), Json::Bool(*clockwise));
+            if let Some(point) = patrol_point {
+                params.insert(
+                    "patrol_point".to_string(),
+                    Json::Array(vec![json_number(point.x), json_number(point.y), json_number(point.z)]),
+                );
+            }
+            let task = match kind {
+                NpcWanderKind::Random => NpcTaskKind::WanderZone,
+                NpcWanderKind::Patrol => NpcTaskKind::PatrolRoute,
+                NpcWanderKind::Orbit => NpcTaskKind::Ambient,
+            };
+            ReplicatedNpcBrain::new(brain_id, task).with_params(Json::Object(params))
+        }
+    }
+}
+
+fn decode_vec3_json(value: &Json) -> Option<Vec3> {
+    let Json::Array(parts) = value else { return None; };
+    if parts.len() != 3 {
+        return None;
+    }
+    Some(Vec3::new(
+        parts[0].as_f64()? as f32,
+        parts[1].as_f64()? as f32,
+        parts[2].as_f64()? as f32,
+    ))
+}
+
+fn brain_to_goal(brain: &ReplicatedNpcBrain) -> NpcMoveGoal {
+    let stop_distance = brain
+        .params
+        .get("stop_distance")
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32)
+        .unwrap_or(0.35);
+
+    match brain.task {
+        NpcTaskKind::Idle => NpcMoveGoal::Idle,
+        NpcTaskKind::Ambient | NpcTaskKind::WanderZone | NpcTaskKind::PatrolRoute => {
+            let kind = match brain.params.get("wander_kind").and_then(|v| v.as_str()) {
+                Some("patrol") => NpcWanderKind::Patrol,
+                Some("orbit") => NpcWanderKind::Orbit,
+                _ => NpcWanderKind::Random,
+            };
+            let patrol_point = brain.params.get("patrol_point").and_then(decode_vec3_json);
+            NpcMoveGoal::Wander {
+                kind,
+                radius: brain.params.get("radius").and_then(|v| v.as_f64()).map(|v| v as f32).unwrap_or(4.0),
+                retarget_sec: brain.params.get("retarget_sec").and_then(|v| v.as_f64()).map(|v| v as f32).unwrap_or(2.5),
+                orbit_angular_speed: brain.params.get("orbit_angular_speed").and_then(|v| v.as_f64()).map(|v| v as f32).unwrap_or(0.8),
+                patrol_point,
+                clockwise: brain.params.get("clockwise").and_then(|v| v.as_bool()).unwrap_or(false),
+            }
+        }
+        NpcTaskKind::UseScenarioPoint
+        | NpcTaskKind::Investigate
+        | NpcTaskKind::DriveRoute
+        | NpcTaskKind::FlyRoute
+        | NpcTaskKind::SwimRoute
+        | NpcTaskKind::Flee => match &brain.target {
+            NpcBrainTarget::Position(target) => NpcMoveGoal::GoToCoord {
+                target: *target,
+                stop_distance,
+            },
+            NpcBrainTarget::Entity(target_handle) => NpcMoveGoal::GoToEntity {
+                target_handle: *target_handle,
+                stop_distance,
+            },
+            NpcBrainTarget::None => NpcMoveGoal::Idle,
+        },
+        NpcTaskKind::FollowTarget | NpcTaskKind::ChaseTarget | NpcTaskKind::Combat => match &brain.target {
+            NpcBrainTarget::Entity(target_handle) => NpcMoveGoal::GoToEntity {
+                target_handle: *target_handle,
+                stop_distance: stop_distance.max(1.1),
+            },
+            NpcBrainTarget::Position(target) => NpcMoveGoal::GoToCoord {
+                target: *target,
+                stop_distance,
+            },
+            NpcBrainTarget::None => NpcMoveGoal::Idle,
+        },
+    }
+}
+
+pub fn sync_npc_brains_to_agents(
+    brain_registry: Res<NpcBrainRegistry>,
+    mut npcs: Query<(&ReplicatedNpcBrain, &mut NpcBrainState, &mut NpcAgent)>,
+) {
+    for (brain, mut state, mut agent) in &mut npcs {
+        let canonical_brain_id = brain_registry.canonical_brain_id(&brain.brain_id);
+        let def = brain_registry.resolve_or_fallback(&canonical_brain_id);
+        let effective_task = if def.allowed_tasks.contains(&brain.task) {
+            brain.task
+        } else {
+            def.default_task
+        };
+        if state.brain_id != canonical_brain_id {
+            state.brain_id = canonical_brain_id.clone();
+            agent.move_speed = def.motion.cruise_speed.max(0.0);
+            agent.turn_speed = def.motion.turn_speed.max(0.0);
+            agent.arrive_distance = def.motion.brake_distance.max(0.01);
+        }
+
+        let mut effective_brain = brain.clone();
+        effective_brain.brain_id = canonical_brain_id;
+        effective_brain.task = effective_task;
+        let desired_goal = brain_to_goal(&effective_brain);
+        if agent.goal != desired_goal {
+            agent.goal = desired_goal;
+            agent.reset_navigation_state();
+        }
+    }
+}
+
 /// Vlastník NPC — client_id hráče, který simuluje toto NPC.
 /// `None` = žádný hráč v okolí, NPC je zmrazeno.
 /// Replikováno klientům přes lightyear.
 #[derive(Component, Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NpcOwner(pub Option<u64>);
 
+/// Server-side lease metadata pro ownership handoff.
+/// Nereplikuje se; slouží jen k hysteresis a cooldown rozhodování.
+#[derive(Component, Debug, Clone)]
+pub struct NpcOwnershipLease {
+    pub last_owner: Option<u64>,
+    pub last_handoff_at: f32,
+}
+
+impl Default for NpcOwnershipLease {
+    fn default() -> Self {
+        Self {
+            last_owner: None,
+            last_handoff_at: -10_000.0,
+        }
+    }
+}
+
 const NPC_OWNERSHIP_RADIUS: f32 = 200.0;
+const NPC_OWNERSHIP_RELEASE_RADIUS: f32 = 230.0;
+const NPC_OWNERSHIP_HANDOFF_ADVANTAGE: f32 = 20.0;
+const NPC_OWNERSHIP_HANDOFF_COOLDOWN: f32 = 6.0;
 const NPC_OWNERSHIP_ASSIGN_INTERVAL: f32 = 2.0;
 
 /// Přiřazuje vlastnictví NPC nejbližšímu hráči v `NPC_OWNERSHIP_RADIUS`.
@@ -674,7 +877,7 @@ const NPC_OWNERSHIP_ASSIGN_INTERVAL: f32 = 2.0;
 pub fn assign_npc_owners(
     time: Res<Time>,
     mut timer: Local<f32>,
-    mut npcs: Query<(&Transform, &mut NpcOwner), With<NpcAgent>>,
+    mut npcs: Query<(&Transform, &mut NpcOwner, &mut NpcOwnershipLease), With<NpcAgent>>,
     players: Query<(&Transform, &PlayerMarker)>,
 ) {
     *timer += time.delta_secs();
@@ -683,35 +886,66 @@ pub fn assign_npc_owners(
     }
     *timer = 0.0;
 
-    for (npc_tf, mut owner) in &mut npcs {
-        // Ověř, zda stávající owner stále existuje a je v dosahu.
-        let owner_still_valid = owner.0.map(|id| {
-            players.iter().any(|(ptf, pm)| {
-                pm.client_id == id
-                    && ptf.translation.distance(npc_tf.translation) <= NPC_OWNERSHIP_RADIUS
-            })
-        }).unwrap_or(false);
+    let now = time.elapsed_secs();
 
-        if owner_still_valid {
-            continue; // Owner platný → nic neměníme.
-        }
+    for (npc_tf, mut owner, mut lease) in &mut npcs {
+        let current_owner_distance = owner.0.and_then(|owner_id| {
+            players.iter()
+                .find_map(|(ptf, pm)| {
+                    if pm.client_id == owner_id {
+                        Some(ptf.translation.distance(npc_tf.translation))
+                    } else {
+                        None
+                    }
+                })
+        });
 
-        // Owner chybí nebo vypadl — najdeme nejbližšího hráče.
         let nearest = players
             .iter()
             .filter_map(|(ptf, pm)| {
                 let dist = ptf.translation.distance(npc_tf.translation);
-                if dist <= NPC_OWNERSHIP_RADIUS { Some((dist, pm.client_id)) } else { None }
+                if dist <= NPC_OWNERSHIP_RADIUS {
+                    Some((dist, pm.client_id))
+                } else {
+                    None
+                }
             })
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        let new_owner = nearest.map(|(_, id)| id);
+        let owner_still_valid = current_owner_distance
+            .map(|distance| distance <= NPC_OWNERSHIP_RELEASE_RADIUS)
+            .unwrap_or(false);
+        let cooldown_active = (now - lease.last_handoff_at) < NPC_OWNERSHIP_HANDOFF_COOLDOWN;
+
+        let new_owner = if owner_still_valid {
+            match (owner.0, current_owner_distance, nearest) {
+                (Some(current_owner), Some(current_dist), Some((candidate_dist, candidate_id)))
+                    if candidate_id != current_owner
+                        && !cooldown_active
+                        && candidate_dist + NPC_OWNERSHIP_HANDOFF_ADVANTAGE < current_dist =>
+                {
+                    Some(candidate_id)
+                }
+                (current_owner, _, _) => current_owner,
+            }
+        } else {
+            nearest.map(|(_, id)| id)
+        };
+
         if owner.0 != new_owner {
             if let Some(id) = new_owner {
-                debug!("[npc_owner] NPC at {:?} → client {}", npc_tf.translation, id);
+                debug!(
+                    "[npc_owner] NPC at {:?} → client {} (prev={:?}, cooldown_active={})",
+                    npc_tf.translation,
+                    id,
+                    owner.0,
+                    cooldown_active
+                );
             } else {
                 debug!("[npc_owner] NPC at {:?} → frozen (no player nearby)", npc_tf.translation);
             }
+            lease.last_owner = owner.0;
+            lease.last_handoff_at = now;
             owner.0 = new_owner;
         }
     }
@@ -882,7 +1116,10 @@ impl LocalPlayerStats {
 pub fn process_lua_commands(
     cmd_queue: Res<CommandQueue>,
     mut world_state: ResMut<LuaWorldState>,
+    mut npc_brains: ResMut<NpcBrainRegistry>,
     player_map: Res<PlayerEntityMap>,
+    npc_brain_states: Query<&NpcBrainState>,
+    npc_replicated_brains: Query<&ReplicatedNpcBrain>,
     mut commands: Commands,
     mut damage_events: MessageWriter<PendingDamageEvent>,
     transforms: Query<&Transform>,
@@ -1060,6 +1297,10 @@ pub fn process_lua_commands(
                     NetworkedObjectMarker { model: model.clone() },
                     ModelName(model.clone()),
                     EntityHandle(handle),
+                    NpcOwner::default(),
+                    NpcOwnershipLease::default(),
+                    NpcBrainState::default(),
+                    ReplicatedNpcBrain::default(),
                     NpcAgent::new(handle, spawn_translation),
                     NetTransform {
                         translation: spawn_translation,
@@ -1355,10 +1596,18 @@ pub fn process_lua_commands(
                         agent.goal = goal;
                         agent.wander_timer = 0.0;
                         agent.reset_navigation_state();
+                        commands.entity(entity).insert(brain_from_goal(
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            &agent.goal,
+                        ));
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = std::mem::replace(&mut goal, NpcMoveGoal::Idle);
-                        commands.entity(entity).insert(agent);
+                        let brain = brain_from_goal(
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            &agent.goal,
+                        );
+                        commands.entity(entity).insert((agent, brain, NpcBrainState::default()));
                     }
                 } else {
                     warn!("[cmd_queue] NpcWander: unknown handle {}", handle);
@@ -1385,10 +1634,18 @@ pub fn process_lua_commands(
                         }
                         agent.goal = goal;
                         agent.reset_navigation_state();
+                        commands.entity(entity).insert(brain_from_goal(
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            &agent.goal,
+                        ));
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = goal;
-                        commands.entity(entity).insert(agent);
+                        let brain = brain_from_goal(
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            &agent.goal,
+                        );
+                        commands.entity(entity).insert((agent, brain, NpcBrainState::default()));
                     }
                 } else {
                     warn!("[cmd_queue] NpcGoToCoord: unknown handle {}", handle);
@@ -1415,10 +1672,18 @@ pub fn process_lua_commands(
                         }
                         agent.goal = goal;
                         agent.reset_navigation_state();
+                        commands.entity(entity).insert(brain_from_goal(
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            &agent.goal,
+                        ));
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = goal;
-                        commands.entity(entity).insert(agent);
+                        let brain = brain_from_goal(
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            &agent.goal,
+                        );
+                        commands.entity(entity).insert((agent, brain, NpcBrainState::default()));
                     }
                 } else {
                     warn!("[cmd_queue] NpcGoToEntity: unknown handle {}", handle);
@@ -1430,9 +1695,71 @@ pub fn process_lua_commands(
                     if let Ok(mut agent) = npc_agents.get_mut(entity) {
                         agent.goal = NpcMoveGoal::Idle;
                         agent.reset_navigation_state();
+                        commands.entity(entity).insert(ReplicatedNpcBrain::default());
                     }
                 } else {
                     warn!("[cmd_queue] NpcStop: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::RegisterNpcBrain { brain_id, mut def } => {
+                if def.id.trim().is_empty() {
+                    def.id = brain_id.clone();
+                }
+                npc_brains.upsert(def);
+                info!("[npc_brain] registered/upserted '{}'", brain_id);
+            }
+
+            LuaCommand::SetNpcBrain { handle, brain_id } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    let resolved = npc_brains.canonical_brain_id(&brain_id);
+                    if resolved != brain_id {
+                        warn!(
+                            "[npc_brain] unknown brain '{}' for handle {} — falling back to '{}'",
+                            brain_id,
+                            handle,
+                            resolved,
+                        );
+                    }
+                    commands.entity(entity).insert(NpcBrainState::new(resolved.clone()));
+                    let mut replicated = npc_replicated_brains
+                        .get(entity)
+                        .cloned()
+                        .unwrap_or_default();
+                    replicated.brain_id = resolved;
+                    commands.entity(entity).insert(replicated);
+                } else {
+                    warn!("[cmd_queue] SetNpcBrain: unknown handle {}", handle);
+                }
+            }
+
+            LuaCommand::SetNpcTask {
+                handle,
+                task,
+                scenario_id,
+                target_handle,
+                target_pos,
+                params,
+            } => {
+                if let Some(entity) = world_state.entity_for(handle) {
+                    let brain_id = npc_brain_states
+                        .get(entity)
+                        .map(|state| npc_brains.canonical_brain_id(&state.brain_id))
+                        .unwrap_or_else(|_| npc_brains.canonical_brain_id("core/human"));
+                    let target = match (target_handle, target_pos) {
+                        (Some(target_handle), _) => NpcBrainTarget::Entity(target_handle),
+                        (_, Some(target_pos)) => NpcBrainTarget::Position(Vec3::new(target_pos[0], target_pos[1], target_pos[2])),
+                        _ => NpcBrainTarget::None,
+                    };
+                    commands.entity(entity).insert(ReplicatedNpcBrain {
+                        brain_id,
+                        task,
+                        scenario_id,
+                        target,
+                        params,
+                    });
+                } else {
+                    warn!("[cmd_queue] SetNpcTask: unknown handle {}", handle);
                 }
             }
 
@@ -1643,6 +1970,7 @@ pub fn process_lua_commands(
 
 pub fn tick_npc_agents(
     time: Res<Time<Fixed>>,
+    side: Res<ResourcesSide>,
     world_state: Res<LuaWorldState>,
     mut npcs: Query<(&EntityHandle, &mut Transform, Option<&mut NetTransform>, &mut NpcAgent, Option<&NpcOwner>)>,
     globals: Query<&GlobalTransform>,
@@ -1656,6 +1984,9 @@ pub fn tick_npc_agents(
         // Frozen: žádný hráč v okolí, nesimulujeme pohyb.
         if let Some(o) = owner {
             if o.0.is_none() {
+                continue;
+            }
+            if matches!(side.0, Side::Server) {
                 continue;
             }
         }

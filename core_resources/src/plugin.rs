@@ -8,7 +8,7 @@ use bevy::prelude::*;
 
 use crate::cmd_queue::{
     assign_npc_owners, process_lua_commands, sync_entity_state_cache, CommandQueue, EntityStateCache,
-    tick_npc_agents,
+    sync_npc_brains_to_agents, tick_npc_agents,
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
@@ -17,6 +17,7 @@ use crate::model_registry::{
     refresh_model_load_states, AnimSetCommandQueue, AnimSetRegistry,
     ModelAnimationRegistry, ModelCommandQueue, ModelRegistry,
 };
+use crate::npc_brain::NpcBrainRegistry;
 use crate::resolver::resolve_load_order;
 use crate::gui::{FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
 use crate::sandbox::{GameBridges, LocalEventBus, LuaSandbox};
@@ -101,9 +102,10 @@ impl Plugin for ResourcesPlugin {
         // Phase 3.2 - Command Queue
         app.init_resource::<CommandQueue>();
         app.init_resource::<LuaWorldState>();
+        app.init_resource::<NpcBrainRegistry>();
         app.add_message::<PendingDamageEvent>();
         app.add_systems(PostUpdate, process_lua_commands);
-        app.add_systems(FixedUpdate, tick_npc_agents);
+        app.add_systems(FixedUpdate, (sync_npc_brains_to_agents, tick_npc_agents).chain());
         app.add_systems(Update, assign_npc_owners);
 
         // Phase 3.4 - Model Registry

@@ -24,12 +24,29 @@ Tohle je důležité pro škálování:
 
 ---
 
-## Aktuální stav (Phase A — hotovo)
+## Aktuální stav
 
 - `NpcOwner(Option<u64>)` — replikovaný komponent, říká kdo NPC vlastní
-- `assign_npc_owners` — server každé 2 s přiřadí nejbližšího hráče do 200 m
+- `NpcOwnershipLease` — server-side lease metadata pro ownership handoff
+- `assign_npc_owners` — server každé 2 s přiřadí ownera s acquire/release radiusem a handoff cooldownem
 - `tick_npc_agents` — server simuluje pohyb (waypoints, bez fyziky), freeze při `None`
 - Klient zná svého ownera, ale simulaci NEBĚŽÍ — jen přijímá `NetTransform`
+- `SpawnNetworkedNpc` teď vkládá `NpcOwner::default()`, takže ownership systém pokrývá i nově spawnované NPC
+
+### Hotovo z ownership handoff foundation
+
+- hysteresis přes `NPC_OWNERSHIP_RADIUS` a `NPC_OWNERSHIP_RELEASE_RADIUS`
+- handoff cooldown přes `NPC_OWNERSHIP_HANDOFF_COOLDOWN`
+- přepnutí ownera jen pokud nový kandidát překoná stávajícího o minimální rezervu
+- `NpcTransformUpdate` Client→Server cesta je zavedená a server validuje `NpcOwner` před aplikací transformu
+- klient bootstrapuje lokální `NpcAgent` jen pro owned NPC, takže remote NPC se lokálně nesimulují
+- client-owned NPC ignorují replicated `NetTransform` writeback na owning klientu a místo toho posílají svůj transform serveru
+
+### Ještě chybí
+
+- fallback timer pro server simulaci, pokud owner umlkne
+- snapshot / resume sync při skutečném client-side handoffu
+- vazba ownershipu na AI LOD budgety a relevanci per tile/zone
 
 ---
 
@@ -231,15 +248,15 @@ if let Some(hit) = spatial.cast_ray(pos + Vec3::Y * 0.5, Dir3::NEG_Y, 2.0, ...) 
 
 ## Pořadí implementace
 
-1. `NpcTransformUpdate` message + registrace směru Client→Server
-2. `receive_npc_transform_updates` na serveru (s owner validací)
-3. Replikace `NpcAgent` na klienta (`register_component`)
-4. `tick_owned_npc_agents` na klientovi (kopie server logiky + send message)
-5. Server: přestat simulovat NPC s aktivním ownerem (nebo přidat fallback timer)
-6. Terrain snapping v klientské simulaci (raycast + Y korekce)
-7. Přepnout goal replication na `ReplicatedNpcGoal` / `ReplicatedNpcBrain`
-8. Přidat scenario/task vrstvu a AI LOD budgety
-9. Navázat ownership handoff s hysteresis a fallback timerem
+1. [X] `NpcTransformUpdate` message + registrace směru Client→Server
+2. [X] `receive_npc_transform_updates` na serveru (s owner validací)
+3. [X] bootstrap lokálního `NpcAgent` jen pro owned NPC na klientovi
+4. [X] první client-owned NPC loop: owned klient simuluje lokální `NpcAgent` a posílá transform serveru
+5. [X] server přestane simulovat NPC s aktivním ownerem (zatím bez fallback timeru)
+6. [ ] Terrain snapping v klientské simulaci (raycast + Y korekce)
+7. [X] goal replication je aktuálně řešená přes `ReplicatedNpcBrain`
+8. [ ] Přidat scenario/task vrstvu a AI LOD budgety nad současný brain kontrakt
+9. [ ] Rozšířit ownership handoff o fallback timer po tichu ownera a napojit ho na client-authoritative NPC transform updates
 
 ---
 

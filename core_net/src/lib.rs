@@ -39,10 +39,10 @@ pub use sim::{
 };
 pub use net_plugin::{
     ClientNetConfig, ClientNetPlugin, ConnectClient, HandshakeChannel, InputChannel, LuaRpcChannel,
-    ProtocolPlugin, ServerNetConfig, ServerNetPlugin, TileStreamingChannel,
+    NpcTransformChannel, ProtocolPlugin, ServerNetConfig, ServerNetPlugin, TileStreamingChannel,
     FIXED_TIMESTEP_HZ, NETCODE_PROTOCOL_ID,
 };
 pub use protocol::{
-    player_action, ClientReady, LuaEventMessage, PlayerInput, ServerHello,
+    player_action, ClientReady, LuaEventMessage, NpcTransformUpdate, PlayerInput, ServerHello,
     TileStreamingCommand, PROTOCOL_VERSION,
 };
