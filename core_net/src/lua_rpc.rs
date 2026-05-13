@@ -166,6 +166,7 @@ fn receive_player_stats(
             local_stats.update_snapshot(StatsSnapshot {
                 health: update.hp,
                 max_health: update.max_hp,
+                armor: update.armor,
                 weapon_slots: update.weapon_slots,
                 ammo_reserve: update.ammo_reserve,
                 active_weapon_slot: update.active_weapon_slot,

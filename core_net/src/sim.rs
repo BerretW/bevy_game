@@ -6,9 +6,11 @@
 //!   a actions bitfield, cooldown management.
 //! * Lua eventy: `playerConnecting`, `playerDropped`, `onPlayerHit`, `onPlayerDeath`.
 
+use std::collections::VecDeque;
+
 use bevy::prelude::*;
 use core_resources::{
-    ActiveWeaponSlot, AmmoRegistry, AmmoReserve, FireState, GameBridges, Inventory, LocalEventBus,
+    ActiveWeaponSlot, AmmoRegistry, AmmoReserve, ArmorClass, ArmorComponent, ArmorPiece, FireState, GameBridges, Inventory, LocalEventBus,
     HitboxBoneDef, HitboxDef, HitboxRegistry, LuaWorldState, NpcLastClientUpdate, NpcOwner,
     NpcPathWaypoint, NpcPedMarker, PlayerEntityMap, PlayerHitbox, PlayerStatsCache,
     ReloadState, ReplicatedNpcSteering, Stats, StatsSnapshot, WeaponRegistry, WeaponSlots,
@@ -31,10 +33,56 @@ pub const GROUND_Y: f32 = 0.0;
 const DEFAULT_WEAPON_SWAP_SECS: f32 = 0.25;
 const MIN_WEAPON_ACTION_SECS: f32 = 0.05;
 const PLAYER_EYE_HEIGHT: f32 = 1.55;
+const POSITION_HISTORY_MAX_SAMPLES: usize = 48;
+const LAG_COMPENSATION_REWIND_TICKS: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Komponenty
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+struct PositionSample {
+    tick: u32,
+    translation: Vec3,
+}
+
+#[derive(Component, Debug, Default, Clone)]
+pub struct PositionHistory {
+    samples: VecDeque<PositionSample>,
+}
+
+impl PositionHistory {
+    fn push(&mut self, tick: u32, translation: Vec3) {
+        if self
+            .samples
+            .back()
+            .map(|sample| sample.tick == tick)
+            .unwrap_or(false)
+        {
+            if let Some(last) = self.samples.back_mut() {
+                last.translation = translation;
+            }
+            return;
+        }
+
+        self.samples.push_back(PositionSample { tick, translation });
+        while self.samples.len() > POSITION_HISTORY_MAX_SAMPLES {
+            self.samples.pop_front();
+        }
+    }
+
+    fn position_at_or_before(&self, tick: u32) -> Option<Vec3> {
+        self.samples
+            .iter()
+            .rev()
+            .find(|sample| sample.tick <= tick)
+            .map(|sample| sample.translation)
+            .or_else(|| self.samples.front().map(|sample| sample.translation))
+    }
+}
+
+#[derive(Resource, Debug, Default, Clone, Copy)]
+struct ServerSimulationTick(pub u32);
 
 // ---------------------------------------------------------------------------
 // WeaponConfig — Bevy Resource (Lua resource mu muze pridat vlastni konfiguraci)
@@ -82,6 +130,7 @@ impl Plugin for ServerSimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponConfig>();
         app.init_resource::<LastPlayerInputs>();
+        app.init_resource::<ServerSimulationTick>();
         app.add_observer(attach_replication_sender);
         app.add_observer(spawn_player_on_connect);
         app.add_observer(emit_player_disconnect);
@@ -93,9 +142,11 @@ impl Plugin for ServerSimPlugin {
         app.add_systems(
             FixedUpdate,
             (
+                increment_server_simulation_tick,
                 // FiveM-style: server důvěřuje klientské fyzikální pozici.
                 // apply_inputs_to_velocity + integrate_velocity nahrazeny trust_client_position.
                 trust_client_position,
+                record_position_history,
                 emit_player_positions,
                 tick_fire_states,
                 tick_weapon_swap_states,
@@ -151,17 +202,21 @@ fn spawn_player_on_connect(
             Health::default(),
             Stats::default(),
             Inventory::default(),
+            ArmorComponent::default(),
             WeaponSlots::default(),
             AmmoReserve::default(),
             ActiveWeaponSlot::default(),
             PlayerHitbox::default(),
+            PositionHistory::default(),
             FireState::default(),
             ReloadState::default(),
             WeaponSwapState::default(),
-            Replicate::to_clients(NetworkTarget::All),
-            PredictionTarget::to_clients(NetworkTarget::All),
         ))
         .id();
+    commands.entity(player).insert((
+        Replicate::to_clients(NetworkTarget::All),
+        PredictionTarget::to_clients(NetworkTarget::All),
+    ));
 
     info!(
         "[sim/server] spawned player {:?} for client_id={}",
@@ -242,6 +297,19 @@ fn trust_client_position(
         if yaw_rad.is_finite() {
             transform.rotation = Quat::from_rotation_y(yaw_rad);
         }
+    }
+}
+
+fn increment_server_simulation_tick(mut tick: ResMut<ServerSimulationTick>) {
+    tick.0 = tick.0.wrapping_add(1);
+}
+
+fn record_position_history(
+    tick: Res<ServerSimulationTick>,
+    mut players: Query<(&NetTransform, &mut PositionHistory), With<PlayerMarker>>,
+) {
+    for (transform, mut history) in players.iter_mut() {
+        history.push(tick.0, transform.translation);
     }
 }
 
@@ -416,6 +484,9 @@ struct EffectiveCombatWeaponConfig {
     fire_mode: String,
     fire_rate: f32,
     damage: f32,
+    penetration_class: u32,
+    armor_penetration: f32,
+    wound_mult: f32,
     range: f32,
     cone_angle: f32,
     weapon_type: WeaponType,
@@ -438,6 +509,9 @@ fn resolve_combat_weapon_config(
             fire_mode: "full".to_string(),
             fire_rate: fallback.fire_rate,
             damage: fallback.damage,
+            penetration_class: 0,
+            armor_penetration: 0.0,
+            wound_mult: 1.0,
             range: fallback.range,
             cone_angle: fallback.cone_angle,
             weapon_type: fallback.weapon_type.clone(),
@@ -503,6 +577,18 @@ fn resolve_combat_weapon_config(
         fallback.damage
     };
 
+    let (penetration_class, armor_penetration, wound_mult) = ammo_id
+        .as_ref()
+        .and_then(|ammo_id| ammo_registry.get(ammo_id))
+        .map(|ammo| {
+            (
+                ammo.penetration_class,
+                ammo.armor_penetration.clamp(0.0, 1.0),
+                ammo.wound_mult.max(0.0),
+            )
+        })
+        .unwrap_or((0, 0.0, 1.0));
+
     let weapon_type = match weapon_def.category.trim().to_ascii_lowercase().as_str() {
         "melee" => WeaponType::Melee,
         _ => WeaponType::Ranged,
@@ -519,6 +605,9 @@ fn resolve_combat_weapon_config(
         fire_mode,
         fire_rate,
         damage,
+        penetration_class,
+        armor_penetration,
+        wound_mult,
         range,
         cone_angle: fallback.cone_angle,
         weapon_type,
@@ -539,10 +628,91 @@ fn fire_mode_allows_shot(fire_mode: &str, trigger_pressed: bool, trigger_was_hel
 #[derive(Debug, Clone)]
 struct ResolvedHitboxHit {
     hitzone: String,
+    armor_zone: Option<String>,
+    armor_bypass: f32,
     mult: f32,
     headshot: bool,
     distance_m: f32,
     hit_pos: Vec3,
+}
+
+fn armor_zone_for_bone(hitbox: &HitboxDef, bone_name: &str) -> Option<String> {
+    hitbox
+        .armor_zones
+        .iter()
+        .find(|(_, zone)| zone.bones.iter().any(|bone| bone == bone_name))
+        .map(|(zone_name, _)| zone_name.clone())
+}
+
+fn armor_class_rank(class: ArmorClass) -> u32 {
+    match class {
+        ArmorClass::I => 1,
+        ArmorClass::Ii => 2,
+        ArmorClass::Iiia => 3,
+        ArmorClass::Iii => 4,
+        ArmorClass::Iv => 5,
+    }
+}
+
+fn armor_piece_for_zone_mut<'a>(armor: &'a mut ArmorComponent, zone: &str) -> Option<&'a mut ArmorPiece> {
+    match zone {
+        "helmet" => armor.helmet.as_mut(),
+        "vest" => armor.vest.as_mut(),
+        _ => None,
+    }
+}
+
+fn resolve_armor_damage(
+    armor: &mut ArmorComponent,
+    armor_zone: Option<&str>,
+    armor_bypass: f32,
+    penetration_class: u32,
+    armor_penetration: f32,
+    incoming_damage: f32,
+) -> (f32, f32, bool) {
+    let Some(zone) = armor_zone else {
+        return (incoming_damage.max(0.0), 0.0, false);
+    };
+    let Some(piece) = armor_piece_for_zone_mut(armor, zone) else {
+        return (incoming_damage.max(0.0), 0.0, false);
+    };
+
+    let durability_ratio = if piece.max_durability > 0.0 {
+        (piece.durability / piece.max_durability).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let class_rank = armor_class_rank(piece.class);
+    let class_factor = if penetration_class <= class_rank {
+        1.0
+    } else if penetration_class == class_rank + 1 {
+        0.65
+    } else {
+        0.35
+    };
+    let retained_fraction = ((1.0 - armor_bypass.clamp(0.0, 1.0))
+        * (1.0 - armor_penetration.clamp(0.0, 0.95))
+        * class_factor
+        * durability_ratio)
+        .clamp(0.0, 0.95);
+    let absorbed = incoming_damage.max(0.0) * retained_fraction;
+    let final_damage = (incoming_damage.max(0.0) - absorbed).max(0.0);
+    let penetrated = final_damage > 0.01;
+
+    let durability_loss = (incoming_damage.max(0.0)
+        * (0.35 + armor_penetration.clamp(0.0, 1.0) + armor_bypass.clamp(0.0, 1.0) * 0.5))
+        .max(1.0);
+    piece.durability = (piece.durability - durability_loss).max(0.0);
+
+    if piece.durability <= 0.0 {
+        match zone {
+            "helmet" => armor.helmet = None,
+            "vest" => armor.vest = None,
+            _ => {}
+        }
+    }
+
+    (final_damage, absorbed, penetrated)
 }
 
 fn look_direction(yaw_deg: f32, pitch_deg: f32) -> Vec3 {
@@ -621,7 +791,14 @@ fn resolve_hitbox_hit(
     let mut best: Option<ResolvedHitboxHit> = None;
 
     for (bone_name, bone) in &hitbox.bones {
-        let candidate = resolve_hitbox_bone_hit(bone_name, bone, target_base, ray_origin, ray_end)?;
+        let candidate = resolve_hitbox_bone_hit(
+            bone_name,
+            bone,
+            armor_zone_for_bone(hitbox, bone_name),
+            target_base,
+            ray_origin,
+            ray_end,
+        )?;
         let replace = best
             .as_ref()
             .map(|current| candidate.distance_m < current.distance_m)
@@ -637,6 +814,7 @@ fn resolve_hitbox_hit(
 fn resolve_hitbox_bone_hit(
     bone_name: &str,
     bone: &HitboxBoneDef,
+    armor_zone: Option<String>,
     target_base: Vec3,
     ray_origin: Vec3,
     ray_end: Vec3,
@@ -651,11 +829,17 @@ fn resolve_hitbox_bone_hit(
 
     Some(ResolvedHitboxHit {
         hitzone: bone_name.to_string(),
+        armor_zone,
+        armor_bypass: bone.armor_bypass.clamp(0.0, 1.0),
         mult: bone.mult.max(0.0),
         headshot: matches!(bone_name, "head" | "neck"),
         distance_m: ray_origin.distance(ray_point),
         hit_pos: capsule_point,
     })
+}
+
+fn rewind_tick_for_shot(current_tick: u32) -> u32 {
+    current_tick.saturating_sub(LAG_COMPENSATION_REWIND_TICKS)
 }
 
 // ---------------------------------------------------------------------------
@@ -676,12 +860,15 @@ fn process_combat(
     ammo_registry: Res<AmmoRegistry>,
     hitbox_registry: Res<HitboxRegistry>,
     weapon_cfg: Res<WeaponConfig>,
+    sim_tick: Res<ServerSimulationTick>,
     mut players: Query<(
         Entity,
         &PlayerMarker,
         &PlayerHitbox,
         &NetTransform,
+        &PositionHistory,
         &mut Health,
+        &mut ArmorComponent,
         &mut WeaponSlots,
         &mut AmmoReserve,
         &mut ActiveWeaponSlot,
@@ -705,7 +892,7 @@ fn process_combat(
 
     // Iterujeme hrace a zjistime, kteri chtejí strilet (na zaklade LastPlayerInputs)
     {
-        for (entity, marker, _hitbox_profile, transform, _health, mut slots, reserve, active_slot, mut fire_state, mut reload_state, mut weapon_swap) in players.iter_mut() {
+        for (entity, marker, _hitbox_profile, transform, _history, _health, _armor, mut slots, reserve, active_slot, mut fire_state, mut reload_state, mut weapon_swap) in players.iter_mut() {
             let Some(input) = last_inputs.get(marker.client_id) else { continue };
             let trigger_pressed = input.actions & player_action::PRIMARY_FIRE != 0;
             let trigger_was_held = fire_state.trigger_held;
@@ -795,9 +982,18 @@ fn process_combat(
     }
 
     // Snap shot pozic vsech hracu
+    let rewind_tick = rewind_tick_for_shot(sim_tick.0);
     let targets: Vec<(Entity, u64, Vec3, f32, String)> = players
         .iter()
-        .map(|(e, m, hitbox, t, h, _, _, _, _, _, _)| (e, m.client_id, t.translation, h.current, hitbox.0.clone()))
+        .map(|(e, m, hitbox, t, history, h, _, _, _, _, _, _, _)| {
+            (
+                e,
+                m.client_id,
+                history.position_at_or_before(rewind_tick).unwrap_or(t.translation),
+                h.current,
+                hitbox.0.clone(),
+            )
+        })
         .collect();
 
     for attacker in &attackers {
@@ -822,6 +1018,8 @@ fn process_combat(
                     } else {
                         Some(ResolvedHitboxHit {
                             hitzone: "chest".to_string(),
+                            armor_zone: Some("vest".to_string()),
+                            armor_bypass: 0.0,
                             mult: 1.0,
                             headshot: false,
                             distance_m: diff.length(),
@@ -866,9 +1064,17 @@ fn process_combat(
             continue;
         };
 
-        if let Ok((_, _, _, _, mut health, _, _, _, _, _, _)) = players.get_mut(target_entity) {
+        if let Ok((_, _, _, _, _, mut health, mut armor, _, _, _, _, _, _)) = players.get_mut(target_entity) {
             let raw_damage = attacker.weapon.damage;
-            let damage = raw_damage * hit.mult.max(0.0);
+            let zone_damage = raw_damage * hit.mult.max(0.0) * attacker.weapon.wound_mult.max(0.0);
+            let (damage, armor_absorbed, penetrated_armor) = resolve_armor_damage(
+                &mut armor,
+                hit.armor_zone.as_deref(),
+                hit.armor_bypass,
+                attacker.weapon.penetration_class,
+                attacker.weapon.armor_penetration,
+                zone_damage,
+            );
             health.current -= damage;
             let died = health.current <= 0.0;
             if died {
@@ -880,7 +1086,10 @@ fn process_combat(
                 "victim": target_cid.to_string(),
                 "damage": damage,
                 "raw_damage": raw_damage,
+                "armor_absorbed": armor_absorbed,
+                "penetrated_armor": penetrated_armor,
                 "hitzone": hit.hitzone,
+                "armor_zone": hit.armor_zone,
                 "headshot": hit.headshot,
                 "weapon": attacker.weapon.weapon_id,
                 "ammo": attacker.weapon.ammo_id,
@@ -909,8 +1118,8 @@ fn process_combat(
                 );
             } else {
                 debug!(
-                    "[sim/combat] player {} hit {} zone={} for {:.1} dmg (hp={:.1})",
-                    attacker.client_id, target_cid, hit.hitzone, damage, health.current
+                    "[sim/combat] player {} hit {} zone={} armor_zone={:?} for {:.1} dmg (absorbed {:.1}, hp={:.1})",
+                    attacker.client_id, target_cid, hit.hitzone, hit.armor_zone, damage, armor_absorbed, health.current
                 );
             }
         }
@@ -1084,6 +1293,7 @@ fn broadcast_player_stats(
     players: Query<(
         &PlayerMarker,
         &Health,
+        Option<&ArmorComponent>,
         Option<&WeaponSlots>,
         Option<&AmmoReserve>,
         Option<&ActiveWeaponSlot>,
@@ -1105,12 +1315,13 @@ fn broadcast_player_stats(
             _ => continue,
         };
         // Najdi entitu hráče patřící tomuto klientovi
-        if let Some((_, health, weapon_slots, ammo_reserve, active_slot, fire_state, reload_state, weapon_swap)) =
-            players.iter().find(|(m, _, _, _, _, _, _, _)| m.client_id == client_id)
+        if let Some((_, health, armor, weapon_slots, ammo_reserve, active_slot, fire_state, reload_state, weapon_swap)) =
+            players.iter().find(|(m, _, _, _, _, _, _, _, _)| m.client_id == client_id)
         {
             let msg = PlayerStatsUpdate {
                 hp: health.current,
                 max_hp: health.max,
+                armor: armor.cloned().unwrap_or_default(),
                 weapon_slots: weapon_slots
                     .map(|value| value.0.iter().cloned().collect())
                     .unwrap_or_else(|| vec![None, None, None, None]),
@@ -1139,6 +1350,7 @@ fn sync_player_state_cache(
             &Health,
             Option<&Stats>,
             Option<&Inventory>,
+            Option<&ArmorComponent>,
             Option<&WeaponSlots>,
             Option<&AmmoReserve>,
             Option<&ActiveWeaponSlot>,
@@ -1152,7 +1364,7 @@ fn sync_player_state_cache(
 ) {
     let mut seen = std::collections::HashSet::new();
 
-    for (entity, marker, health, stats, inventory, weapon_slots, ammo_reserve, active_slot, fire_state, reload_state, weapon_swap) in &players {
+    for (entity, marker, health, stats, inventory, armor, weapon_slots, ammo_reserve, active_slot, fire_state, reload_state, weapon_swap) in &players {
         seen.insert(marker.client_id);
         player_map.map.insert(marker.client_id, entity);
         stats_cache.update(
@@ -1162,6 +1374,7 @@ fn sync_player_state_cache(
                 inventory: inventory.map(|value| value.0.clone()).unwrap_or_default(),
                 health: health.current,
                 max_health: health.max,
+                armor: armor.cloned().unwrap_or_default(),
                 weapon_slots: weapon_slots
                     .map(|value| value.0.iter().cloned().collect())
                     .unwrap_or_else(|| vec![None, None, None, None]),

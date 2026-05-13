@@ -24,6 +24,7 @@ use bevy::math::{EulerRot, Quat};
 
 use crate::ace::AceRegistry;
 use crate::cmd_queue::{
+    ArmorClass, ArmorPiece,
     CommandQueue, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
     EquippedWeapon,
     EnvironmentLightConfigPatch,
@@ -1401,6 +1402,17 @@ fn parse_npc_task_kind(name: &str) -> NpcTaskKind {
         "fly_route" | "fly" => NpcTaskKind::FlyRoute,
         "swim_route" | "swim" => NpcTaskKind::SwimRoute,
         _ => NpcTaskKind::Idle,
+    }
+}
+
+fn parse_armor_class(name: &str) -> Option<ArmorClass> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "i" => Some(ArmorClass::I),
+        "ii" => Some(ArmorClass::Ii),
+        "iiia" | "iiiaa" | "iiia+" => Some(ArmorClass::Iiia),
+        "iii" => Some(ArmorClass::Iii),
+        "iv" => Some(ArmorClass::Iv),
+        _ => None,
     }
 }
 
@@ -2921,6 +2933,20 @@ fn install_runtime_api_inner(
         },
     )?)?;
 
+    // Player.GetArmor(player_id) -> table|nil
+    let sc = stats_cache.clone();
+    player_ns.set("GetArmor", lua.create_function(
+        move |lua, player_id_v: mlua::Value| {
+            let pid = lua_value_to_u64(&player_id_v);
+            let Some(snap) = pid.and_then(|id| sc.get(id)) else {
+                return Ok(mlua::Value::Nil);
+            };
+            let json = serde_json::to_value(&snap.armor)
+                .map_err(|e| mlua::Error::RuntimeError(format!("Player.GetArmor: {e}")))?;
+            json_to_lua_value(lua, json)
+        },
+    )?)?;
+
     // Player.GetInventory(player_id) -> table|nil
     let sc = stats_cache.clone();
     player_ns.set("GetInventory", lua.create_function(
@@ -2971,6 +2997,62 @@ fn install_runtime_api_inner(
             }
             let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
             cq.push(LuaCommand::GiveItem { player_id, item, count: -(count as i32) });
+            Ok(())
+        },
+    )?)?;
+
+    // Player.SetArmor(player_id, slot, class|nil, durability?, max_durability?) — server only
+    let cq = cmd_queue.clone();
+    player_ns.set("SetArmor", lua.create_function(
+        move |_, args: MultiValue| {
+            if side != Side::Server {
+                return Err(mlua::Error::RuntimeError("Player.SetArmor is server-only".into()));
+            }
+            if args.len() < 3 {
+                return Err(mlua::Error::RuntimeError(
+                    "Player.SetArmor(player_id, slot, class|nil, durability?, max_durability?) requires player_id, slot and class|nil".into(),
+                ));
+            }
+
+            let player_id = lua_value_to_u64(&args[0]).unwrap_or(0);
+            let slot = match &args[1] {
+                mlua::Value::String(value) => value.to_str()?.to_string(),
+                _ => return Err(mlua::Error::RuntimeError("Player.SetArmor: slot must be a string".into())),
+            };
+
+            let armor = match &args[2] {
+                mlua::Value::Nil => None,
+                mlua::Value::String(value) => {
+                    let class_name = value.to_str()?;
+                    let class = parse_armor_class(&class_name).ok_or_else(|| {
+                        mlua::Error::RuntimeError(format!("Player.SetArmor: unsupported armor class '{class_name}'"))
+                    })?;
+                    let durability = match args.get(3) {
+                        Some(mlua::Value::Integer(v)) => *v as f32,
+                        Some(mlua::Value::Number(v)) => *v as f32,
+                        Some(mlua::Value::Nil) | None => 100.0,
+                        _ => return Err(mlua::Error::RuntimeError("Player.SetArmor: durability must be a number".into())),
+                    };
+                    let max_durability = match args.get(4) {
+                        Some(mlua::Value::Integer(v)) => *v as f32,
+                        Some(mlua::Value::Number(v)) => *v as f32,
+                        Some(mlua::Value::Nil) | None => durability.max(0.0),
+                        _ => return Err(mlua::Error::RuntimeError("Player.SetArmor: max_durability must be a number".into())),
+                    };
+                    Some(ArmorPiece {
+                        class,
+                        durability,
+                        max_durability,
+                    })
+                }
+                _ => return Err(mlua::Error::RuntimeError("Player.SetArmor: class must be a string or nil".into())),
+            };
+
+            cq.push(LuaCommand::SetPlayerArmor {
+                player_id,
+                slot,
+                armor,
+            });
             Ok(())
         },
     )?)?;
@@ -3510,7 +3592,10 @@ fn install_runtime_api_inner(
     // Vrátí snapshot HP lokálního hráče aktualizovaný serverem přes PlayerStatsUpdate.
     // Lua resource ho může číst v loopu: while true do ... wait(100) end
     {
-        let player_tbl = lua.create_table()?;
+        let player_tbl = match globals.get::<mlua::Table>("Player") {
+            Ok(existing) => existing,
+            Err(_) => lua.create_table()?,
+        };
 
         if side == Side::Client {
             if let Some(ls) = local_stats.clone() {
@@ -3526,6 +3611,9 @@ fn install_runtime_api_inner(
                     let ammo_reserve = serde_json::to_value(&snap.ammo_reserve)
                         .map_err(|e| mlua::Error::RuntimeError(format!("Player.GetLocalStats: {e}")))?;
                     t.set("ammo_reserve", json_to_lua_value(lua, ammo_reserve)?)?;
+                    let armor = serde_json::to_value(&snap.armor)
+                        .map_err(|e| mlua::Error::RuntimeError(format!("Player.GetLocalStats: {e}")))?;
+                    t.set("armor", json_to_lua_value(lua, armor)?)?;
 
                     let fire = lua.create_table()?;
                     fire.set("cooldown_remaining", snap.fire_cooldown_remaining)?;
@@ -3557,6 +3645,7 @@ fn install_runtime_api_inner(
                     t.set("active_weapon_slot", 0_i64)?;
                     t.set("weapon_slots", lua.create_table()?)?;
                     t.set("ammo_reserve", lua.create_table()?)?;
+                    t.set("armor", lua.create_table()?)?;
 
                     let fire = lua.create_table()?;
                     fire.set("cooldown_remaining", 0.0_f32)?;

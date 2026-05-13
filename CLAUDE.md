@@ -72,6 +72,9 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
+- [X] **2026-05-13 (Armor Component + Basic Damage Absorption Foundation)**: `core_resources` teď obsahuje sdílené `ArmorClass`, `ArmorPiece` a `ArmorComponent { helmet, vest }`, nové server-side Lua API `Player.GetArmor/SetArmor`, a `StatsSnapshot`/`PlayerStatsUpdate` nově přenášejí i armor snapshot do `Player.GetLocalStats()`. `core_net::process_combat()` zároveň už respektuje `HitboxDef.armor_zones`, `HitboxBoneDef.armor_bypass` a ammo `penetration_class`/`armor_penetration`: zásahy do `helmet`/`vest` teď absorbují část damage, ubírají durability a event `onPlayerDamage` nově nese `armor_absorbed` a `penetrated_armor`. Zatím jde o jednoduchou foundation, ne finální NIJ absorption table ani plný status-effect pipeline.
+- [X] **2026-05-13 (Lua Weapon API Uses Timed Server States)**: Server-side `Weapon.SetActiveSlot` a `Weapon.ForceReload` už neprovádějí instantní mutaci aktivního slotu nebo zásobníku bokem přes `cmd_queue`. Obě cesty teď plánují stejný `WeaponSwapState` / `ReloadState` jako standardní input flow a resetují `FireState`, takže resource-side weapon kontrola už neobchází autoritativní timed server state.
+- [X] **2026-05-13 (Position History + Coarse Rewind Foundation)**: `core_net` teď na každém server player entity drží `PositionHistory` ring buffer recentních fixed-tick pozic a používá ho v combat resolveru pro coarse rewind cílů před hitbox testem. Aktuální foundation zatím používá krátký fixní rewind window místo RTT-aware lag compensation, ale hit detection už není čistě „jen poslední aktuální transform“ a technický základ pro plný `LagCompensator` je připravený.
 - [X] **2026-05-13 (Weapon Fire Mode Lua API)**: Nový server-side weapon state jde teď ovládat i z resources. Přidány Lua API `Weapon.GetFireMode(player_id, slot?)` a `Weapon.SetFireMode(player_id, fire_mode, slot?)`, pod nimi nový `LuaCommand::SetWeaponFireMode`, který mění mód vybavené zbraně v cílovém nebo aktivním slotu a resetuje lokální `FireState`. Resources tak už nemusí měnit celé `EquippedWeapon` tabulky jen kvůli přepnutí `semi/full/burst`.
 - [X] **2026-05-13 (Semi-Auto Fire Mode Semantics Foundation)**: `EquippedWeapon` teď nese i `fire_mode` a server při `SetEquippedWeapon` doplňuje výchozí mód z `WeaponDef.default_fire_mode` nebo z prvního `fire_modes` záznamu. `core_net::process_combat()` už fire mode respektuje aspoň v základní podobě: `semi` a zatím i `burst` střílí jen na rising edge triggeru, zatímco ostatní módy fungují jako držení spouště. Tím už `WeaponDef.fire_modes` není mrtvé metadata pole i když plná burst/full-auto FSM ještě zbývá.
 - [X] **2026-05-13 (Hitbox Registry + Capsule Hit Resolver Foundation)**: `core_resources` teď obsahuje runtime `HitboxDef` / `HitboxRegistry` s built-in profilem `player_default` a nové server-side Lua API `Hitbox.Register/Get`. Server player entity dostává `PlayerHitbox("player_default")` a `core_net::process_combat()` už pro ranged zásahy nepoužívá jen hrubý 2D cone check, ale nearest-hit kapslový resolver nad hitbox bones. Eventy `onPlayerHit` a `onPlayerDamage` teď nesou `hitzone`, `headshot`, `raw_damage`, `damage`, `distance_m` a `ammo`, takže hit detection konečně rozlišuje head/chest/limb multipliery i bez plné lag-compensation vrstvy.
@@ -396,8 +399,8 @@ Ammo.Register('7.62x39_fmj', {
 #### 5.3 — Hitbox & Hit Detection [ ]
 
 - [X] `HitboxDef`, `HitboxRegistry`, `PlayerHitbox` foundation + built-in `player_default` profil
-- [ ] `PositionHistory` (ring buffer pro lag comp)
-- [ ] `LagCompensator` (rewind pozic na spawn_tick)
+- [X] `PositionHistory` foundation (ring buffer recentních server tick snapshotů)
+- [ ] `LagCompensator` (RTT-aware rewind pozic na shot tick; aktuálně jen coarse fixed-tick rewind foundation)
 - [X] `HitResolver` foundation (kapslový nearest-hit resolver → `hitzone`, `headshot`, damage multiplier)
 - [X] `Hitbox.Register(model_id, def)` Lua API
 
@@ -430,14 +433,14 @@ Hitbox.Register('player_default', {
 
 ---
 
-#### 5.5 — Armor & Damage Pipeline [ ]
+#### 5.5 — Armor & Damage Pipeline [🟡 FOUNDATION READY]
 
-- [ ] `ArmorComponent {helmet, vest: Option<ArmorPiece{class, durability, max_durability}>`
-- [ ] `ArmorClass` (NIJ I/II/IIIa/III/IV), `absorption_table[class][pen_class]`, `ArmorDurabilitySystem`
-- [ ] Damage pipeline: energy_j → armor check → `armor_absorption` / `after_penetration_mult` → hitzone mult → `wound_mult` → `health.current -= final`
+- [X] `ArmorComponent {helmet, vest: Option<ArmorPiece{class, durability, max_durability}>`
+- [X] `ArmorClass` (NIJ I/II/IIIa/III/IV) a základní durability depletion v `process_combat`; plná `absorption_table[class][pen_class]` a samostatný `ArmorDurabilitySystem` ještě chybí
+- [X] Základní damage pipeline vrstva: `process_combat()` už používá `armor_zones`, `armor_bypass`, ammo `penetration_class` a `armor_penetration` pro jednoduchou absorpci a finální `health.current -= final`
 - [ ] `BleedEffect {dps, remaining_sec}`, `BurnEffect`, `status_effect_system`
-- [ ] `onPlayerDamage` event: `{attacker, victim, weapon, ammo, hitzone, final_damage, raw_damage, armor_absorbed, penetrated_armor, distance_m, impact_velocity_mps, headshot, through_wall}`
-- [ ] Lua: `Player.GetArmor(pid)`, `Player.SetArmor(pid, slot, class, durability)`
+- [X] `onPlayerDamage` event: `{attacker, victim, weapon, ammo, hitzone, final_damage, raw_damage, armor_absorbed, penetrated_armor, distance_m, impact_velocity_mps, headshot, through_wall}` foundation; aktuálně bez `impact_velocity_mps` a `through_wall`
+- [X] Lua: `Player.GetArmor(pid)`, `Player.SetArmor(pid, slot, class, durability)`
 
 ---
 

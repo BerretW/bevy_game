@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use core_resources::EquippedWeapon;
+use core_resources::{ArmorComponent, EquippedWeapon};
 use serde::{Deserialize, Serialize};
 
 use crate::digest::ResourceDigest;
@@ -133,6 +133,7 @@ pub struct PlayerInput {
 pub struct PlayerStatsUpdate {
     pub hp: f32,
     pub max_hp: f32,
+    pub armor: ArmorComponent,
     pub weapon_slots: Vec<Option<EquippedWeapon>>,
     pub ammo_reserve: HashMap<String, u32>,
     pub active_weapon_slot: u8,

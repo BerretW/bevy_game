@@ -24,7 +24,7 @@ mod watcher;
 mod weapons;
 
 pub use cmd_queue::{
-    ActiveWeaponSlot, AmmoReserve,
+    ActiveWeaponSlot, AmmoReserve, ArmorClass, ArmorComponent, ArmorPiece,
     AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
     ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
     EquippedWeapon,
