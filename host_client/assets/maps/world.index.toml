@@ -1,0 +1,8 @@
+version = "1.0"
+
+[[tiles]]
+id = "tile_example_0_0"
+map = "example.map.toml"
+center = [2.0, -1.0, 2.0]
+load_radius = 2500.0
+always_loaded = true

@@ -229,3 +229,36 @@ class BevyExportProps(bpy.types.PropertyGroup):
         description="Export IK chains to a sidecar TOML file next to .adm/.ads_anim/.glb",
         default=True,
     )
+
+    # Navmesh generation parameters
+    ui_show_navmesh: bpy.props.BoolProperty(name="Show Navmesh Tools", default=False)
+    navmesh_walkable_height: bpy.props.FloatProperty(
+        name="Walkable Height",
+        description="Max height of agent (meters)",
+        default=1.8, min=0.1, unit='LENGTH',
+    )
+    navmesh_walkable_radius: bpy.props.FloatProperty(
+        name="Walkable Radius",
+        description="Agent radius for navmesh (meters)",
+        default=0.35, min=0.05, unit='LENGTH',
+    )
+    navmesh_climb_height: bpy.props.FloatProperty(
+        name="Climb Height",
+        description="Max step agent can climb (meters)",
+        default=0.5, min=0.0, unit='LENGTH',
+    )
+    navmesh_include_water: bpy.props.BoolProperty(
+        name="Include Water Surfaces",
+        description="Generate water walkable surfaces",
+        default=True,
+    )
+    navmesh_include_climbable: bpy.props.BoolProperty(
+        name="Include Climbable Surfaces",
+        description="Generate steep walkable surfaces (walls, slopes)",
+        default=True,
+    )
+    navmesh_include_ceiling: bpy.props.BoolProperty(
+        name="Include Ceiling Surfaces",
+        description="Generate inverted surfaces for flying/ceiling traversal",
+        default=False,
+    )

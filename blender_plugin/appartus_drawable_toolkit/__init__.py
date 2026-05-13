@@ -62,6 +62,9 @@ from .operators import (
     ADS_OT_export_adm,
     BEVY_OT_FindMissingTextures,
     BEVY_OT_BrowseTexture,
+    BEVY_OT_NavmeshAutogen,
+    BEVY_OT_NavmeshCleanup,
+    BEVY_OT_ExportNavmesh,
 )
 from .panels import BEVY_PT_MaterialPanel, BEVY_PT_ObjectPanel, BEVY_PT_Panel, BEVY_UL_AnimationDictionaries, BEVY_UL_IkChains
 
@@ -115,6 +118,9 @@ classes = (
     ADS_OT_export_adm,
     BEVY_OT_FindMissingTextures,
     BEVY_OT_BrowseTexture,
+    BEVY_OT_NavmeshAutogen,
+    BEVY_OT_NavmeshCleanup,
+    BEVY_OT_ExportNavmesh,
     BEVY_PT_MaterialPanel,
     BEVY_PT_ObjectPanel,
     BEVY_UL_AnimationDictionaries,

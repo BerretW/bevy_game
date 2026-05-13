@@ -68,6 +68,7 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
+- [x] **2026-05-13**: Large-world tile streaming foundation — `host_client` map loader podporuje volitelný index `assets/maps/world.index.toml` (nebo `map.index.toml`) s tile záznamy (`map`, `center`, `load_radius`, `always_loaded`). Přidán stream-in/stream-out map souborů podle vzdálenosti lokálního hráče, unload ECS entit + `LuaWorldState` handle mapy mimo radius, a unload navmesh přes nové `NavmeshRegistry::unload_navmesh`. Přidán ukázkový index `host_client/assets/maps/world.index.toml`.
 - [x] **2026-05-12**: NPC Framework + základní AI pohyb — Přidán `NpcAgent` systém v `core_resources` (`tick_npc_agents` ve `FixedUpdate`) s módy `wander` (`random`/`patrol`/`orbit`), `go to entity` a `go to coord`. Rozšířeno Lua API o `World.NpcConfigure/NpcWander/NpcGoToEntity/NpcGoToCoord/NpcStop`. Přidán demo resource `resources/example/npc_test/`.
 - [x] **2026-05-12**: Model Viewer texture browser/export tool — Registrace chybějících systémů `init_texture_browser`, `handle_texture_keys`, `rebuild_panel`, `show_extract_status` do `Update` scheduling. Nástroj na zobrazení a export textur (T pro toggle, E pro export) znovu plně funkční.
 - [x] **2026-05-12 (oprava)**: Export textur — Oprava cest: ADM cesty byly relativní. Přidán `ModelSourcePaths` Resource, který si pamatuje absolutní cestu na disk pro každý načtený model. Export teď používá absolutní cesty namísto relativních bevy paths.

@@ -6,6 +6,7 @@ mod lod;
 mod map;
 mod manifest;
 mod material;
+mod navmesh;
 mod registry;
 mod ped;
 
@@ -47,6 +48,7 @@ pub use material::{
     VehicleGlassExtension, VehicleGlassMaterial,
 };
 pub use registry::{DrawableManifestRegistry, GltfHandleCache, TextureRegistry};
+pub use navmesh::{NavmeshRegistry, NavmeshData, NavmeshSurface, PathSegment};
 
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
@@ -107,6 +109,7 @@ impl Plugin for DrawablePlugin {
             .init_resource::<GltfHandleCache>()
             .init_resource::<TextureRegistry>()
             .init_resource::<DefaultLodDistances>()
+            .init_resource::<NavmeshRegistry>()
             .add_observer(observe_scene_ready)
             .add_systems(Startup, setup_fallback_textures)
             .add_systems(

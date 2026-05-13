@@ -413,3 +413,25 @@ class BEVY_PT_Panel(bpy.types.Panel):
         if map_open:
             map_box.operator("bevy.export_map_manifest", text="Export Map TOML", icon="EXPORT")
             map_box.operator("bevy.import_map_manifest", text="Import Map TOML", icon="IMPORT")
+
+        navmesh_box, navmesh_open = _collapsible_box(layout, settings, "ui_show_navmesh", "Navmesh Tools", "SNAP_VERTEX")
+        if navmesh_open:
+            navmesh_box.label(text="Generation")
+            row = navmesh_box.row(align=True)
+            row.operator("bevy.navmesh_autogen", text="Generate Navmesh", icon="MOD_REMESH")
+            row.operator("bevy.navmesh_cleanup", text="Cleanup", icon="TRASH")
+            navmesh_box.operator("bevy.export_navmesh", text="Export Navmesh (.navmesh.toml)", icon="EXPORT")
+
+            navmesh_box.separator(factor=0.5)
+            navmesh_box.label(text="Agent Configuration")
+            col = navmesh_box.column(align=True)
+            col.prop(settings, "navmesh_walkable_height", slider=True)
+            col.prop(settings, "navmesh_walkable_radius", slider=True)
+            col.prop(settings, "navmesh_climb_height", slider=True)
+
+            navmesh_box.separator(factor=0.5)
+            navmesh_box.label(text="Surface Types")
+            row = navmesh_box.row(align=True)
+            row.prop(settings, "navmesh_include_water", toggle=True)
+            row.prop(settings, "navmesh_include_climbable", toggle=True)
+            row.prop(settings, "navmesh_include_ceiling", toggle=True)

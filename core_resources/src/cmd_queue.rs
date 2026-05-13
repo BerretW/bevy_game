@@ -589,6 +589,11 @@ pub enum NpcMoveGoal {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct NpcPathWaypoint {
+    pub target: Vec3,
+}
+
 #[derive(Component, Debug, Clone)]
 pub struct NpcAgent {
     pub move_speed: f32,
@@ -601,6 +606,9 @@ pub struct NpcAgent {
     pub orbit_angle: f32,
     pub patrol_to_target: bool,
     pub rng_state: u32,
+    pub current_path: Vec<NpcPathWaypoint>,
+    pub waypoint_index: usize,
+    pub map_id: String,
 }
 
 impl NpcAgent {
@@ -619,6 +627,9 @@ impl NpcAgent {
             orbit_angle: 0.0,
             patrol_to_target: true,
             rng_state: seed,
+            current_path: Vec::new(),
+            waypoint_index: 0,
+            map_id: String::new(),
         }
     }
 
