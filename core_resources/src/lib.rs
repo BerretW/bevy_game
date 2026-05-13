@@ -36,7 +36,7 @@ pub use cmd_queue::{
     NpcScenarioClockConfigPatch, NpcScenarioTime, NpcPopulationAssignment, NpcWanderKind, PedProfileOverride,
     ReplicatedNpcSteering, apply_replicated_npc_steering, snapshot_npc_steering,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, NpcPedMarker, PendingDamageEvent,
-    FireState, PlayerEntityMap, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
+    FireState, PlayerEntityMap, PlayerHitbox, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
     ReloadState, WeaponSlots, WeaponSwapState,
     advance_npc_scenario_time, apply_replicated_npc_brain, assign_npc_owners, process_lua_commands,
     run_npc_population_director, sync_entity_state_cache, sync_npc_scenario_runtime,
@@ -81,6 +81,8 @@ pub use types::{IdError, ResourceId, Side};
 pub use vfs::{ScanError, ScanReport, Vfs};
 pub use watcher::{ResourcesDirty, VfsWatcher, WatcherError};
 pub use weapons::{
-    AmmoDef, AmmoRegistry, AttachmentDef, AttachmentRegistry, MaterialDef, MaterialRegistry,
-    WeaponDef, WeaponRecoilPointDef, WeaponRegistry, WeaponSlotFlags, WeaponSpreadDef,
+    AmmoDef, AmmoRegistry, AttachmentDef, AttachmentRegistry, HitboxArmorZoneDef,
+    HitboxBoneDef, HitboxCapsuleDef, HitboxDef, HitboxRegistry, MaterialDef,
+    MaterialRegistry, WeaponDef, WeaponRecoilPointDef, WeaponRegistry, WeaponSlotFlags,
+    WeaponSpreadDef,
 };

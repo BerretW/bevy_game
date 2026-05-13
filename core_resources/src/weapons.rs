@@ -216,12 +216,144 @@ pub struct MaterialDef {
     pub ricochet_angle_deg: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HitboxCapsuleDef {
+    #[serde(default)]
+    pub r: f32,
+    #[serde(default)]
+    pub hh: f32,
+    #[serde(default)]
+    pub oy: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HitboxBoneDef {
+    #[serde(default = "default_scalar_one")]
+    pub mult: f32,
+    #[serde(default)]
+    pub armor_bypass: f32,
+    #[serde(default)]
+    pub capsule: HitboxCapsuleDef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HitboxArmorZoneDef {
+    #[serde(default)]
+    pub bones: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HitboxDef {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub bones: HashMap<String, HitboxBoneDef>,
+    #[serde(default)]
+    pub armor_zones: HashMap<String, HitboxArmorZoneDef>,
+}
+
 fn default_scalar_one() -> f32 {
     1.0
 }
 
 fn default_single_projectile() -> u32 {
     1
+}
+
+fn default_player_hitbox() -> HitboxDef {
+    let mut bones = HashMap::new();
+    bones.insert(
+        "head".to_string(),
+        HitboxBoneDef {
+            mult: 4.0,
+            armor_bypass: 0.5,
+            capsule: HitboxCapsuleDef { r: 0.12, hh: 0.10, oy: 1.75 },
+        },
+    );
+    bones.insert(
+        "neck".to_string(),
+        HitboxBoneDef {
+            mult: 2.5,
+            armor_bypass: 0.8,
+            capsule: HitboxCapsuleDef { r: 0.07, hh: 0.06, oy: 1.55 },
+        },
+    );
+    bones.insert(
+        "chest".to_string(),
+        HitboxBoneDef {
+            mult: 1.0,
+            armor_bypass: 0.0,
+            capsule: HitboxCapsuleDef { r: 0.22, hh: 0.18, oy: 1.30 },
+        },
+    );
+    bones.insert(
+        "stomach".to_string(),
+        HitboxBoneDef {
+            mult: 0.9,
+            armor_bypass: 0.1,
+            capsule: HitboxCapsuleDef { r: 0.18, hh: 0.12, oy: 1.05 },
+        },
+    );
+    bones.insert(
+        "pelvis".to_string(),
+        HitboxBoneDef {
+            mult: 0.8,
+            armor_bypass: 0.2,
+            capsule: HitboxCapsuleDef { r: 0.18, hh: 0.10, oy: 0.90 },
+        },
+    );
+    bones.insert(
+        "upper_arm".to_string(),
+        HitboxBoneDef {
+            mult: 0.7,
+            armor_bypass: 1.0,
+            capsule: HitboxCapsuleDef { r: 0.07, hh: 0.14, oy: 1.35 },
+        },
+    );
+    bones.insert(
+        "lower_arm".to_string(),
+        HitboxBoneDef {
+            mult: 0.6,
+            armor_bypass: 1.0,
+            capsule: HitboxCapsuleDef { r: 0.06, hh: 0.12, oy: 1.10 },
+        },
+    );
+    bones.insert(
+        "upper_leg".to_string(),
+        HitboxBoneDef {
+            mult: 0.75,
+            armor_bypass: 1.0,
+            capsule: HitboxCapsuleDef { r: 0.09, hh: 0.18, oy: 0.60 },
+        },
+    );
+    bones.insert(
+        "lower_leg".to_string(),
+        HitboxBoneDef {
+            mult: 0.65,
+            armor_bypass: 1.0,
+            capsule: HitboxCapsuleDef { r: 0.07, hh: 0.18, oy: 0.28 },
+        },
+    );
+
+    let mut armor_zones = HashMap::new();
+    armor_zones.insert(
+        "helmet".to_string(),
+        HitboxArmorZoneDef {
+            bones: vec!["head".to_string(), "neck".to_string()],
+        },
+    );
+    armor_zones.insert(
+        "vest".to_string(),
+        HitboxArmorZoneDef {
+            bones: vec!["chest".to_string(), "stomach".to_string(), "pelvis".to_string()],
+        },
+    );
+
+    HitboxDef {
+        id: "player_default".to_string(),
+        bones,
+        armor_zones,
+    }
 }
 
 #[derive(Resource, Clone, Default)]
@@ -327,6 +459,48 @@ impl MaterialRegistry {
     }
 }
 
+#[derive(Resource, Clone)]
+pub struct HitboxRegistry(pub Arc<RwLock<HashMap<String, HitboxDef>>>);
+
+impl Default for HitboxRegistry {
+    fn default() -> Self {
+        let mut defs = HashMap::new();
+        defs.insert("player_default".to_string(), default_player_hitbox());
+        Self(Arc::new(RwLock::new(defs)))
+    }
+}
+
+impl HitboxRegistry {
+    pub fn insert(&self, id: String, mut def: HitboxDef) {
+        if def.id.trim().is_empty() {
+            def.id = id.clone();
+        }
+        self.0
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, def);
+    }
+
+    pub fn get(&self, id: &str) -> Option<HitboxDef> {
+        self.0
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    pub fn resolve_default(&self) -> Option<HitboxDef> {
+        let guard = self.0.read().unwrap_or_else(|p| p.into_inner());
+        if let Some(def) = guard.get("player_default") {
+            return Some(def.clone());
+        }
+        if guard.len() == 1 {
+            return guard.values().next().cloned();
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +557,15 @@ mod tests {
 
         let stored = registry.resolve_default().expect("default weapon should exist");
         assert_eq!(stored.id, "default");
+    }
+
+    #[test]
+    fn hitbox_registry_has_default_profile() {
+        let registry = HitboxRegistry::default();
+        let stored = registry
+            .resolve_default()
+            .expect("default hitbox should exist");
+        assert_eq!(stored.id, "player_default");
+        assert!(stored.bones.contains_key("head"));
     }
 }

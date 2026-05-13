@@ -72,6 +72,9 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
+- [X] **2026-05-13 (Weapon Fire Mode Lua API)**: Nový server-side weapon state jde teď ovládat i z resources. Přidány Lua API `Weapon.GetFireMode(player_id, slot?)` a `Weapon.SetFireMode(player_id, fire_mode, slot?)`, pod nimi nový `LuaCommand::SetWeaponFireMode`, který mění mód vybavené zbraně v cílovém nebo aktivním slotu a resetuje lokální `FireState`. Resources tak už nemusí měnit celé `EquippedWeapon` tabulky jen kvůli přepnutí `semi/full/burst`.
+- [X] **2026-05-13 (Semi-Auto Fire Mode Semantics Foundation)**: `EquippedWeapon` teď nese i `fire_mode` a server při `SetEquippedWeapon` doplňuje výchozí mód z `WeaponDef.default_fire_mode` nebo z prvního `fire_modes` záznamu. `core_net::process_combat()` už fire mode respektuje aspoň v základní podobě: `semi` a zatím i `burst` střílí jen na rising edge triggeru, zatímco ostatní módy fungují jako držení spouště. Tím už `WeaponDef.fire_modes` není mrtvé metadata pole i když plná burst/full-auto FSM ještě zbývá.
+- [X] **2026-05-13 (Hitbox Registry + Capsule Hit Resolver Foundation)**: `core_resources` teď obsahuje runtime `HitboxDef` / `HitboxRegistry` s built-in profilem `player_default` a nové server-side Lua API `Hitbox.Register/Get`. Server player entity dostává `PlayerHitbox("player_default")` a `core_net::process_combat()` už pro ranged zásahy nepoužívá jen hrubý 2D cone check, ale nearest-hit kapslový resolver nad hitbox bones. Eventy `onPlayerHit` a `onPlayerDamage` teď nesou `hitzone`, `headshot`, `raw_damage`, `damage`, `distance_m` a `ammo`, takže hit detection konečně rozlišuje head/chest/limb multipliery i bez plné lag-compensation vrstvy.
 - [X] **2026-05-13 (Example HUD Weapon State Panel)**: `resources/example/hud/` teď kromě health baru a FPS zobrazuje i lokální weapon snapshot z `Player.GetLocalStats()`: aktivní slot, `weapon_id`, `ammo_in_mag`, reserve ammo a pending `fire/reload/weapon_swap` časy. To dává okamžitý client-side debug panel pro nový server weapon state bez nutnosti psát ad hoc test resource nebo sahat do Rust UI.
 - [X] **2026-05-13 (Client Local Weapon State Snapshot)**: `PlayerStatsUpdate` už neposílá jen `hp/max_hp`, ale i lokální weapon snapshot (`weapon_slots`, `ammo_reserve`, `active_weapon_slot`, `fire/reload/swap` timing pole). `core_net::broadcast_player_stats()` ho skládá z autoritativních serverových komponent, `core_net::lua_rpc::receive_player_stats()` ho zapisuje do `LocalPlayerStats` jako plný `StatsSnapshot`, a klientské Lua `Player.GetLocalStats()` teď vrací nejen HP, ale i aktivní slot, zásobníky, reserve ammo a pending fire/reload/swap stav pro HUD/debug resources.
 - [X] **2026-05-13 (Shared Fire State Foundation)**: Server weapon flow už nepoužívá izolovaný `WeaponCooldown` mimo zbytek player weapon state. Přidán sdílený ECS komponent `FireState { cooldown_remaining, shot_interval, trigger_held }` do `core_resources`, serverový spawn ho zakládá vedle `ReloadState`/`WeaponSwapState`, `core_net::process_combat()` ho používá jako jediný zdroj pravdy pro gating střelby a `sync_player_state_cache()` teď publikuje i `fire_cooldown_remaining` + `fire_trigger_held` do `StatsSnapshot`. Tím je reload/swap/fire konečně na jedné společné state vrstvě místo mixu shared komponent a lokálního server-only cooldown hacku.
@@ -392,9 +395,11 @@ Ammo.Register('7.62x39_fmj', {
 
 #### 5.3 — Hitbox & Hit Detection [ ]
 
-- [ ] `HitboxDef`, `HitboxRegistry`, `PlayerHitbox`, `PositionHistory` (ring buffer pro lag comp)
-- [ ] `LagCompensator` (rewind pozic na spawn_tick), `HitResolver` (kapsle test → `DamageEvent` s hitzone)
-- [ ] `Hitbox.Register(model_id, def)` Lua API
+- [X] `HitboxDef`, `HitboxRegistry`, `PlayerHitbox` foundation + built-in `player_default` profil
+- [ ] `PositionHistory` (ring buffer pro lag comp)
+- [ ] `LagCompensator` (rewind pozic na spawn_tick)
+- [X] `HitResolver` foundation (kapslový nearest-hit resolver → `hitzone`, `headshot`, damage multiplier)
+- [X] `Hitbox.Register(model_id, def)` Lua API
 
 ```lua
 Hitbox.Register('player_default', {
@@ -419,7 +424,7 @@ Hitbox.Register('player_default', {
 
 - [X] `WeaponSlots` (4 sloty), `EquippedWeapon {weapon_id, ammo_in_mag, ammo_type_id, attachments}`, `AmmoReserve`, `ActiveSlot`
 - [X] `ReloadState`, `WeaponSwapState` a `FireState` foundation (`remaining`, `duration`, pending slot, fire cooldown/trigger`) pro server player entities
-- [ ] Plně časovaný `reload_system`, `fire_system` (FixedUpdate); reload a slot swap už běží přes timed server states a střelba už přešla na `FireState`, ale stále chybí bohatší `FireState` FSM (`Ready|Burst|Cooling`) a weapon-specific modes/hold semantics
+- [ ] Plně časovaný `reload_system`, `fire_system` (FixedUpdate); reload a slot swap už běží přes timed server states a střelba už přešla na `FireState`, ale stále chybí bohatší `FireState` FSM (`Ready|Burst|Cooling`) a plná weapon-specific burst/full-auto semantics
 - [X] Nové `PlayerInput` bity: `RELOAD` (2), `ADS` (12), `WEAPON_SLOT_1..4` (13–16)
 - [X] Lua: `Weapon.GetEquipped/SetEquipped/GetAmmoReserve/SetAmmoReserve/GetActiveSlot/SetActiveSlot/ForceReload`
 
@@ -493,7 +498,7 @@ Hitbox.Register('player_default', {
 | ------------------------------------------------------- | ----------- | ----------------------------------------------- |
 | `Weapon.Register/Get`                                 | both        | Runtime WeaponDef registry na aktuální straně   |
 | `Weapon.GetEquipped/SetEquipped`                      | server      | Equipment hráče                               |
-| `Weapon.GetAmmoReserve/SetAmmoReserve/GetActiveSlot/SetActiveSlot/ForceReload` | server | Munice + aktivní weapon slot |
+| `Weapon.GetAmmoReserve/SetAmmoReserve/GetActiveSlot/SetActiveSlot/GetFireMode/SetFireMode/ForceReload` | server | Munice + aktivní weapon slot + fire mode |
 | `Ammo/Attachment/Material.Register/Get`               | both        | Runtime Ammo/Attachment/Material registry       |
 | `Hitbox.Register(model,def)`                          | server      | Hitbox definition                               |
 | `Player.GetArmor/SetArmor`                            | server      | Brnění                                        |

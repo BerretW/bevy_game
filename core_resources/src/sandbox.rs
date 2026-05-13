@@ -40,8 +40,8 @@ use crate::model_registry::{
 use crate::npc_brain::{NpcBrainDef, NpcTaskKind};
 use crate::types::{ResourceId, Side};
 use crate::weapons::{
-    AmmoDef, AmmoRegistry, AttachmentDef, AttachmentRegistry, MaterialDef, MaterialRegistry,
-    WeaponDef, WeaponRegistry,
+    AmmoDef, AmmoRegistry, AttachmentDef, AttachmentRegistry, HitboxDef, HitboxRegistry,
+    MaterialDef, MaterialRegistry, WeaponDef, WeaponRegistry,
 };
 
 // ---------------------------------------------------------------------------
@@ -670,6 +670,7 @@ impl LuaSandbox {
         ammo_registry: AmmoRegistry,
         attachment_registry: AttachmentRegistry,
         material_registry: MaterialRegistry,
+        hitbox_registry: HitboxRegistry,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -722,6 +723,7 @@ impl LuaSandbox {
             &ammo_registry,
             &attachment_registry,
             &material_registry,
+            &hitbox_registry,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -1487,8 +1489,9 @@ fn install_runtime_api(
     ammo_registry: &AmmoRegistry,
     attachment_registry: &AttachmentRegistry,
     material_registry: &MaterialRegistry,
+    hitbox_registry: &HitboxRegistry,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, resource_root, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge, anim_set_cmds, anim_set_registry, weapon_registry, ammo_registry, attachment_registry, material_registry)
+    install_runtime_api_inner(lua, id, resource_root, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge, anim_set_cmds, anim_set_registry, weapon_registry, ammo_registry, attachment_registry, material_registry, hitbox_registry)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -1528,6 +1531,7 @@ fn install_runtime_api_inner(
     ammo_registry: &AmmoRegistry,
     attachment_registry: &AttachmentRegistry,
     material_registry: &MaterialRegistry,
+    hitbox_registry: &HitboxRegistry,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -3143,6 +3147,34 @@ fn install_runtime_api_inner(
     }
 
     {
+        let sc = stats_cache.clone();
+        weapon_ns.set("GetFireMode", lua.create_function(
+            move |_, args: MultiValue| {
+                if args.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        "Weapon.GetFireMode(player_id, slot?) requires player_id".into(),
+                    ));
+                }
+                let player_id = lua_value_to_u64(&args[0]).unwrap_or(0);
+                let Some(snap) = sc.get(player_id) else {
+                    return Ok(None::<String>);
+                };
+                let slot = match args.get(1) {
+                    Some(mlua::Value::Integer(v)) if *v >= 0 => *v as usize,
+                    Some(mlua::Value::Number(v)) if *v >= 0.0 => *v as usize,
+                    Some(mlua::Value::Nil) | None => snap.active_weapon_slot as usize,
+                    _ => return Err(mlua::Error::RuntimeError("Weapon.GetFireMode: invalid slot".into())),
+                };
+                Ok(snap
+                    .weapon_slots
+                    .get(slot)
+                    .and_then(|entry| entry.as_ref())
+                    .map(|weapon| weapon.fire_mode.clone()))
+            },
+        )?)?;
+    }
+
+    {
         let cq = cmd_queue.clone();
         weapon_ns.set("SetActiveSlot", lua.create_function(
             move |_, (player_id_v, slot): (mlua::Value, u8)| {
@@ -3151,6 +3183,39 @@ fn install_runtime_api_inner(
                 }
                 let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
                 cq.push(LuaCommand::SetActiveWeaponSlot { player_id, slot });
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let cq = cmd_queue.clone();
+        weapon_ns.set("SetFireMode", lua.create_function(
+            move |_, args: MultiValue| {
+                if side != Side::Server {
+                    return Err(mlua::Error::RuntimeError("Weapon.SetFireMode is server-only".into()));
+                }
+                if args.len() < 2 {
+                    return Err(mlua::Error::RuntimeError(
+                        "Weapon.SetFireMode(player_id, fire_mode, slot?) requires player_id and fire_mode".into(),
+                    ));
+                }
+                let player_id = lua_value_to_u64(&args[0]).unwrap_or(0);
+                let fire_mode = match &args[1] {
+                    mlua::Value::String(v) => v.to_str()?.to_string(),
+                    _ => return Err(mlua::Error::RuntimeError("Weapon.SetFireMode: invalid fire_mode".into())),
+                };
+                let slot = match args.get(2) {
+                    Some(mlua::Value::Integer(v)) if *v >= 0 => Some(*v as u8),
+                    Some(mlua::Value::Number(v)) if *v >= 0.0 => Some(*v as u8),
+                    Some(mlua::Value::Nil) | None => None,
+                    _ => return Err(mlua::Error::RuntimeError("Weapon.SetFireMode: invalid slot".into())),
+                };
+                cq.push(LuaCommand::SetWeaponFireMode {
+                    player_id,
+                    slot,
+                    fire_mode,
+                });
                 Ok(())
             },
         )?)?;
@@ -3312,6 +3377,56 @@ fn install_runtime_api_inner(
     }
 
     globals.set("Material", material_ns)?;
+
+    let hitbox_ns = lua.create_table()?;
+
+    {
+        let registry = hitbox_registry.clone();
+        hitbox_ns.set("Register", lua.create_function(
+            move |_, (profile_id, def_v): (String, mlua::Value)| {
+                if side != Side::Server {
+                    return Err(mlua::Error::RuntimeError("Hitbox.Register is server-only".into()));
+                }
+                let mlua::Value::Table(def_t) = def_v else {
+                    return Err(mlua::Error::RuntimeError("Hitbox.Register expects a definition table".into()));
+                };
+                let mut json = lua_table_to_json(def_t);
+                if let serde_json::Value::Object(obj) = &mut json {
+                    let needs_id = obj
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| value.trim().is_empty())
+                        .unwrap_or(true);
+                    if needs_id {
+                        obj.insert("id".to_string(), serde_json::Value::String(profile_id.clone()));
+                    }
+                }
+                let mut def: HitboxDef = serde_json::from_value(json)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Hitbox.Register: {e}")))?;
+                if def.id.trim().is_empty() {
+                    def.id = profile_id.clone();
+                }
+                registry.insert(profile_id, def);
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let registry = hitbox_registry.clone();
+        hitbox_ns.set("Get", lua.create_function(
+            move |lua, profile_id: String| {
+                let Some(def) = registry.get(&profile_id) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let json = serde_json::to_value(def)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Hitbox.Get: {e}")))?;
+                json_to_lua_value(lua, json)
+            },
+        )?)?;
+    }
+
+    globals.set("Hitbox", hitbox_ns)?;
 
     // -- Database namespace (Phase 4) — server only, jen pokud je bridge k dispozici --
     if let Some(bridge) = db_bridge {

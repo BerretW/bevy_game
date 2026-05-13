@@ -302,6 +302,12 @@ pub enum LuaCommand {
         player_id: u64,
         slot: u8,
     },
+    /// Phase 5 — nastaví fire mode vybavené zbraně ve slotu nebo v aktivním slotu.
+    SetWeaponFireMode {
+        player_id: u64,
+        slot: Option<u8>,
+        fire_mode: String,
+    },
     /// Phase 5 — vynutí přebití aktivní zbraně z ammo reserve.
     ForceReload {
         player_id: u64,
@@ -2094,6 +2100,7 @@ pub struct EquippedWeapon {
     pub weapon_id: String,
     pub ammo_in_mag: u32,
     pub ammo_type_id: String,
+    pub fire_mode: String,
     pub attachments: Vec<String>,
 }
 
@@ -2129,6 +2136,15 @@ pub struct AmmoReserve(pub HashMap<String, u32>);
 
 #[derive(Component, Debug, Clone, Default)]
 pub struct ActiveWeaponSlot(pub u8);
+
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+pub struct PlayerHitbox(pub String);
+
+impl Default for PlayerHitbox {
+    fn default() -> Self {
+        Self("player_default".to_string())
+    }
+}
 
 #[derive(Component, Debug, Clone, Default)]
 pub struct FireState {
@@ -3221,6 +3237,18 @@ pub fn process_lua_commands(
             } => {
                 if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
                     if let Ok((_, _, _, mut slots, _, _, _, _, _)) = player_stats.get_mut(entity) {
+                        let equipped = equipped.map(|mut equipped| {
+                            if equipped.fire_mode.trim().is_empty() {
+                                if let Some(weapon_def) = player_runtime.weapon_registry.get(&equipped.weapon_id) {
+                                    if !weapon_def.default_fire_mode.trim().is_empty() {
+                                        equipped.fire_mode = weapon_def.default_fire_mode;
+                                    } else if let Some(first) = weapon_def.fire_modes.first() {
+                                        equipped.fire_mode = first.clone();
+                                    }
+                                }
+                            }
+                            equipped
+                        });
                         if slots.set(slot, equipped.clone()) {
                             debug!(
                                 "[cmd_queue] SetEquippedWeapon player={} slot={} weapon={:?}",
@@ -3278,6 +3306,34 @@ pub fn process_lua_commands(
                     }
                 } else {
                     warn!("[cmd_queue] SetActiveWeaponSlot: unknown player_id {}", player_id);
+                }
+            }
+
+            LuaCommand::SetWeaponFireMode {
+                player_id,
+                slot,
+                fire_mode,
+            } => {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, _, _, mut slots, _, active_slot, mut fire_state, _, _)) = player_stats.get_mut(entity) {
+                        let target_slot = slot.unwrap_or(active_slot.0);
+                        if let Some(equipped) = slots.get_mut(target_slot) {
+                            equipped.fire_mode = fire_mode.clone();
+                            *fire_state = FireState::default();
+                            debug!(
+                                "[cmd_queue] SetWeaponFireMode player={} slot={} mode={}",
+                                player_id,
+                                target_slot,
+                                fire_mode
+                            );
+                        } else {
+                            warn!("[cmd_queue] SetWeaponFireMode: missing equipped weapon in slot {}", target_slot);
+                        }
+                    } else {
+                        warn!("[cmd_queue] SetWeaponFireMode: player {} missing weapon state", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] SetWeaponFireMode: unknown player_id {}", player_id);
                 }
             }
 

@@ -23,7 +23,7 @@ use crate::npc_brain::NpcBrainRegistry;
 use crate::resolver::resolve_load_order;
 use crate::gui::{FontLoadQueue, FontLoadRequest, GuiDrawBuffer, ImageLoadQueue, ImageLoadRequest};
 use crate::sandbox::{GameBridges, LocalEventBus, LuaSandbox};
-use crate::weapons::{AmmoRegistry, AttachmentRegistry, MaterialRegistry, WeaponRegistry};
+use crate::weapons::{AmmoRegistry, AttachmentRegistry, HitboxRegistry, MaterialRegistry, WeaponRegistry};
 
 /// All passthrough resources for `rebuild()` bundled into one SystemParam.
 /// Keeps `initial_load` / `hot_reload_on_dirty` well under Bevy's 16-param limit.
@@ -48,6 +48,7 @@ struct RebuildParams<'w> {
     ammo_registry: Res<'w, AmmoRegistry>,
     attachment_registry: Res<'w, AttachmentRegistry>,
     material_registry: Res<'w, MaterialRegistry>,
+    hitbox_registry: Res<'w, HitboxRegistry>,
 }
 use crate::types::{ResourceId, Side};
 use crate::vfs::Vfs;
@@ -113,6 +114,7 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<AmmoRegistry>();
         app.init_resource::<AttachmentRegistry>();
         app.init_resource::<MaterialRegistry>();
+        app.init_resource::<HitboxRegistry>();
         app.init_resource::<NpcBrainRegistry>();
         app.init_resource::<NpcScenarioRegistry>();
         app.init_resource::<NpcScenarioClockConfig>();
@@ -219,7 +221,7 @@ fn initial_load(
         p.stats_cache.clone(), p.entity_cache.clone(),
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
         Some((p.font_queue.clone(), p.image_queue.clone())),
-        p.weapon_registry.clone(), p.ammo_registry.clone(), p.attachment_registry.clone(), p.material_registry.clone(),
+        p.weapon_registry.clone(), p.ammo_registry.clone(), p.attachment_registry.clone(), p.material_registry.clone(), p.hitbox_registry.clone(),
         &p.allowlist,
     );
 }
@@ -251,7 +253,7 @@ fn hot_reload_on_dirty(
         p.stats_cache.clone(), p.entity_cache.clone(),
         p.db_bridge_res.0.clone(), p.local_stats.clone(), p.draw_buffer.clone(),
         Some((p.font_queue.clone(), p.image_queue.clone())),
-        p.weapon_registry.clone(), p.ammo_registry.clone(), p.attachment_registry.clone(), p.material_registry.clone(),
+        p.weapon_registry.clone(), p.ammo_registry.clone(), p.attachment_registry.clone(), p.material_registry.clone(), p.hitbox_registry.clone(),
         &p.allowlist,
     );
 }
@@ -278,6 +280,7 @@ fn rebuild(
     ammo_registry: AmmoRegistry,
     attachment_registry: AttachmentRegistry,
     material_registry: MaterialRegistry,
+    hitbox_registry: HitboxRegistry,
     allowlist: &ServerResourceAllowlist,
 ) {
     let report = vfs.rescan();
@@ -392,6 +395,7 @@ fn rebuild(
             ammo_registry.clone(),
             attachment_registry.clone(),
             material_registry.clone(),
+            hitbox_registry.clone(),
         ) {
             Ok(sandbox) => {
                 debug!("[core_resources] sandbox ready: {}", id);
