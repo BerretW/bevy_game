@@ -6,6 +6,22 @@ Přesunout fyzikální simulaci NPC ze serveru na vlastnícího klienta, aby NPC
 reagovala na terén, kolize a překážky v herním světě. Server zůstává autoritativní —
 přijímá pozice od ownera a replikuje je ostatním.
 
+## Vybraný přístup
+
+Pro cílový směr ala REDM a stovky NPC nevolíme plnou replikaci interního `NpcAgent` stavu.
+Volíme hybridní model:
+
+- Server řídí vysokou vrstvu: populaci, spawn/despawn, scenario body, schedules, relationship groups, high-level goal a ownership lease.
+- Owning klient řídí nízkou vrstvu: navmesh path following, terrain snap, obstacle avoidance, lokální kolize, animaci a krátkodobé steering korekce.
+- Ostatní klienti dostávají jen výsledný transform a kompaktní replikační stav mozku NPC, ne interní runtime timery.
+- NPC běží v AI LOD vrstvách: full simulation blízko hráče, reduced simulation ve střední vzdálenosti, background/sleep mimo zájem.
+
+Tohle je důležité pro škálování:
+
+- Stovky NPC neutáhneme, pokud budeme všem replikovat `rng_state`, `current_path`, `waypoint_index`, lokální steering timery a podobný runtime šum.
+- Dynamiku ala REDM dostaneme přes scenario/task systém a ownership handoff, ne přes jeden globální server tick s plnou fyzikou pro každé NPC.
+- Navmesh corridor a krátkodobé avoidance mají zůstat lokální na ownerovi; server má validovat výsledky, ne deterministicky přepočítávat každý krok.
+
 ---
 
 ## Aktuální stav (Phase A — hotovo)
@@ -127,7 +143,59 @@ app.register_component::<NpcAgent>(); // core_net/net_plugin.rs
 **B) Replikovat jen `NpcMoveGoal`** — čistší, nový komponent `ReplicatedNpcGoal(NpcMoveGoal)`.
 Klient drží vlastní `NpcAgent` lokálně, server mu jen pošle goal update při změně.
 
-Doporučení: **varianta A** pro rychlou implementaci, varianta B pro optimalizaci later.
+Vybraný směr: **varianta B**.
+
+Pro stovky NPC je vhodnější rozdělit stav takto:
+
+- `ReplicatedNpcBrain` nebo `ReplicatedNpcGoal`: high-level intent, scenario, target, stance, combat state, seed.
+- Lokální `NpcAgent`: current_path, waypoint index, wander/orbit timery, steering, avoidance, terrain/contact cache.
+- `NpcOwner`: ownership lease s hysteresis a handoff cooldownem.
+
+Varianta A může posloužit jen jako krátký bootstrap pro debug, ale není to cílová architektura.
+
+---
+
+### 4.1. Scenario/Task systém místo čistého waypoint AI
+
+Inspirace REDM znamená, že NPC nemají být jen "běž na bod" entity. Server by měl držet scénářovou vrstvu:
+
+- `NpcScenarioId`: např. guard_post, saloon_idle, shopkeep_counter, town_walk_loop.
+- `NpcTask`: idle, wander_zone, patrol_route, use_scenario_point, chase_target, flee, investigate, combat.
+- `NpcSchedule`: denní/noční změny chování, occupancy scenario bodů, spawn budget per zone.
+
+Owner klient pak z těchto tasků vyrábí konkrétní lokální pohyb:
+
+- scenario point → lokální anchor + facing + anim set
+- patrol_route → navmesh corridor mezi route body
+- chase_target → periodický repath + avoidance
+- wander_zone → výběr reachable targetů na navmeshi místo přímé čáry
+
+Tohle je pružnější než replikovat celý behavior tree nebo interní steering stav.
+
+---
+
+### 4.2. AI LOD pro stovky NPC
+
+Bez LOD vrstvami nepůjde hustá populace rozumně škálovat.
+
+- LOD0 Full: owner klient, plná lokální simulace, navmesh, avoidance, animace, terrain snap.
+- LOD1 Reduced: owner klient nebo server, pomalejší tick, bez jemného avoidance, zjednodušené corridor following.
+- LOD2 Background: server-only schedule/scenario state, žádná plná fyzika, jen coarse transform nebo úplný sleep.
+
+Přepínání LOD má řídit server podle vzdálenosti, relevance a density budgetu per tile/zone.
+
+---
+
+### 4.3. Ownership handoff
+
+Ownership nesmí každé dvě sekundy skákat mezi klienty bez pravidel. Potřebujeme:
+
+- hysteresis radius pro převzetí a odevzdání
+- handoff cooldown
+- snapshot brain state při převodu ownera
+- fallback na server simulaci, pokud owner umlkne
+
+To je důležité hlavně pro chase, escort a městské populace kolem více hráčů.
 
 ---
 
@@ -169,15 +237,17 @@ if let Some(hit) = spatial.cast_ray(pos + Vec3::Y * 0.5, Dir3::NEG_Y, 2.0, ...) 
 4. `tick_owned_npc_agents` na klientovi (kopie server logiky + send message)
 5. Server: přestat simulovat NPC s aktivním ownerem (nebo přidat fallback timer)
 6. Terrain snapping v klientské simulaci (raycast + Y korekce)
-7. (Volitelné) NavMesh pathfinding místo přímočarého waypoint pohybu
+7. Přepnout goal replication na `ReplicatedNpcGoal` / `ReplicatedNpcBrain`
+8. Přidat scenario/task vrstvu a AI LOD budgety
+9. Navázat ownership handoff s hysteresis a fallback timerem
 
 ---
 
 ## Závislosti / Předpoklady
 
 - NavMesh (Phase 3.6) — pro správný pathfinding kolem překážek
-- `NpcAgent` musí být `Serialize + Deserialize` (přidat derive)
-- `NpcMoveGoal` musí být `Serialize + Deserialize` (přidat derive)
+- Replikovaný high-level brain goal musí být `Serialize + Deserialize`
+- Lokální `NpcAgent` nemusí být plně replikovaný
 - lightyear channel pro Client→Server unreliable messages
 
 ---
@@ -189,6 +259,7 @@ if let Some(hit) = spatial.cast_ray(pos + Vec3::Y * 0.5, Dir3::NEG_Y, 2.0, ...) 
 | `core_net/src/protocol.rs` | `NpcTransformUpdate` message |
 | `core_net/src/net_plugin.rs` | registrace channel + message |
 | `core_net/src/sim.rs` | `receive_npc_transform_updates` |
-| `core_resources/src/cmd_queue.rs` | `NpcAgent` + `NpcMoveGoal` Serialize, server freeze pro owned |
+| `core_resources/src/cmd_queue.rs` | lokální `NpcAgent`, server freeze pro owned, shared movement helpers |
 | `host_client/src/npc_sim.rs` | nový soubor — `tick_owned_npc_agents` |
 | `host_client/src/main.rs` | registrace `NpcSimPlugin` |
+| nový shared AI modul | `ReplicatedNpcGoal` / `ReplicatedNpcBrain`, scenario/task kontrakt |

@@ -18,19 +18,26 @@ mod map_loader;
 mod native_assets;
 mod physics;
 
+use std::backtrace::Backtrace;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::panic::PanicHookInfo;
+use std::path::{Path, PathBuf};
+
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy::asset::{AssetPlugin, UnapprovedPathMode};
 use bevy::render::settings::{Backends, PowerPreference, RenderCreation, WgpuSettings};
 use bevy::render::RenderPlugin;
 use bevy::window::{
-    MonitorSelection, PresentMode, VideoModeSelection, WindowMode, WindowResolution,
+    MonitorSelection, PresentMode, PrimaryWindow, VideoModeSelection, WindowMode,
+    WindowResolution,
 };
 use bevy_framepace::{FramepacePlugin, FramepaceSettings, Limiter};
 
 use core_net::{
-    ClientAuthPlugin, ClientHandshakeConfig, ClientHandshakePlugin, ClientLuaRpcPlugin,
-    ClientNetConfig, ClientNetPlugin, FIXED_TIMESTEP_HZ,
+    ClientAuthPlugin, ClientHandshakeConfig, ClientHandshakePlugin, ClientHandshakeState,
+    ClientLuaRpcPlugin, ClientNetConfig, ClientNetPlugin, HandshakeStatus, FIXED_TIMESTEP_HZ,
 };
 use core_resources::{ResourcesPlugin, Side};
 use core_shared::SharedPlugin;
@@ -50,6 +57,13 @@ pub(crate) enum AppState {
 
 const LUA_SAFE_CLIENT_ID_MAX: u64 = i64::MAX as u64;
 
+#[derive(Resource, Debug, Clone)]
+struct ClientRuntimePaths {
+    config_path: PathBuf,
+    cache_root: PathBuf,
+    log_dir: PathBuf,
+}
+
 fn main() {
     // 1. Resolve config path: CLI arg #1 → BEVY_GAME_CLIENT_CONFIG → AppData default.
     let config_path = match ClientConfig::resolve_path() {
@@ -62,6 +76,18 @@ fn main() {
 
     // 2. Load (nebo vygeneruj výchozí) config.
     let cfg = ClientConfig::load_or_create(&config_path);
+    let log_dir = resolve_log_dir(&cfg, &config_path);
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "[host_client] failed to create log dir {}: {}",
+            log_dir.display(),
+            e
+        );
+    }
+    install_client_panic_hook(log_dir.clone());
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
 
     // 3. Cache dir — kam handshake stahuje soubory. Watcher na něm pak
     //    spustí hot-reload, jakmile se objeví obsah.
@@ -154,6 +180,11 @@ fn main() {
         .insert_resource(handshake_config)
         .insert_resource(gameplay::LocalClientId(client_id))
         .insert_resource(ClientConfigResource(cfg.clone()))
+        .insert_resource(ClientRuntimePaths {
+            config_path,
+            cache_root: cache_root.clone(),
+            log_dir,
+        })
         .add_plugins(
             DefaultPlugins
                 .set(LogPlugin {
@@ -213,15 +244,158 @@ pub struct ClientCorePlugin;
 
 impl Plugin for ClientCorePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, on_client_start);
+        app.add_systems(Startup, on_client_start).add_systems(
+            Update,
+            (
+                log_app_state_transitions,
+                log_handshake_status_transitions,
+                log_primary_window_state,
+            ),
+        );
     }
 }
 
-fn on_client_start(cfg: Res<ClientConfigResource>) {
+fn on_client_start(cfg: Res<ClientConfigResource>, paths: Res<ClientRuntimePaths>) {
     info!(
-        "[host_client] online — render + winit + asset server ready (player=\"{}\", lang={})",
-        cfg.0.player.name, cfg.0.ui.language
+        "[host_client] online — render + winit + asset server ready (player=\"{}\", lang={}, backend={:?}, gpu_validation={}, config={}, cache={}, logs={})",
+        cfg.0.player.name,
+        cfg.0.ui.language,
+        cfg.0.graphics.backend,
+        cfg.0.advanced.gpu_validation,
+        paths.config_path.display(),
+        paths.cache_root.display(),
+        paths.log_dir.display(),
     );
+}
+
+fn log_app_state_transitions(
+    state: Res<State<AppState>>,
+    mut last: Local<Option<AppState>>,
+) {
+    if last.as_ref() == Some(state.get()) {
+        return;
+    }
+
+    info!("[host_client] app state -> {:?}", state.get());
+    *last = Some(state.get().clone());
+}
+
+fn log_handshake_status_transitions(
+    handshake: Res<ClientHandshakeState>,
+    mut last: Local<Option<HandshakeStatus>>,
+) {
+    let pending_base = handshake.pending_base.as_deref().unwrap_or("<none>");
+    let manifests = handshake.manifests.len();
+    let current = handshake.status;
+
+    if last.as_ref() == Some(&current) {
+        return;
+    }
+
+    match current {
+        HandshakeStatus::AwaitingHello => info!(
+            "[host_client] handshake -> AwaitingHello (waiting for ServerHello)"
+        ),
+        HandshakeStatus::AwaitingAuth => info!(
+            "[host_client] handshake -> AwaitingAuth (manifests={}, pending_base={})",
+            manifests,
+            pending_base,
+        ),
+        HandshakeStatus::Downloading => info!(
+            "[host_client] handshake -> Downloading (manifests={}, cache warmup in progress)",
+            manifests,
+        ),
+        HandshakeStatus::Ready => info!(
+            "[host_client] handshake -> Ready (manifests={}, resources should hot-reload next)",
+            manifests,
+        ),
+        HandshakeStatus::Failed => error!(
+            "[host_client] handshake -> Failed (manifests={}, pending_base={})",
+            manifests,
+            pending_base,
+        ),
+    }
+
+    *last = Some(current);
+}
+
+fn log_primary_window_state(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut logged: Local<bool>,
+) {
+    if *logged {
+        return;
+    }
+
+    let Ok(window) = windows.single() else {
+        return;
+    };
+
+    info!(
+        "[host_client] primary window ready (title=\"{}\", size={}x{}, present_mode={:?}, mode={:?})",
+        window.title,
+        window.resolution.physical_width(),
+        window.resolution.physical_height(),
+        window.present_mode,
+        window.mode,
+    );
+    *logged = true;
+}
+
+fn resolve_log_dir(cfg: &ClientConfig, config_path: &Path) -> PathBuf {
+    if let Some(path) = &cfg.paths.log_dir {
+        return path.clone();
+    }
+
+    config_path
+        .parent()
+        .map(|dir| dir.join("logs"))
+        .unwrap_or_else(|| PathBuf::from("logs"))
+}
+
+fn install_client_panic_hook(log_dir: PathBuf) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log_panic_details(&log_dir, info);
+        previous(info);
+    }));
+}
+
+fn log_panic_details(log_dir: &Path, info: &PanicHookInfo<'_>) {
+    let thread = std::thread::current();
+    let thread_name = thread.name().unwrap_or("unnamed");
+    let location = info
+        .location()
+        .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    };
+    let backtrace = Backtrace::force_capture();
+    let report = format!(
+        "[host_client] PANIC thread='{thread_name}' location={location}\nmessage: {payload}\nbacktrace:\n{backtrace}\n"
+    );
+
+    console::ring_push(report.trim_end().to_string());
+    eprintln!("{report}");
+
+    let path = log_dir.join("latest_panic.log");
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut file) => {
+            let _ = writeln!(file, "{report}");
+        }
+        Err(err) => {
+            eprintln!(
+                "[host_client] failed to append panic log {}: {}",
+                path.display(),
+                err
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

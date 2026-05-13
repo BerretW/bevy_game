@@ -609,6 +609,8 @@ pub struct NpcAgent {
     pub current_path: Vec<NpcPathWaypoint>,
     pub waypoint_index: usize,
     pub map_id: String,
+    pub last_nav_target: Option<Vec3>,
+    pub nav_repath_timer: f32,
 }
 
 impl NpcAgent {
@@ -630,7 +632,17 @@ impl NpcAgent {
             current_path: Vec::new(),
             waypoint_index: 0,
             map_id: String::new(),
+            last_nav_target: None,
+            nav_repath_timer: 0.0,
         }
+    }
+
+    pub fn reset_navigation_state(&mut self) {
+        self.current_path.clear();
+        self.waypoint_index = 0;
+        self.map_id.clear();
+        self.last_nav_target = None;
+        self.nav_repath_timer = 0.0;
     }
 
     fn next_rand01(&mut self) -> f32 {
@@ -1342,6 +1354,7 @@ pub fn process_lua_commands(
                         }
                         agent.goal = goal;
                         agent.wander_timer = 0.0;
+                        agent.reset_navigation_state();
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = std::mem::replace(&mut goal, NpcMoveGoal::Idle);
@@ -1371,6 +1384,7 @@ pub fn process_lua_commands(
                             agent.home = home;
                         }
                         agent.goal = goal;
+                        agent.reset_navigation_state();
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = goal;
@@ -1400,6 +1414,7 @@ pub fn process_lua_commands(
                             agent.home = home;
                         }
                         agent.goal = goal;
+                        agent.reset_navigation_state();
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = goal;
@@ -1414,6 +1429,7 @@ pub fn process_lua_commands(
                 if let Some(entity) = world_state.entity_for(handle) {
                     if let Ok(mut agent) = npc_agents.get_mut(entity) {
                         agent.goal = NpcMoveGoal::Idle;
+                        agent.reset_navigation_state();
                     }
                 } else {
                     warn!("[cmd_queue] NpcStop: unknown handle {}", handle);
@@ -1645,8 +1661,7 @@ pub fn tick_npc_agents(
         }
 
         if matches!(agent.goal, NpcMoveGoal::Idle) {
-            agent.current_path.clear();
-            agent.waypoint_index = 0;
+            agent.reset_navigation_state();
             continue;
         }
 
@@ -1730,22 +1745,24 @@ pub fn tick_npc_agents(
                             agent.patrol_to_target = !agent.patrol_to_target;
                         }
 
-                        if agent.patrol_to_target {
+                        agent.wander_target = if agent.patrol_to_target {
                             patrol
                         } else {
                             agent.home
-                        }
+                        };
+                        agent.wander_target
                     }
                     NpcWanderKind::Orbit => {
                         let sign = if clockwise { -1.0 } else { 1.0 };
                         agent.orbit_angle = (agent.orbit_angle + sign * orbit_angular_speed.max(0.05) * dt)
                             .rem_euclid(TAU);
                         stop_distance = (radius * 0.15).max(agent.arrive_distance).max(0.1);
-                        Vec3::new(
+                        agent.wander_target = Vec3::new(
                             agent.home.x + radius * agent.orbit_angle.cos(),
                             transform.translation.y,
                             agent.home.z + radius * agent.orbit_angle.sin(),
-                        )
+                        );
+                        agent.wander_target
                     }
                 }
             }

@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use bevy::ecs::system::SystemParam;
 use bevy::gltf::{Gltf, GltfAssetLabel, GltfMaterialName};
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use bevy::prelude::On;
 use bevy::asset::RenderAssetUsages;
@@ -125,6 +127,94 @@ pub fn classify_ads_node_name(name: &str) -> AdsNodeKind {
     } else {
         AdsNodeKind::Standard
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    static CACHE: OnceLock<HashMap<&'static str, bool>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| {
+        [
+            (
+                "BEVY_GAME_DISABLE_DRAWABLE_SHADOWS",
+                std::env::var("BEVY_GAME_DISABLE_DRAWABLE_SHADOWS")
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                    .unwrap_or(false),
+            ),
+            (
+                "BEVY_GAME_LOG_DRAWABLE_MESHES",
+                std::env::var("BEVY_GAME_LOG_DRAWABLE_MESHES")
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                    .unwrap_or(false),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    });
+    cache.get(name).copied().unwrap_or(false)
+}
+
+fn disable_drawable_shadows() -> bool {
+    env_flag("BEVY_GAME_DISABLE_DRAWABLE_SHADOWS")
+}
+
+fn log_drawable_meshes() -> bool {
+    env_flag("BEVY_GAME_LOG_DRAWABLE_MESHES")
+}
+
+fn describe_attr(values: &VertexAttributeValues) -> &'static str {
+    match values {
+        VertexAttributeValues::Sint8x2(_) => "i8x2",
+        VertexAttributeValues::Sint8x4(_) => "i8x4",
+        VertexAttributeValues::Uint8x2(_) => "u8x2",
+        VertexAttributeValues::Uint8x4(_) => "u8x4",
+        VertexAttributeValues::Snorm8x2(_) => "snorm8x2",
+        VertexAttributeValues::Snorm8x4(_) => "snorm8x4",
+        VertexAttributeValues::Unorm8x2(_) => "unorm8x2",
+        VertexAttributeValues::Unorm8x4(_) => "unorm8x4",
+        VertexAttributeValues::Sint16x2(_) => "i16x2",
+        VertexAttributeValues::Sint16x4(_) => "i16x4",
+        VertexAttributeValues::Uint16x2(_) => "u16x2",
+        VertexAttributeValues::Uint16x4(_) => "u16x4",
+        VertexAttributeValues::Snorm16x2(_) => "snorm16x2",
+        VertexAttributeValues::Snorm16x4(_) => "snorm16x4",
+        VertexAttributeValues::Unorm16x2(_) => "unorm16x2",
+        VertexAttributeValues::Unorm16x4(_) => "unorm16x4",
+        VertexAttributeValues::Float32(_) => "f32",
+        VertexAttributeValues::Float32x2(_) => "f32x2",
+        VertexAttributeValues::Float32x3(_) => "f32x3",
+        VertexAttributeValues::Float32x4(_) => "f32x4",
+        VertexAttributeValues::Sint32(_) => "i32",
+        VertexAttributeValues::Sint32x2(_) => "i32x2",
+        VertexAttributeValues::Sint32x3(_) => "i32x3",
+        VertexAttributeValues::Sint32x4(_) => "i32x4",
+        VertexAttributeValues::Uint32(_) => "u32",
+        VertexAttributeValues::Uint32x2(_) => "u32x2",
+        VertexAttributeValues::Uint32x3(_) => "u32x3",
+        VertexAttributeValues::Uint32x4(_) => "u32x4",
+    }
+}
+
+fn mesh_layout_summary(mesh: &Mesh) -> String {
+    let attrs = [
+        ("pos", Mesh::ATTRIBUTE_POSITION),
+        ("nrm", Mesh::ATTRIBUTE_NORMAL),
+        ("tan", Mesh::ATTRIBUTE_TANGENT),
+        ("uv0", Mesh::ATTRIBUTE_UV_0),
+        ("uv1", Mesh::ATTRIBUTE_UV_1),
+        ("col", Mesh::ATTRIBUTE_COLOR),
+        ("jidx", Mesh::ATTRIBUTE_JOINT_INDEX),
+        ("jwgt", Mesh::ATTRIBUTE_JOINT_WEIGHT),
+    ]
+    .into_iter()
+    .filter_map(|(label, attr)| mesh.attribute(attr).map(|values| format!("{label}={}", describe_attr(values))))
+    .collect::<Vec<_>>()
+    .join(", ");
+
+    format!(
+        "vertices={}, indices={}, attrs=[{}]",
+        mesh.count_vertices(),
+        mesh.indices().map(|i| i.len()).unwrap_or(0),
+        attrs,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -447,17 +537,22 @@ fn process_mesh_node(
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) {
+    let mut mesh_summary = String::from("mesh=<missing>");
+    let mut patched_missing_attrs = false;
+
     // Sanitizace vertex dat — zajistí, že shadery vždy dostanou platná data.
     // GLTF mesh assety mohou být sdílené a už vyextrahované do render world,
     // proto je neopravujeme in-place. Vytvoříme patched klon jen pro tuto entitu.
     if let Ok((Some(mesh_h), _)) = node_query.get(entity) {
         if let Some(source_mesh) = meshes.get(mesh_h.id()) {
+            mesh_summary = mesh_layout_summary(source_mesh);
             let needs_color = !source_mesh.contains_attribute(Mesh::ATTRIBUTE_COLOR);
             let needs_uv1 = !source_mesh.contains_attribute(Mesh::ATTRIBUTE_UV_1);
 
             if needs_color || needs_uv1 {
                 let mut mesh = source_mesh.clone();
                 let n = mesh.count_vertices();
+                patched_missing_attrs = true;
 
                 if needs_color {
                     // Neutrální: žádné efekty (R=0,G=0,B=0), default paleta (A=0)
@@ -475,7 +570,10 @@ fn process_mesh_node(
                 }
 
                 let patched_mesh = meshes.add(mesh);
-                commands.entity(entity).insert(Mesh3d(patched_mesh));
+                commands.entity(entity).insert(Mesh3d(patched_mesh.clone()));
+                if let Some(patched) = meshes.get(patched_mesh.id()) {
+                    mesh_summary = mesh_layout_summary(patched);
+                }
             }
         }
     }
@@ -505,6 +603,29 @@ fn process_mesh_node(
             }
         }
     };
+
+    let opacity_mode = mat_def.params.opacity_mode.as_deref().unwrap_or("OPAQUE");
+    let uses_alpha_mask = mat_def.textures.contains_key("mb") || matches!(opacity_mode, "CLIP" | "HASHED");
+
+    if log_drawable_meshes() || patched_missing_attrs || (cast_shadows && uses_alpha_mask) {
+        info!(
+            "[drawable/debug] node='{}' gltf_mat='{}' template='{}' cast_shadows={} opacity_mode={} patched_missing_attrs={} {}",
+            node_name,
+            gltf_mat_name,
+            mat_def.template,
+            cast_shadows,
+            opacity_mode,
+            patched_missing_attrs,
+            mesh_summary,
+        );
+    }
+
+    if cast_shadows && mat_def.template == "vehicle_glass" {
+        warn!(
+            "[drawable/debug] transparent vehicle_glass node '{}' still casts shadows; if render panic follows, retry with BEVY_GAME_DISABLE_DRAWABLE_SHADOWS=1",
+            node_name,
+        );
+    }
 
     let applied = match mat_def.template.as_str() {
         "standard_pbr" => {
@@ -540,8 +661,14 @@ fn process_mesh_node(
         }
     };
 
-    if applied && !cast_shadows {
+    if applied && (disable_drawable_shadows() || !cast_shadows) {
         commands.entity(entity).insert(NotShadowCaster);
+        if disable_drawable_shadows() {
+            info!(
+                "[drawable/debug] forced NotShadowCaster on node '{}' via BEVY_GAME_DISABLE_DRAWABLE_SHADOWS=1",
+                node_name,
+            );
+        }
     }
 }
 

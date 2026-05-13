@@ -19,6 +19,8 @@ use crate::AppState;
 
 const DEFAULT_TILE_LOAD_RADIUS: f32 = 1200.0;
 const TILE_STREAM_UPDATE_SECS: f32 = 1.0;
+const NPC_NAV_REPATH_SECS: f32 = 0.35;
+const NPC_NAV_TARGET_DELTA: f32 = 0.75;
 
 pub struct ClientMapPlugin;
 
@@ -340,6 +342,13 @@ fn load_single_map_file(
         handles: Vec::new(),
     };
 
+    info!(
+        "[map_loader] preparing '{}' from {} ({} instance(s))",
+        map_key,
+        map_path.display(),
+        manifest.instances.len(),
+    );
+
     for (entry_index, entry) in manifest.instances.iter().enumerate() {
         let transform = Transform::from_translation(Vec3::new(
             entry.position[0],
@@ -359,6 +368,24 @@ fn load_single_map_file(
         } else {
             entry.id.clone()
         };
+
+        info!(
+            "[map_loader] spawn instance map='{}' idx={} id='{}' model='{}' navmesh_only={} pos=({:.2}, {:.2}, {:.2}) rot_deg=({:.2}, {:.2}, {:.2}) scale=({:.2}, {:.2}, {:.2})",
+            map_key,
+            entry_index,
+            id,
+            entry.model,
+            entry.navmesh_only,
+            entry.position[0],
+            entry.position[1],
+            entry.position[2],
+            entry.rotation_deg[0],
+            entry.rotation_deg[1],
+            entry.rotation_deg[2],
+            entry.scale[0],
+            entry.scale[1],
+            entry.scale[2],
+        );
 
         let mut entity_cmds = commands.spawn((
             Name::new(format!("map:{}", id)),
@@ -394,6 +421,8 @@ fn load_single_map_file(
             Ok(_) => info!("[map_loader] loaded navmesh '{}' for {}", navmesh_path.display(), map_key),
             Err(err) => warn!("[map_loader] failed to parse navmesh {:?}: {}", navmesh_path, err),
         }
+    } else {
+        info!("[map_loader] no navmesh sidecar found for {}", map_key);
     }
 
     let count = manifest.instances.len();
@@ -563,6 +592,7 @@ fn enforce_navmesh_only_hidden(mut query: Query<(&MapObjectInstance, &mut Visibi
 }
 
 fn update_npc_nav_paths(
+    time: Res<Time>,
     local_client_id: Option<Res<LocalClientId>>,
     world_state: Res<LuaWorldState>,
     tile_index: Res<WorldTileIndex>,
@@ -578,14 +608,12 @@ fn update_npc_nav_paths(
     let local_client_id = local_client_id.as_ref().map(|v| v.0);
 
     for (transform, mut agent, owner) in &mut npcs {
+        agent.nav_repath_timer = (agent.nav_repath_timer - time.delta_secs()).max(0.0);
+
         if let (Some(local_id), Some(owner)) = (local_client_id, owner) {
             if owner.0 != Some(local_id) {
                 continue;
             }
-        }
-
-        if !agent.current_path.is_empty() && agent.waypoint_index < agent.current_path.len() {
-            continue;
         }
 
         let target = match &agent.goal {
@@ -596,6 +624,7 @@ fn update_npc_nav_paths(
                     .and_then(|entity| globals.get(entity).ok())
                     .map(|tf| tf.translation())
             }
+            NpcMoveGoal::Wander { .. } => Some(agent.wander_target),
             _ => None,
         };
 
@@ -610,6 +639,19 @@ fn update_npc_nav_paths(
             continue;
         };
 
+        let path_finished = agent.current_path.is_empty() || agent.waypoint_index >= agent.current_path.len();
+        let tile_changed = agent.map_id != start_tile_id;
+        let target_changed = agent
+            .last_nav_target
+            .map(|last| last.distance(target) > NPC_NAV_TARGET_DELTA)
+            .unwrap_or(true);
+        let dynamic_target = matches!(agent.goal, NpcMoveGoal::GoToEntity { .. });
+        let cooldown_elapsed = agent.nav_repath_timer <= 0.0;
+
+        if !path_finished && !tile_changed && !target_changed && !(dynamic_target && cooldown_elapsed) {
+            continue;
+        }
+
         let Some(path) = navmesh_registry.find_hierarchical_path(
             &tile_graph,
             &start_tile_id,
@@ -618,10 +660,17 @@ fn update_npc_nav_paths(
             target,
             0.35,
         ) else {
+            agent.current_path.clear();
+            agent.waypoint_index = 0;
+            agent.map_id = start_tile_id;
+            agent.last_nav_target = Some(target);
+            agent.nav_repath_timer = NPC_NAV_REPATH_SECS;
             continue;
         };
 
         agent.map_id = start_tile_id;
+        agent.last_nav_target = Some(target);
+        agent.nav_repath_timer = NPC_NAV_REPATH_SECS;
         agent.current_path = path
             .into_iter()
             .map(|segment| NpcPathWaypoint { target: segment.target })
