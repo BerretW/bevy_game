@@ -7,7 +7,9 @@
 //! * Lua eventy: `playerConnecting`, `playerDropped`, `onPlayerHit`, `onPlayerDeath`.
 
 use bevy::prelude::*;
-use core_resources::{GameBridges, LocalEventBus, LuaWorldState, NpcOwner, NpcPedMarker};
+use core_resources::{
+    GameBridges, LocalEventBus, LuaWorldState, NpcLastClientUpdate, NpcOwner, NpcPedMarker,
+};
 use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::server::LinkOf;
@@ -462,7 +464,11 @@ pub fn collect_last_inputs(
 pub fn receive_npc_transform_updates(
     mut receivers: Query<(&mut MessageReceiver<NpcTransformUpdate>, &RemoteId)>,
     world_state: Res<LuaWorldState>,
-    mut npcs: Query<(&mut Transform, &mut NetTransform, &NpcOwner), With<NpcPedMarker>>,
+    time: Res<Time>,
+    mut npcs: Query<
+        (&mut Transform, &mut NetTransform, &NpcOwner, &mut NpcLastClientUpdate),
+        With<NpcPedMarker>,
+    >,
 ) {
     for (mut rx, remote_id) in receivers.iter_mut() {
         let client_id = match remote_id.0 {
@@ -474,7 +480,7 @@ pub fn receive_npc_transform_updates(
             let Some(entity) = world_state.entity_for(update.handle) else {
                 continue;
             };
-            let Ok((mut transform, mut net_transform, owner)) = npcs.get_mut(entity) else {
+            let Ok((mut transform, mut net_transform, owner, mut last_update)) = npcs.get_mut(entity) else {
                 continue;
             };
             if owner.0 != Some(client_id) {
@@ -498,6 +504,8 @@ pub fn receive_npc_transform_updates(
             transform.rotation = rotation;
             net_transform.translation = translation;
             net_transform.rotation = rotation;
+            last_update.client_id = client_id;
+            last_update.received_at = time.elapsed_secs();
         }
     }
 }

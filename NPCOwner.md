@@ -41,12 +41,16 @@ Tohle je důležité pro škálování:
 - `NpcTransformUpdate` Client→Server cesta je zavedená a server validuje `NpcOwner` před aplikací transformu
 - klient bootstrapuje lokální `NpcAgent` jen pro owned NPC, takže remote NPC se lokálně nesimulují
 - client-owned NPC ignorují replicated `NetTransform` writeback na owning klientu a místo toho posílají svůj transform serveru
+- server drží `NpcLastClientUpdate` a po `NPC_CLIENT_UPDATE_TIMEOUT_SECS` automaticky fallbackne zpět na server simulaci, pokud owner umlkne
+- owning klient má základní terrain snap pro NPC přes raycast dolů, takže client-owned NPC drží terénní Y místo čistého plovoucího transformu
+- nový owner bootstrapuje lokální `NpcAgent` přímo z aktuálního `ReplicatedNpcBrain`, takže handoff nezačíná mezikrokem v `Idle`
 
 ### Ještě chybí
 
-- fallback timer pro server simulaci, pokud owner umlkne
 - snapshot / resume sync při skutečném client-side handoffu
+- jemnější resume continuity pro interní steering stav (`current_path`, avoidance cache, orbit angle`) přes explicitní handoff snapshot zatím chybí
 - vazba ownershipu na AI LOD budgety a relevanci per tile/zone
+- obstacle avoidance a kvalitnější slope/terrain locomotion pro owned NPC
 
 ---
 
@@ -253,10 +257,10 @@ if let Some(hit) = spatial.cast_ray(pos + Vec3::Y * 0.5, Dir3::NEG_Y, 2.0, ...) 
 3. [X] bootstrap lokálního `NpcAgent` jen pro owned NPC na klientovi
 4. [X] první client-owned NPC loop: owned klient simuluje lokální `NpcAgent` a posílá transform serveru
 5. [X] server přestane simulovat NPC s aktivním ownerem (zatím bez fallback timeru)
-6. [ ] Terrain snapping v klientské simulaci (raycast + Y korekce)
+6. [X] Terrain snapping v klientské simulaci (raycast + Y korekce)
 7. [X] goal replication je aktuálně řešená přes `ReplicatedNpcBrain`
 8. [ ] Přidat scenario/task vrstvu a AI LOD budgety nad současný brain kontrakt
-9. [ ] Rozšířit ownership handoff o fallback timer po tichu ownera a napojit ho na client-authoritative NPC transform updates
+9. [X] Rozšířit ownership handoff o fallback timer po tichu ownera a napojit ho na client-authoritative NPC transform updates
 
 ---
 

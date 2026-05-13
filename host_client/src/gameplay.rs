@@ -32,10 +32,11 @@ use bevy_gltf::{
 use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver, OnStairs};
 use core_net::{player_action, InputChannel, NpcTransformChannel, NpcTransformUpdate, PlayerInput};
 use core_resources::{
+    apply_replicated_npc_brain,
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
     DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
     IkEnabledComponent, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
-    NpcAgent, NpcOwner, NpcPedMarker, ReplicatedNpcBrain,
+    NpcAgent, NpcBrainRegistry, NpcBrainState, NpcOwner, NpcPedMarker, ReplicatedNpcBrain,
     ModelRegistry, StairsCollider, process_lua_commands, sync_entity_state_cache,
 };
 use core_shared::{NetTransform, PlayerMarker};
@@ -316,6 +317,7 @@ impl Plugin for ClientGameplayPlugin {
             FixedPostUpdate,
             (
                 post_physics_vel_y_damp.after(PhysicsSystems::Writeback),
+                terrain_snap_owned_npcs,
                 send_owned_npc_transforms,
             )
                 .run_if(in_state(AppState::InGame)),
@@ -1178,16 +1180,23 @@ fn sync_npc_net_transform(
 
 fn bootstrap_owned_npc_agents(
     local_client_id: Option<Res<LocalClientId>>,
+    brain_registry: Res<NpcBrainRegistry>,
     mut commands: Commands,
-    npcs: Query<(Entity, &EntityHandle, &Transform, &NpcOwner), (With<NpcPedMarker>, With<ReplicatedNpcBrain>, Without<NpcAgent>)>,
+    npcs: Query<
+        (Entity, &EntityHandle, &Transform, &NpcOwner, &ReplicatedNpcBrain, &NpcBrainState),
+        (With<NpcPedMarker>, Without<NpcAgent>),
+    >,
 ) {
     let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
 
-    for (entity, handle, transform, owner) in &npcs {
+    for (entity, handle, transform, owner, brain, state) in &npcs {
         if owner.0 != Some(local_id) {
             continue;
         }
-        commands.entity(entity).insert(NpcAgent::new(handle.0, transform.translation));
+        let mut agent = NpcAgent::new(handle.0, transform.translation);
+        let mut local_state = state.clone();
+        apply_replicated_npc_brain(&brain_registry, brain, &mut local_state, &mut agent);
+        commands.entity(entity).insert((agent, local_state));
     }
 }
 
@@ -1229,6 +1238,40 @@ fn send_owned_npc_transforms(
         };
         for mut sender in &mut senders {
             let _ = sender.send::<NpcTransformChannel>(msg.clone());
+        }
+    }
+}
+
+fn terrain_snap_owned_npcs(
+    local_client_id: Option<Res<LocalClientId>>,
+    spatial_query: SpatialQuery,
+    mut owned_npcs: Query<(&mut Transform, &NpcOwner), (With<NpcPedMarker>, With<NpcAgent>)>,
+) {
+    let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
+    let filter = SpatialQueryFilter::from_mask(LayerMask::DEFAULT);
+
+    for (mut transform, owner) in &mut owned_npcs {
+        if owner.0 != Some(local_id) {
+            continue;
+        }
+
+        let origin = transform.translation + Vec3::new(0.0, 0.6, 0.0);
+        let Some(hit) = spatial_query.cast_ray(origin, Dir3::NEG_Y, 2.5, true, &filter) else {
+            continue;
+        };
+
+        let target_y = origin.y - hit.distance;
+        if !target_y.is_finite() {
+            continue;
+        }
+
+        let diff = target_y - transform.translation.y;
+        if diff.abs() < 0.002 {
+            continue;
+        }
+
+        if diff.abs() <= 0.75 {
+            transform.translation.y = target_y;
         }
     }
 }

@@ -807,33 +807,41 @@ fn brain_to_goal(brain: &ReplicatedNpcBrain) -> NpcMoveGoal {
     }
 }
 
+pub fn apply_replicated_npc_brain(
+    brain_registry: &NpcBrainRegistry,
+    brain: &ReplicatedNpcBrain,
+    state: &mut NpcBrainState,
+    agent: &mut NpcAgent,
+) {
+    let canonical_brain_id = brain_registry.canonical_brain_id(&brain.brain_id);
+    let def = brain_registry.resolve_or_fallback(&canonical_brain_id);
+    let effective_task = if def.allowed_tasks.contains(&brain.task) {
+        brain.task
+    } else {
+        def.default_task
+    };
+
+    state.brain_id = canonical_brain_id.clone();
+    agent.move_speed = def.motion.cruise_speed.max(0.0);
+    agent.turn_speed = def.motion.turn_speed.max(0.0);
+    agent.arrive_distance = def.motion.brake_distance.max(0.01);
+
+    let mut effective_brain = brain.clone();
+    effective_brain.brain_id = canonical_brain_id;
+    effective_brain.task = effective_task;
+    let desired_goal = brain_to_goal(&effective_brain);
+    if agent.goal != desired_goal {
+        agent.goal = desired_goal;
+        agent.reset_navigation_state();
+    }
+}
+
 pub fn sync_npc_brains_to_agents(
     brain_registry: Res<NpcBrainRegistry>,
     mut npcs: Query<(&ReplicatedNpcBrain, &mut NpcBrainState, &mut NpcAgent)>,
 ) {
     for (brain, mut state, mut agent) in &mut npcs {
-        let canonical_brain_id = brain_registry.canonical_brain_id(&brain.brain_id);
-        let def = brain_registry.resolve_or_fallback(&canonical_brain_id);
-        let effective_task = if def.allowed_tasks.contains(&brain.task) {
-            brain.task
-        } else {
-            def.default_task
-        };
-        if state.brain_id != canonical_brain_id {
-            state.brain_id = canonical_brain_id.clone();
-            agent.move_speed = def.motion.cruise_speed.max(0.0);
-            agent.turn_speed = def.motion.turn_speed.max(0.0);
-            agent.arrive_distance = def.motion.brake_distance.max(0.01);
-        }
-
-        let mut effective_brain = brain.clone();
-        effective_brain.brain_id = canonical_brain_id;
-        effective_brain.task = effective_task;
-        let desired_goal = brain_to_goal(&effective_brain);
-        if agent.goal != desired_goal {
-            agent.goal = desired_goal;
-            agent.reset_navigation_state();
-        }
+        apply_replicated_npc_brain(&brain_registry, brain, &mut state, &mut agent);
     }
 }
 
@@ -860,11 +868,29 @@ impl Default for NpcOwnershipLease {
     }
 }
 
+/// Poslední validní client-owned transform update, který server přijal.
+/// Slouží pro fallback na server simulaci, pokud owner umlkne.
+#[derive(Component, Debug, Clone)]
+pub struct NpcLastClientUpdate {
+    pub client_id: u64,
+    pub received_at: f32,
+}
+
+impl Default for NpcLastClientUpdate {
+    fn default() -> Self {
+        Self {
+            client_id: 0,
+            received_at: -10_000.0,
+        }
+    }
+}
+
 const NPC_OWNERSHIP_RADIUS: f32 = 200.0;
 const NPC_OWNERSHIP_RELEASE_RADIUS: f32 = 230.0;
 const NPC_OWNERSHIP_HANDOFF_ADVANTAGE: f32 = 20.0;
 const NPC_OWNERSHIP_HANDOFF_COOLDOWN: f32 = 6.0;
 const NPC_OWNERSHIP_ASSIGN_INTERVAL: f32 = 2.0;
+pub const NPC_CLIENT_UPDATE_TIMEOUT_SECS: f32 = 5.0;
 
 /// Přiřazuje vlastnictví NPC nejbližšímu hráči v `NPC_OWNERSHIP_RADIUS`.
 /// Spouštěno periodicky (každé 2 s) pouze na serveru; na klientovi query
@@ -1299,6 +1325,7 @@ pub fn process_lua_commands(
                     EntityHandle(handle),
                     NpcOwner::default(),
                     NpcOwnershipLease::default(),
+                    NpcLastClientUpdate::default(),
                     NpcBrainState::default(),
                     ReplicatedNpcBrain::default(),
                     NpcAgent::new(handle, spawn_translation),
@@ -1972,7 +1999,14 @@ pub fn tick_npc_agents(
     time: Res<Time<Fixed>>,
     side: Res<ResourcesSide>,
     world_state: Res<LuaWorldState>,
-    mut npcs: Query<(&EntityHandle, &mut Transform, Option<&mut NetTransform>, &mut NpcAgent, Option<&NpcOwner>)>,
+    mut npcs: Query<(
+        &EntityHandle,
+        &mut Transform,
+        Option<&mut NetTransform>,
+        &mut NpcAgent,
+        Option<&NpcOwner>,
+        Option<&NpcLastClientUpdate>,
+    )>,
     globals: Query<&GlobalTransform>,
 ) {
     let dt = time.delta_secs();
@@ -1980,14 +2014,26 @@ pub fn tick_npc_agents(
         return;
     }
 
-    for (_handle, mut transform, net_tf_opt, mut agent, owner) in &mut npcs {
+    let now = time.elapsed_secs();
+
+    for (_handle, mut transform, net_tf_opt, mut agent, owner, last_client_update) in &mut npcs {
         // Frozen: žádný hráč v okolí, nesimulujeme pohyb.
         if let Some(o) = owner {
             if o.0.is_none() {
                 continue;
             }
             if matches!(side.0, Side::Server) {
-                continue;
+                let client_owned_is_fresh = match (o.0, last_client_update) {
+                    (Some(owner_id), Some(last_update)) => {
+                        last_update.client_id == owner_id
+                            && (now - last_update.received_at) <= NPC_CLIENT_UPDATE_TIMEOUT_SECS
+                    }
+                    _ => false,
+                };
+
+                if client_owned_is_fresh {
+                    continue;
+                }
             }
         }
 
