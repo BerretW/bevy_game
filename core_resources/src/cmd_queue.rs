@@ -612,9 +612,38 @@ pub enum NpcMoveGoal {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NpcPathWaypoint {
     pub target: Vec3,
+}
+
+#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplicatedNpcSteering {
+    pub home: Vec3,
+    pub wander_target: Vec3,
+    pub wander_timer: f32,
+    pub orbit_angle: f32,
+    pub patrol_to_target: bool,
+    pub current_path: Vec<NpcPathWaypoint>,
+    pub waypoint_index: usize,
+    pub map_id: String,
+    pub last_nav_target: Option<Vec3>,
+}
+
+impl Default for ReplicatedNpcSteering {
+    fn default() -> Self {
+        Self {
+            home: Vec3::ZERO,
+            wander_target: Vec3::ZERO,
+            wander_timer: 0.0,
+            orbit_angle: 0.0,
+            patrol_to_target: true,
+            current_path: Vec::new(),
+            waypoint_index: 0,
+            map_id: String::new(),
+            last_nav_target: None,
+        }
+    }
 }
 
 #[derive(Component, Debug, Clone)]
@@ -834,6 +863,32 @@ pub fn apply_replicated_npc_brain(
         agent.goal = desired_goal;
         agent.reset_navigation_state();
     }
+}
+
+pub fn snapshot_npc_steering(agent: &NpcAgent) -> ReplicatedNpcSteering {
+    ReplicatedNpcSteering {
+        home: agent.home,
+        wander_target: agent.wander_target,
+        wander_timer: agent.wander_timer,
+        orbit_angle: agent.orbit_angle,
+        patrol_to_target: agent.patrol_to_target,
+        current_path: agent.current_path.clone(),
+        waypoint_index: agent.waypoint_index,
+        map_id: agent.map_id.clone(),
+        last_nav_target: agent.last_nav_target,
+    }
+}
+
+pub fn apply_replicated_npc_steering(agent: &mut NpcAgent, steering: &ReplicatedNpcSteering) {
+    agent.home = steering.home;
+    agent.wander_target = steering.wander_target;
+    agent.wander_timer = steering.wander_timer;
+    agent.orbit_angle = steering.orbit_angle;
+    agent.patrol_to_target = steering.patrol_to_target;
+    agent.current_path = steering.current_path.clone();
+    agent.waypoint_index = steering.waypoint_index.min(agent.current_path.len());
+    agent.map_id = steering.map_id.clone();
+    agent.last_nav_target = steering.last_nav_target;
 }
 
 pub fn sync_npc_brains_to_agents(
@@ -1318,6 +1373,8 @@ pub fn process_lua_commands(
                     rot[1].to_radians(),
                     rot[2].to_radians(),
                 );
+                let agent = NpcAgent::new(handle, spawn_translation);
+                let steering = snapshot_npc_steering(&agent);
                 let mut entity_builder = commands.spawn((
                     NpcPedMarker,
                     NetworkedObjectMarker { model: model.clone() },
@@ -1328,7 +1385,8 @@ pub fn process_lua_commands(
                     NpcLastClientUpdate::default(),
                     NpcBrainState::default(),
                     ReplicatedNpcBrain::default(),
-                    NpcAgent::new(handle, spawn_translation),
+                    agent,
+                    steering,
                     NetTransform {
                         translation: spawn_translation,
                         rotation: spawn_rotation,
@@ -2004,6 +2062,7 @@ pub fn tick_npc_agents(
         &mut Transform,
         Option<&mut NetTransform>,
         &mut NpcAgent,
+        Option<&mut ReplicatedNpcSteering>,
         Option<&NpcOwner>,
         Option<&NpcLastClientUpdate>,
     )>,
@@ -2016,7 +2075,7 @@ pub fn tick_npc_agents(
 
     let now = time.elapsed_secs();
 
-    for (_handle, mut transform, net_tf_opt, mut agent, owner, last_client_update) in &mut npcs {
+    for (_handle, mut transform, net_tf_opt, mut agent, steering_opt, owner, last_client_update) in &mut npcs {
         // Frozen: žádný hráč v okolí, nesimulujeme pohyb.
         if let Some(o) = owner {
             if o.0.is_none() {
@@ -2187,6 +2246,9 @@ pub fn tick_npc_agents(
         if let Some(mut net_tf) = net_tf_opt {
             net_tf.translation = transform.translation;
             net_tf.rotation = transform.rotation;
+        }
+        if let Some(mut steering) = steering_opt {
+            *steering = snapshot_npc_steering(&agent);
         }
     }
 }

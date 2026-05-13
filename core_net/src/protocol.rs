@@ -139,6 +139,15 @@ pub struct NpcTransformUpdate {
     pub handle: u64,
     pub translation: [f32; 3],
     pub rotation: [f32; 4],
+    pub home: [f32; 3],
+    pub wander_target: [f32; 3],
+    pub wander_timer: f32,
+    pub orbit_angle: f32,
+    pub patrol_to_target: bool,
+    pub current_path: Vec<[f32; 3]>,
+    pub waypoint_index: usize,
+    pub map_id: String,
+    pub last_nav_target: Option<[f32; 3]>,
 }
 
 /// Konstanty pro `PlayerInput::actions` bitfield. Phase 3+ scripty

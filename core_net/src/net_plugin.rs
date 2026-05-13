@@ -211,6 +211,7 @@ impl Plugin for ProtocolPlugin {
         app.register_component::<core_resources::NpcPedMarker>();
         app.register_component::<core_resources::NpcOwner>();
         app.register_component::<core_resources::ReplicatedNpcBrain>();
+        app.register_component::<core_resources::ReplicatedNpcSteering>();
         app.register_component::<core_resources::PedProfileOverride>();
         app.register_component::<core_resources::DummyObjectMarker>();
         app.register_component::<core_resources::ColliderObjectMarker>();

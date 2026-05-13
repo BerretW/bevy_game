@@ -8,7 +8,8 @@
 
 use bevy::prelude::*;
 use core_resources::{
-    GameBridges, LocalEventBus, LuaWorldState, NpcLastClientUpdate, NpcOwner, NpcPedMarker,
+    GameBridges, LocalEventBus, LuaWorldState, NpcLastClientUpdate, NpcOwner, NpcPathWaypoint,
+    NpcPedMarker, ReplicatedNpcSteering, apply_replicated_npc_steering,
 };
 use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
@@ -466,7 +467,14 @@ pub fn receive_npc_transform_updates(
     world_state: Res<LuaWorldState>,
     time: Res<Time>,
     mut npcs: Query<
-        (&mut Transform, &mut NetTransform, &NpcOwner, &mut NpcLastClientUpdate),
+        (
+            &mut Transform,
+            &mut NetTransform,
+            &NpcOwner,
+            &mut NpcLastClientUpdate,
+            &mut core_resources::NpcAgent,
+            Option<&mut ReplicatedNpcSteering>,
+        ),
         With<NpcPedMarker>,
     >,
 ) {
@@ -480,7 +488,7 @@ pub fn receive_npc_transform_updates(
             let Some(entity) = world_state.entity_for(update.handle) else {
                 continue;
             };
-            let Ok((mut transform, mut net_transform, owner, mut last_update)) = npcs.get_mut(entity) else {
+            let Ok((mut transform, mut net_transform, owner, mut last_update, mut agent, steering_opt)) = npcs.get_mut(entity) else {
                 continue;
             };
             if owner.0 != Some(client_id) {
@@ -500,10 +508,27 @@ pub fn receive_npc_transform_updates(
                 Quat::IDENTITY
             };
             let translation = Vec3::new(px, py, pz);
+            let steering = ReplicatedNpcSteering {
+                home: Vec3::new(update.home[0], update.home[1], update.home[2]),
+                wander_target: Vec3::new(update.wander_target[0], update.wander_target[1], update.wander_target[2]),
+                wander_timer: update.wander_timer,
+                orbit_angle: update.orbit_angle,
+                patrol_to_target: update.patrol_to_target,
+                current_path: update.current_path.iter().map(|p| NpcPathWaypoint {
+                    target: Vec3::new(p[0], p[1], p[2]),
+                }).collect(),
+                waypoint_index: update.waypoint_index,
+                map_id: update.map_id.clone(),
+                last_nav_target: update.last_nav_target.map(|p| Vec3::new(p[0], p[1], p[2])),
+            };
             transform.translation = translation;
             transform.rotation = rotation;
             net_transform.translation = translation;
             net_transform.rotation = rotation;
+            apply_replicated_npc_steering(&mut agent, &steering);
+            if let Some(mut replicated_steering) = steering_opt {
+                *replicated_steering = steering;
+            }
             last_update.client_id = client_id;
             last_update.received_at = time.elapsed_secs();
         }

@@ -33,10 +33,12 @@ use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver, OnStairs};
 use core_net::{player_action, InputChannel, NpcTransformChannel, NpcTransformUpdate, PlayerInput};
 use core_resources::{
     apply_replicated_npc_brain,
+    apply_replicated_npc_steering,
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
     DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
     IkEnabledComponent, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
     NpcAgent, NpcBrainRegistry, NpcBrainState, NpcOwner, NpcPedMarker, ReplicatedNpcBrain,
+    ReplicatedNpcSteering,
     ModelRegistry, StairsCollider, process_lua_commands, sync_entity_state_cache,
 };
 use core_shared::{NetTransform, PlayerMarker};
@@ -1183,19 +1185,28 @@ fn bootstrap_owned_npc_agents(
     brain_registry: Res<NpcBrainRegistry>,
     mut commands: Commands,
     npcs: Query<
-        (Entity, &EntityHandle, &Transform, &NpcOwner, &ReplicatedNpcBrain, &NpcBrainState),
+        (
+            Entity,
+            &EntityHandle,
+            &Transform,
+            &NpcOwner,
+            &ReplicatedNpcBrain,
+            &ReplicatedNpcSteering,
+            &NpcBrainState,
+        ),
         (With<NpcPedMarker>, Without<NpcAgent>),
     >,
 ) {
     let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
 
-    for (entity, handle, transform, owner, brain, state) in &npcs {
+    for (entity, handle, transform, owner, brain, steering, state) in &npcs {
         if owner.0 != Some(local_id) {
             continue;
         }
         let mut agent = NpcAgent::new(handle.0, transform.translation);
         let mut local_state = state.clone();
         apply_replicated_npc_brain(&brain_registry, brain, &mut local_state, &mut agent);
+        apply_replicated_npc_steering(&mut agent, steering);
         commands.entity(entity).insert((agent, local_state));
     }
 }
@@ -1217,12 +1228,12 @@ fn cleanup_unowned_npc_agents(
 
 fn send_owned_npc_transforms(
     local_client_id: Option<Res<LocalClientId>>,
-    owned_npcs: Query<(&EntityHandle, &Transform, &NpcOwner), (With<NpcPedMarker>, With<NpcAgent>)>,
+    owned_npcs: Query<(&EntityHandle, &Transform, &NpcOwner, &NpcAgent), (With<NpcPedMarker>, With<NpcAgent>)>,
     mut senders: Query<&mut MessageSender<NpcTransformUpdate>>,
 ) {
     let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
 
-    for (handle, transform, owner) in &owned_npcs {
+    for (handle, transform, owner, agent) in &owned_npcs {
         if owner.0 != Some(local_id) {
             continue;
         }
@@ -1235,6 +1246,17 @@ fn send_owned_npc_transforms(
             handle: handle.0,
             translation: [translation.x, translation.y, translation.z],
             rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+            home: [agent.home.x, agent.home.y, agent.home.z],
+            wander_target: [agent.wander_target.x, agent.wander_target.y, agent.wander_target.z],
+            wander_timer: agent.wander_timer,
+            orbit_angle: agent.orbit_angle,
+            patrol_to_target: agent.patrol_to_target,
+            current_path: agent.current_path.iter().map(|waypoint| {
+                [waypoint.target.x, waypoint.target.y, waypoint.target.z]
+            }).collect(),
+            waypoint_index: agent.waypoint_index,
+            map_id: agent.map_id.clone(),
+            last_nav_target: agent.last_nav_target.map(|target| [target.x, target.y, target.z]),
         };
         for mut sender in &mut senders {
             let _ = sender.send::<NpcTransformChannel>(msg.clone());

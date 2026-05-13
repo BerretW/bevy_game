@@ -27,6 +27,7 @@ pub use cmd_queue::{
     ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider,
     EntityStateCache, IkEnabledComponent, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     NpcAgent, NpcLastClientUpdate, NpcMoveGoal, NpcOwner, NpcPathWaypoint, NpcWanderKind, PedProfileOverride,
+    ReplicatedNpcSteering, apply_replicated_npc_steering, snapshot_npc_steering,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, NpcPedMarker, PendingDamageEvent,
     PlayerEntityMap, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
     apply_replicated_npc_brain, assign_npc_owners, process_lua_commands, sync_entity_state_cache,

@@ -44,11 +44,12 @@ Tohle je důležité pro škálování:
 - server drží `NpcLastClientUpdate` a po `NPC_CLIENT_UPDATE_TIMEOUT_SECS` automaticky fallbackne zpět na server simulaci, pokud owner umlkne
 - owning klient má základní terrain snap pro NPC přes raycast dolů, takže client-owned NPC drží terénní Y místo čistého plovoucího transformu
 - nový owner bootstrapuje lokální `NpcAgent` přímo z aktuálního `ReplicatedNpcBrain`, takže handoff nezačíná mezikrokem v `Idle`
+- coarse steering continuity je teď přenášená přes `ReplicatedNpcSteering` / rozšířený `NpcTransformUpdate` (`home`, `wander_target`, `wander_timer`, `orbit_angle`, `patrol_to_target`, `current_path`, `waypoint_index`, `map_id`, `last_nav_target`)
 
 ### Ještě chybí
 
 - snapshot / resume sync při skutečném client-side handoffu
-- jemnější resume continuity pro interní steering stav (`current_path`, avoidance cache, orbit angle`) přes explicitní handoff snapshot zatím chybí
+- avoidance cache a další čistě lokální steering metadata zatím stále nejsou součástí handoff snapshotu
 - vazba ownershipu na AI LOD budgety a relevanci per tile/zone
 - obstacle avoidance a kvalitnější slope/terrain locomotion pro owned NPC
 
