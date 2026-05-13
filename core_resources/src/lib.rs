@@ -21,6 +21,7 @@ mod sandbox;
 mod types;
 mod vfs;
 mod watcher;
+mod weapons;
 
 pub use cmd_queue::{
     AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
@@ -76,3 +77,7 @@ pub use sandbox::{
 pub use types::{IdError, ResourceId, Side};
 pub use vfs::{ScanError, ScanReport, Vfs};
 pub use watcher::{ResourcesDirty, VfsWatcher, WatcherError};
+pub use weapons::{
+    AmmoDef, AmmoRegistry, AttachmentDef, AttachmentRegistry, MaterialDef, MaterialRegistry,
+    WeaponDef, WeaponRecoilPointDef, WeaponRegistry, WeaponSlotFlags, WeaponSpreadDef,
+};

@@ -38,6 +38,10 @@ use crate::model_registry::{
 };
 use crate::npc_brain::{NpcBrainDef, NpcTaskKind};
 use crate::types::{ResourceId, Side};
+use crate::weapons::{
+    AmmoDef, AmmoRegistry, AttachmentDef, AttachmentRegistry, MaterialDef, MaterialRegistry,
+    WeaponDef, WeaponRegistry,
+};
 
 // ---------------------------------------------------------------------------
 // Raycast bridge — shared Arc pro Raycast.GetGroundPosition()
@@ -661,6 +665,10 @@ impl LuaSandbox {
         camera_bridge: CameraBridge,
         anim_set_cmds: AnimSetCommandQueue,
         anim_set_registry: AnimSetRegistry,
+        weapon_registry: WeaponRegistry,
+        ammo_registry: AmmoRegistry,
+        attachment_registry: AttachmentRegistry,
+        material_registry: MaterialRegistry,
     ) -> Result<Self, SandboxError> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8 | StdLib::COROUTINE,
@@ -709,6 +717,10 @@ impl LuaSandbox {
             &camera_bridge,
             &anim_set_cmds,
             &anim_set_registry,
+            &weapon_registry,
+            &ammo_registry,
+            &attachment_registry,
+            &material_registry,
         )?;
 
         let scripts = manifest.shared_scripts.iter().chain(match side {
@@ -1470,8 +1482,12 @@ fn install_runtime_api(
     camera_bridge: &CameraBridge,
     anim_set_cmds: &AnimSetCommandQueue,
     anim_set_registry: &AnimSetRegistry,
+    weapon_registry: &WeaponRegistry,
+    ammo_registry: &AmmoRegistry,
+    attachment_registry: &AttachmentRegistry,
+    material_registry: &MaterialRegistry,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, resource_root, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge, anim_set_cmds, anim_set_registry)
+    install_runtime_api_inner(lua, id, resource_root, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge, anim_set_cmds, anim_set_registry, weapon_registry, ammo_registry, attachment_registry, material_registry)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -1507,6 +1523,10 @@ fn install_runtime_api_inner(
     camera_bridge: &CameraBridge,
     anim_set_cmds: &AnimSetCommandQueue,
     anim_set_registry: &AnimSetRegistry,
+    weapon_registry: &WeaponRegistry,
+    ammo_registry: &AmmoRegistry,
+    attachment_registry: &AttachmentRegistry,
+    material_registry: &MaterialRegistry,
 ) -> mlua::Result<()> {
     let globals = lua.globals();
 
@@ -2951,6 +2971,195 @@ fn install_runtime_api_inner(
     )?)?;
 
     globals.set("Player", player_ns)?;
+
+    // -- Weapon / Ammo / Attachment / Material registries ------------------
+    let weapon_ns = lua.create_table()?;
+
+    {
+        let registry = weapon_registry.clone();
+        weapon_ns.set("Register", lua.create_function(
+            move |_, (weapon_id, def_v): (String, mlua::Value)| {
+                let mlua::Value::Table(def_t) = def_v else {
+                    return Err(mlua::Error::RuntimeError("Weapon.Register expects a definition table".into()));
+                };
+                let mut json = lua_table_to_json(def_t);
+                if let serde_json::Value::Object(obj) = &mut json {
+                    let needs_id = obj
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| value.trim().is_empty())
+                        .unwrap_or(true);
+                    if needs_id {
+                        obj.insert("id".to_string(), serde_json::Value::String(weapon_id.clone()));
+                    }
+                }
+                let mut def: WeaponDef = serde_json::from_value(json)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Weapon.Register: {e}")))?;
+                if def.id.trim().is_empty() {
+                    def.id = weapon_id.clone();
+                }
+                registry.insert(weapon_id, def);
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let registry = weapon_registry.clone();
+        weapon_ns.set("Get", lua.create_function(
+            move |lua, weapon_id: String| {
+                let Some(def) = registry.get(&weapon_id) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let json = serde_json::to_value(def)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Weapon.Get: {e}")))?;
+                json_to_lua_value(lua, json)
+            },
+        )?)?;
+    }
+
+    globals.set("Weapon", weapon_ns)?;
+
+    let ammo_ns = lua.create_table()?;
+
+    {
+        let registry = ammo_registry.clone();
+        ammo_ns.set("Register", lua.create_function(
+            move |_, (ammo_id, def_v): (String, mlua::Value)| {
+                let mlua::Value::Table(def_t) = def_v else {
+                    return Err(mlua::Error::RuntimeError("Ammo.Register expects a definition table".into()));
+                };
+                let mut json = lua_table_to_json(def_t);
+                if let serde_json::Value::Object(obj) = &mut json {
+                    let needs_id = obj
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| value.trim().is_empty())
+                        .unwrap_or(true);
+                    if needs_id {
+                        obj.insert("id".to_string(), serde_json::Value::String(ammo_id.clone()));
+                    }
+                }
+                let mut def: AmmoDef = serde_json::from_value(json)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Ammo.Register: {e}")))?;
+                if def.id.trim().is_empty() {
+                    def.id = ammo_id.clone();
+                }
+                registry.insert(ammo_id, def);
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let registry = ammo_registry.clone();
+        ammo_ns.set("Get", lua.create_function(
+            move |lua, ammo_id: String| {
+                let Some(def) = registry.get(&ammo_id) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let json = serde_json::to_value(def)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Ammo.Get: {e}")))?;
+                json_to_lua_value(lua, json)
+            },
+        )?)?;
+    }
+
+    globals.set("Ammo", ammo_ns)?;
+
+    let attachment_ns = lua.create_table()?;
+
+    {
+        let registry = attachment_registry.clone();
+        attachment_ns.set("Register", lua.create_function(
+            move |_, (attachment_id, def_v): (String, mlua::Value)| {
+                let mlua::Value::Table(def_t) = def_v else {
+                    return Err(mlua::Error::RuntimeError("Attachment.Register expects a definition table".into()));
+                };
+                let mut json = lua_table_to_json(def_t);
+                if let serde_json::Value::Object(obj) = &mut json {
+                    let needs_id = obj
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| value.trim().is_empty())
+                        .unwrap_or(true);
+                    if needs_id {
+                        obj.insert("id".to_string(), serde_json::Value::String(attachment_id.clone()));
+                    }
+                }
+                let mut def: AttachmentDef = serde_json::from_value(json)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Attachment.Register: {e}")))?;
+                if def.id.trim().is_empty() {
+                    def.id = attachment_id.clone();
+                }
+                registry.insert(attachment_id, def);
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let registry = attachment_registry.clone();
+        attachment_ns.set("Get", lua.create_function(
+            move |lua, attachment_id: String| {
+                let Some(def) = registry.get(&attachment_id) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let json = serde_json::to_value(def)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Attachment.Get: {e}")))?;
+                json_to_lua_value(lua, json)
+            },
+        )?)?;
+    }
+
+    globals.set("Attachment", attachment_ns)?;
+
+    let material_ns = lua.create_table()?;
+
+    {
+        let registry = material_registry.clone();
+        material_ns.set("Register", lua.create_function(
+            move |_, (material_id, def_v): (String, mlua::Value)| {
+                let mlua::Value::Table(def_t) = def_v else {
+                    return Err(mlua::Error::RuntimeError("Material.Register expects a definition table".into()));
+                };
+                let mut json = lua_table_to_json(def_t);
+                if let serde_json::Value::Object(obj) = &mut json {
+                    let needs_id = obj
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| value.trim().is_empty())
+                        .unwrap_or(true);
+                    if needs_id {
+                        obj.insert("id".to_string(), serde_json::Value::String(material_id.clone()));
+                    }
+                }
+                let mut def: MaterialDef = serde_json::from_value(json)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Material.Register: {e}")))?;
+                if def.id.trim().is_empty() {
+                    def.id = material_id.clone();
+                }
+                registry.insert(material_id, def);
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let registry = material_registry.clone();
+        material_ns.set("Get", lua.create_function(
+            move |lua, material_id: String| {
+                let Some(def) = registry.get(&material_id) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let json = serde_json::to_value(def)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Material.Get: {e}")))?;
+                json_to_lua_value(lua, json)
+            },
+        )?)?;
+    }
+
+    globals.set("Material", material_ns)?;
 
     // -- Database namespace (Phase 4) — server only, jen pokud je bridge k dispozici --
     if let Some(bridge) = db_bridge {
