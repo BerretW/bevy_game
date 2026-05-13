@@ -72,7 +72,10 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
-- [X] **2026-05-13 (Client A/D Strafe Sign Fix)**: `host_client::collect_and_send_input()` už neposílá prohozenou strafe osu do `PlayerInput.move_dir`. Default keybindy byly správně (`A=move_left`, `D=move_right`), ale síťový input path měl opačné znaménko než lokální movement výpočet, takže při `A` šel hráč doprava a při `D` doleva.
+- [X] **2026-05-13 (Stairs Test Local IK Auto-Enable)**: `resources/example/stairs_test/` už nevaliduje jen stairs raycast/debug overlay, ale i samotné zapnutí IK. Client resource nově chytá lokální player handle z `player:anim_state`, automaticky volá `World.EnableIk(handle, 1.0)` a v overlay ukazuje `IK enabled` stav + handle, takže runtime ověření foot-placement už není blokované chybějícím test harness.
+- [X] **2026-05-13 (Blend Space Weighted Playback)**: `apply_adm_animations` už při aktivním `BlendSpaceState` nesampluje jen jeden dominantní clip. Runtime nově remapuje playback phase do všech aktivních clipů blend space, sampluje jejich tracky po nodech a skládá výsledný keyframe váženě přes `active_clips`, takže blend-space-driven locomotion už používá skutečné multi-clip míchání místo single-clip fallbacku.
+- [X] **2026-05-13 (Blend Space Runtime Evaluator Foundation)**: `core_drawable` už nenechává `BlendSpaceState` viset bez efektu. Nový runtime evaluator před `apply_adm_animations` resolveruje blend space z připojených `.ads_anim` setů, spočítá váhy klipů podle pozice v 1D/2D prostoru a zapíše dominantní clip do `AnimationState`, takže `World.PlayBlendSpace(...)` už skutečně rozběhne blend-space-driven locomotion místo pouhého vložení komponenty bez playbacku.
+- [X] **2026-05-13 (Client A/D Strafe Axis Fix)**: Default keybindy byly správně (`A=move_left`, `D=move_right`), ale klient měl nekonzistentní orientaci strafe osy vůči aktuální camera/view konvenci. Opraveno jednotně ve všech třech client input paths v `host_client::gameplay` (`apply_player_movement`, `collect_and_send_input`, `publish_input_state_to_lua`), takže `A` a `D` už používají stejnou levou/pravou orientaci jak pro lokální pohyb, tak pro `PlayerInput.move_dir` i Lua resource vstupy.
 - [X] **2026-05-13 (Smoke Demo Asymmetric Rotated Puff Cluster)**: `resources/example/smoke_grenade/` teď dál rozbíjí boxovitý vzhled volumetric smoke. Cloud už netvoří soustředné stejnoměrné volume shelly, ale asymetrický cluster různě velkých lobe objemů s odlišným `scale_x/scale_y/scale_z`, růstem, drift offsetem a průběžnou rotací přes `World.SetRotation`, takže výsledný smoke silhouette nepůsobí jako několik vnořených kvádrů.
 - [X] **2026-05-13 (Smoke Demo Soft Volumetric Cloud Shape)**: `resources/example/smoke_grenade/` už nespawnuje jeden obří hustý `fog_volume` kvádr. Demo teď skládá kouř z více menších volumetrických lobe objemů s nižší hustotou, nižší absorpcí a jemným drift/wobble offsetem, takže výsledkem není černá krabice, ale podstatně měkčí smoke cloud vhodný jako základ pro grenade/city fog efekty.
 - [X] **2026-05-13 (Core Init Volumetric Fog Sync Bool Fix)**: `resources/core/init/` už při klientském blendu normalizuje synchronizované boolean hodnoty (`enabled/shadows/fog.volumetric_enabled/...`) místo striktního `== true`, takže volumetric fog flag nepřepadne na `false`, když payload projde přes síťový Lua/JSON bridge v jiném bool-like tvaru. Client bootstrap navíc posílá volumetric fog parametry i top-level přes `World.ConfigureEnvironmentLight(...)`, takže kamera dostane `VolumetricFog` a env directional light `VolumetricLight` i při nested fog patchi.
@@ -153,7 +156,7 @@ files { 'assets/ui_icons.png' }
 - [X] model_viewer ADMv6 path: `.adm` rooty auto-attachují sibling/CLI `.ads_anim`, animation browser čte klipy/dictionaries/notifies z `AnimationSet`
 - [X] model_viewer top toolbar: runtime tlačítka pro otevření `.adm/.glb` a `.ads_anim` + rychlé debug přepínače (grid/colliders/skeleton/reset cam)
 - [X] model_viewer modularizace: původní `main.rs` rozdělen do menších modulů (`state.rs`, `scene.rs`, `loader.rs`, `animation.rs`, `runtime.rs`) pro lepší čitelnost a údržbu
-- [ ] Blend Spaces infrastruktura: `BlendSpaceState` komponenta, `PlayBlendSpace` command, Lua API, ale runtime evaluace vah zatím není (TODO pro Phase 4.x)
+- [ ] Blend Spaces infrastruktura: `BlendSpaceState`, `PlayBlendSpace`, runtime evaluator i vážené multi-clip playback míchání jsou hotové; zbývá případně jemnější triangulace/interpolace a parser parity podle starších ADM variant.
 - [ ] Integrovat `sqlx` (stub `Database.*` API přítomen)
 - [ ] Vlastní WGSL shadery z Lua resources
 
@@ -170,7 +173,7 @@ files { 'assets/ui_icons.png' }
 
 Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, `BlendSpaceState` komponenta v cmd_queue, `LuaCommand::PlayBlendSpace`, Lua API `World.PlayBlendSpace(handle, blend_space_name, move_x, move_y, speed?, flags?)`, handler v cmd_queue, test resource `resources/example/blend_space_test/` s rotačním move vektorem.
 
-**Zbývá:** Runtime evaluace vah (nový systém `evaluate_blend_spaces`), ADM v5 parser pro blend space definice, aplikace více klipů v `apply_adm_animations`.
+**Zbývá:** Případně jemnější triangulace/interpolace vah pro 2D blend spaces a ADM v5 parser parity pro blend space definice.
 
 ---
 
@@ -203,7 +206,7 @@ Implementováno:
 - `core_drawable::apply_ik_to_skeleton()` — Aplikuje Y-offset na nohy na základě `OnStairs` + `IkEnabled` blend
 - Lua cmd_queue bridge — `EnableIk` / `DisableIk` commands přes `LuaCommand` enum
 
-**Zbývá:** Plná testovací validace na stairs_test resource (ověření raycast heights + IK offset aplikace).
+**Zbývá:** Runtime průchod na `stairs_test` resource (ověření, že overlay hlásí `IK enabled`, raycast heights se mění na schodech a foot offset je vizuálně správně aplikovaný).
 
 ---
 
@@ -230,7 +233,7 @@ Implementováno:
 
 Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, `BlendSpaceState` komponenta v cmd_queue, `LuaCommand::PlayBlendSpace`, Lua API `World.PlayBlendSpace(handle, blend_space_name, move_x, move_y, speed?, flags?)`, handler v cmd_queue, test resource `resources/example/blend_space_test/` s rotačním move vektorem.
 
-**Zbývá:** Runtime evaluace vah (nový systém `evaluate_blend_spaces`), ADM v5 parser pro blend space definice, aplikace více klipů v `apply_adm_animations`.
+**Zbývá:** Případně jemnější triangulace/interpolace vah pro 2D blend spaces a ADM v5 parser parity pro blend space definice.
 
 ---
 

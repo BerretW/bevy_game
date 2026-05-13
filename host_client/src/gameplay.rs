@@ -412,8 +412,8 @@ fn apply_player_movement(
     let mut input_z = 0.0_f32;
     if keys.pressed(bindings.move_forward) { input_z += 1.0; }
     if keys.pressed(bindings.move_backward) { input_z -= 1.0; }
-    if keys.pressed(bindings.move_right) { input_x += 1.0; }
-    if keys.pressed(bindings.move_left) { input_x -= 1.0; }
+    if keys.pressed(bindings.move_right) { input_x -= 1.0; }
+    if keys.pressed(bindings.move_left) { input_x += 1.0; }
 
     let input = Vec2::new(input_x, input_z).normalize_or_zero();
     let yaw = look.yaw;
@@ -1825,8 +1825,8 @@ fn collect_and_send_input(
     let mut move_y = 0.0_f32;
     if keys.pressed(bindings.move_forward) { move_y += 1.0; }
     if keys.pressed(bindings.move_backward) { move_y -= 1.0; }
-    if keys.pressed(bindings.move_right) { move_x += 1.0; }
-    if keys.pressed(bindings.move_left) { move_x -= 1.0; }
+    if keys.pressed(bindings.move_right) { move_x -= 1.0; }
+    if keys.pressed(bindings.move_left) { move_x += 1.0; }
 
     let mag2 = move_x * move_x + move_y * move_y;
     if mag2 > 1.0 {
@@ -1888,8 +1888,8 @@ fn publish_input_state_to_lua(
     let mut move_y = 0.0_f32;
     if keys.pressed(bindings.move_forward) { move_y += 1.0; }
     if keys.pressed(bindings.move_backward) { move_y -= 1.0; }
-    if keys.pressed(bindings.move_right) { move_x += 1.0; }
-    if keys.pressed(bindings.move_left) { move_x -= 1.0; }
+    if keys.pressed(bindings.move_right) { move_x -= 1.0; }
+    if keys.pressed(bindings.move_left) { move_x += 1.0; }
 
     let payload = serde_json::to_vec(&serde_json::json!({
         "move": {

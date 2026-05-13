@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 
-use core_resources::{AdsSocketMap, AnimationState, AttachedAnimSets, EntityHandle, LocalEventBus, ModelName, RootMotionState};
+use core_resources::{AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, EntityHandle, LocalEventBus, ModelName, RootMotionState};
 
 use crate::manifest::DrawableManifest;
 use crate::material::{LayeredEnvMaterial, StandardPbrMaterial, VehicleGlassMaterial};
@@ -1075,6 +1075,7 @@ pub fn apply_adm_animations(
         &AdmSceneRoot,
         Option<&EntityHandle>,
         &AnimationState,
+        Option<&BlendSpaceState>,
         Option<&AttachedAnimSets>,
         &AdmNodeEntityMap,
         &mut AdmAnimationPlayback,
@@ -1082,7 +1083,7 @@ pub fn apply_adm_animations(
     mut notify_events: MessageWriter<AdmAnimNotifyEvent>,
     mut transforms: Query<&mut Transform>,
 ) {
-    for (root_entity, _scene_root, entity_handle, anim_state, attached_sets, node_map, mut playback) in &mut roots {
+    for (root_entity, _scene_root, entity_handle, anim_state, blend_space_state, attached_sets, node_map, mut playback) in &mut roots {
         let Some(clip_name) = anim_state.current.as_ref() else { continue };
         let Some(attached_sets) = attached_sets else { continue };
 
@@ -1171,12 +1172,20 @@ pub fn apply_adm_animations(
             1.0
         };
 
-        let mut current_tracks: HashMap<&str, &AdmAnimationTrack> = HashMap::new();
-        for track in &clip.tracks {
-            if animation_track_matches_flags(track.flags, anim_state.flags) {
-                current_tracks.insert(track.node_name.as_str(), track);
+        let current_tracks = if blend_space_state
+            .map(|state| !state.active_clips.is_empty())
+            .unwrap_or(false)
+        {
+            None
+        } else {
+            let mut tracks: HashMap<&str, &AdmAnimationTrack> = HashMap::new();
+            for track in &clip.tracks {
+                if animation_track_matches_flags(track.flags, anim_state.flags) {
+                    tracks.insert(track.node_name.as_str(), track);
+                }
             }
-        }
+            Some(tracks)
+        };
 
         let previous_tracks = if blend_alpha < 1.0 {
             playback
@@ -1197,9 +1206,31 @@ pub fn apply_adm_animations(
         };
 
         for (node_name, entity) in &node_map.0 {
-            let current_sample = current_tracks
-                .get(node_name.as_str())
-                .and_then(|track| sample_track(track, playback.time));
+            let current_sample = if let Some(blend_space_state) = blend_space_state {
+                if !blend_space_state.active_clips.is_empty() {
+                    sample_blend_space_node(
+                        node_name,
+                        &blend_space_state.active_clips,
+                        playback.time,
+                        clip.duration,
+                        anim_state.looping,
+                        anim_state.flags,
+                        attached_sets,
+                        &asset_server,
+                        &anim_set_assets,
+                    )
+                } else {
+                    current_tracks
+                        .as_ref()
+                        .and_then(|tracks| tracks.get(node_name.as_str()))
+                        .and_then(|track| sample_track(track, playback.time))
+                }
+            } else {
+                current_tracks
+                    .as_ref()
+                    .and_then(|tracks| tracks.get(node_name.as_str()))
+                    .and_then(|track| sample_track(track, playback.time))
+            };
 
             let previous_sample = previous_tracks
                 .as_ref()
@@ -1229,6 +1260,58 @@ pub fn apply_adm_animations(
             playback.previous_clip = None;
             playback.blend_timer = 0.0;
             playback.total_blend_time = 0.0;
+        }
+    }
+}
+
+pub fn evaluate_blend_spaces(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    anim_set_assets: Res<Assets<AnimationSet>>,
+    mut roots: Query<
+        (
+            Entity,
+            &AttachedAnimSets,
+            &mut BlendSpaceState,
+            Option<&mut AnimationState>,
+        ),
+        With<AdmSceneSpawned>,
+    >,
+) {
+    for (entity, attached_sets, mut blend_state, anim_state) in &mut roots {
+        let Some(blend_space) = resolve_anim_set_blend_space(
+            &blend_state.blend_space_name,
+            attached_sets,
+            &asset_server,
+            &anim_set_assets,
+        ) else {
+            blend_state.active_clips.clear();
+            continue;
+        };
+
+        let active_clips = evaluate_blend_space_clips(blend_space, blend_state.position);
+        blend_state.active_clips = active_clips.clone();
+
+        let Some((dominant_clip, _)) = active_clips.first() else {
+            continue;
+        };
+
+        if let Some(mut anim_state) = anim_state {
+            anim_state.current = Some(dominant_clip.clone());
+            anim_state.speed = blend_state.speed.max(0.0);
+            anim_state.looping = true;
+            anim_state.paused = false;
+            anim_state.blend_time = 0.10;
+            anim_state.flags = blend_state.flags;
+        } else {
+            commands.entity(entity).insert(AnimationState {
+                current: Some(dominant_clip.clone()),
+                speed: blend_state.speed.max(0.0),
+                looping: true,
+                paused: false,
+                blend_time: 0.10,
+                flags: blend_state.flags,
+            });
         }
     }
 }
@@ -1495,6 +1578,184 @@ fn resolve_anim_set_clip<'a>(
         }
     }
     None
+}
+
+fn resolve_anim_set_blend_space<'a>(
+    blend_space_name: &str,
+    attached_sets: &'a AttachedAnimSets,
+    asset_server: &AssetServer,
+    anim_set_assets: &'a Assets<AnimationSet>,
+) -> Option<&'a AdmBlendSpace> {
+    for set_path in &attached_sets.sets {
+        let bevy_path = normalize_anim_set_path(set_path);
+        let handle: Handle<AnimationSet> = asset_server.load(bevy_path);
+        let Some(anim_set) = anim_set_assets.get(&handle) else { continue };
+        if let Some(blend_space) = anim_set
+            .blend_spaces
+            .iter()
+            .find(|blend_space| blend_space.name == blend_space_name)
+        {
+            return Some(blend_space);
+        }
+    }
+
+    None
+}
+
+fn evaluate_blend_space_clips(blend_space: &AdmBlendSpace, position: Vec2) -> Vec<(String, f32)> {
+    if blend_space.clips.is_empty() {
+        return Vec::new();
+    }
+
+    if blend_space.clips.len() == 1 {
+        return vec![(blend_space.clips[0].name.clone(), 1.0)];
+    }
+
+    let sample_position = match blend_space.kind {
+        AdmBlendSpaceKind::OneD => Vec2::new(position.x, 0.0),
+        AdmBlendSpaceKind::TwoD => position,
+    };
+
+    let mut weights = Vec::with_capacity(blend_space.clips.len());
+    let mut exact_clip: Option<String> = None;
+    let mut total_weight = 0.0_f32;
+
+    for clip in &blend_space.clips {
+        let clip_position = match blend_space.kind {
+            AdmBlendSpaceKind::OneD => Vec2::new(clip.position.x, 0.0),
+            AdmBlendSpaceKind::TwoD => clip.position,
+        };
+        let distance = sample_position.distance(clip_position);
+        if distance <= 0.0001 {
+            exact_clip = Some(clip.name.clone());
+            break;
+        }
+
+        let weight = 1.0 / (distance * distance).max(0.0001);
+        total_weight += weight;
+        weights.push((clip.name.clone(), weight));
+    }
+
+    if let Some(exact_clip) = exact_clip {
+        return vec![(exact_clip, 1.0)];
+    }
+
+    if total_weight <= 0.0 {
+        return Vec::new();
+    }
+
+    for (_, weight) in &mut weights {
+        *weight /= total_weight;
+    }
+
+    weights.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    weights.truncate(4);
+    let truncated_sum: f32 = weights.iter().map(|(_, weight)| *weight).sum();
+    if truncated_sum > 0.0 {
+        for (_, weight) in &mut weights {
+            *weight /= truncated_sum;
+        }
+    }
+    weights
+}
+
+fn sample_blend_space_node(
+    node_name: &str,
+    active_clips: &[(String, f32)],
+    playback_time: f32,
+    reference_duration: f32,
+    looping: bool,
+    animation_flags: u32,
+    attached_sets: &AttachedAnimSets,
+    asset_server: &AssetServer,
+    anim_set_assets: &Assets<AnimationSet>,
+) -> Option<AdmKeyframe> {
+    let mut weighted_samples: Vec<(AdmKeyframe, f32)> = Vec::new();
+    for (clip_name, weight) in active_clips {
+        if *weight <= 0.0 {
+            continue;
+        }
+        let Some(clip) = resolve_anim_set_clip(clip_name, Some(attached_sets), asset_server, anim_set_assets) else {
+            continue;
+        };
+
+        let clip_time = remap_clip_time(playback_time, reference_duration, clip.duration, looping);
+        let Some(track) = clip
+            .tracks
+            .iter()
+            .find(|track| track.node_name == node_name && animation_track_matches_flags(track.flags, animation_flags))
+        else {
+            continue;
+        };
+        let Some(sample) = sample_track(track, clip_time) else {
+            continue;
+        };
+        weighted_samples.push((sample, *weight));
+    }
+
+    blend_weighted_keyframes(playback_time, &weighted_samples)
+}
+
+fn remap_clip_time(playback_time: f32, reference_duration: f32, clip_duration: f32, looping: bool) -> f32 {
+    if clip_duration <= 0.0 {
+        return 0.0;
+    }
+    if reference_duration <= 0.0 {
+        return if looping {
+            playback_time.rem_euclid(clip_duration)
+        } else {
+            playback_time.min(clip_duration)
+        };
+    }
+
+    let phase = if looping {
+        (playback_time / reference_duration).rem_euclid(1.0)
+    } else {
+        (playback_time / reference_duration).clamp(0.0, 1.0)
+    };
+    phase * clip_duration
+}
+
+fn blend_weighted_keyframes(time: f32, weighted_samples: &[(AdmKeyframe, f32)]) -> Option<AdmKeyframe> {
+    if weighted_samples.is_empty() {
+        return None;
+    }
+
+    let total_weight: f32 = weighted_samples.iter().map(|(_, weight)| *weight).sum();
+    if total_weight <= 0.0 {
+        return None;
+    }
+
+    let mut pos = Vec3::ZERO;
+    let mut scale = Vec3::ZERO;
+    let mut rotation: Option<Quat> = None;
+    let mut accumulated_weight = 0.0_f32;
+
+    for (sample, raw_weight) in weighted_samples {
+        let weight = *raw_weight / total_weight;
+        pos += sample.pos * weight;
+        scale += sample.scale * weight;
+
+        rotation = Some(match rotation {
+            None => {
+                accumulated_weight = weight;
+                sample.rot
+            }
+            Some(current) => {
+                let denom = (accumulated_weight + weight).max(1e-6);
+                let alpha = (weight / denom).clamp(0.0, 1.0);
+                accumulated_weight += weight;
+                current.slerp(sample.rot, alpha)
+            }
+        });
+    }
+
+    Some(AdmKeyframe {
+        time,
+        pos,
+        rot: rotation.unwrap_or(Quat::IDENTITY),
+        scale,
+    })
 }
 
 fn sample_track(track: &AdmAnimationTrack, time: f32) -> Option<AdmKeyframe> {

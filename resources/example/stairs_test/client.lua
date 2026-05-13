@@ -19,6 +19,8 @@ local stairs_state = {
 
 local last_on_stairs = false
 local hit_marker_handle = nil
+local local_player_handle = nil
+local ik_enabled = false
 
 local function ensure_hit_marker()
     if hit_marker_handle and World.IsValid(hit_marker_handle) then
@@ -89,6 +91,31 @@ RegisterEvent('stairs:state', function(payload)
     end
 end)
 
+RegisterEvent('player:anim_state', function(payload)
+    if type(payload) ~= 'table' then
+        return
+    end
+    if payload.is_local ~= true then
+        return
+    end
+
+    local handle = tonumber(payload.handle)
+    if not handle or handle <= 0 then
+        return
+    end
+
+    if local_player_handle ~= handle then
+        local_player_handle = handle
+        ik_enabled = false
+    end
+
+    if not ik_enabled then
+        World.EnableIk(local_player_handle, 1.0)
+        ik_enabled = true
+        log_info(string.format('[stairs_test] IK enabled for local player handle=%d', local_player_handle))
+    end
+end)
+
 CreateThread(function()
     while true do
         Wait(0)
@@ -122,6 +149,7 @@ CreateThread(function()
         Gui.DrawText(string.format('player y: %.3f   vy: %.3f', stairs_state.player.y, stairs_state.player.vy), 0.03, 0.188, 0.34, 210, 210, 210, 220)
         Gui.DrawText(string.format('IK mode: %s  %.1f Hz  sampled=%s', stairs_state.ik.quality, stairs_state.ik.sample_hz, tostring(stairs_state.ik.sampled_this_frame)), 0.03, 0.210, 0.32, 180, 220, 255, 220)
         Gui.DrawText(string.format('foot_y L/R: %.3f / %.3f', stairs_state.ik.left_foot_y, stairs_state.ik.right_foot_y), 0.03, 0.230, 0.32, 180, 220, 255, 220)
+        Gui.DrawText(string.format('IK enabled: %s   handle: %s', tostring(ik_enabled), tostring(local_player_handle)), 0.03, 0.250, 0.30, 180, 255, 180, 220)
 
         local marker = ensure_hit_marker()
         if stairs_state.hit_pos then
