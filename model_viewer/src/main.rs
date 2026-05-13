@@ -27,7 +27,7 @@ use bevy::window::WindowResolution;
 use core_drawable::{
     DrawablePlugin,
 };
-use core_resources::ModelRegistry;
+use core_resources::{ModelRegistry, NpcBrainRegistry};
 
 mod camera;
 mod state;
@@ -72,6 +72,9 @@ fn main() {
     App::new()
         .init_resource::<WeatherState>()
         .init_resource::<LodViewerState>()
+        .init_resource::<NpcBrainRegistry>()
+        .init_resource::<NpcBrainDebugState>()
+        .init_resource::<ActiveViewerModelRoot>()
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
@@ -113,16 +116,26 @@ fn main() {
                 runtime::handle_rig_keyboard,
                 runtime::handle_lod_key,
                 runtime::handle_material_debug,
+                runtime::handle_npc_brain_keyboard,
                 runtime::draw_grid,
+                runtime::draw_npc_brain_debug_gizmos,
                 runtime::draw_colliders,
                 runtime::draw_skeleton_overlay,
                 runtime::draw_lod_circles,
                 runtime::sync_mesh_visibility_for_collider_mode,
+                runtime::sync_npc_brain_debug,
+                runtime::tick_npc_brain_debug,
+            ),
+        )
+        .add_systems(
+            Update,
+            (
                 runtime::update_info_overlay,
                 animation::sync_adm_animation_browser,
                 animation::apply_animation_browser_state,
                 animation::update_animation_overlay,
                 animation::update_anim_debug_overlay,
+                runtime::update_npc_brain_panel,
                 runtime::update_rig_overlay,
                 runtime::update_collider_panel,
             ),

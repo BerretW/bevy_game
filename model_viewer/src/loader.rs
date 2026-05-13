@@ -4,14 +4,14 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use bevy::gltf::{Gltf, GltfLoaderSettings};
+use bevy::gltf::GltfLoaderSettings;
 use bevy::prelude::*;
 use rfd::FileDialog;
 
 use core_drawable::{AdmScene, AdmSceneRoot, AnimationSet, DrawableManifestRegistry};
 use core_resources::{AnimationState, AttachedAnimSets, ModelName, ModelRegistry};
 
-use crate::state::{AnimDebugState, GltfHandleCache, ModelPaths, ModelSourcePaths, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton, ViewerIkChainDef, ViewerIkChains, ViewerSessionAnimHandles};
+use crate::state::{ActiveViewerModelRoot, AnimDebugState, GltfHandleCache, ModelPaths, ModelSourcePaths, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton, ViewerIkChainDef, ViewerIkChains, ViewerSessionAnimHandles};
 
 // ─── IK sidecar parser ────────────────────────────────────────────────────────
 
@@ -88,6 +88,7 @@ pub(crate) fn handle_loader_buttons(
     roots: Query<Entity, With<AdmSceneRoot>>,
     mut query_anim_roots: Query<&mut AttachedAnimSets>,
     mut anim_debug: ResMut<AnimDebugState>,
+    mut active_root: ResMut<ActiveViewerModelRoot>,
 ) {
     for interaction in &adm_q {
         if *interaction != Interaction::Pressed {
@@ -113,6 +114,7 @@ pub(crate) fn handle_loader_buttons(
                 &mut anim_handles,
                 &mut model_source_paths,
                 &mut ik_chains,
+                &mut active_root,
                 &mut commands,
                 &[],
             );
@@ -187,6 +189,7 @@ pub(crate) fn load_models(
     mut anim_handles: ResMut<ViewerSessionAnimHandles>,
     mut model_source_paths: ResMut<ModelSourcePaths>,
     mut ik_chains: ResMut<ViewerIkChains>,
+    mut active_root: ResMut<ActiveViewerModelRoot>,
     mut commands: Commands,
     mut overlay: Query<&mut Text, With<crate::state::InfoOverlay>>,
 ) {
@@ -225,6 +228,7 @@ pub(crate) fn load_models(
             &mut anim_handles,
             &mut model_source_paths,
             &mut ik_chains,
+            &mut active_root,
             &mut commands,
             &explicit_anim_sets,
         );
@@ -252,6 +256,7 @@ pub(crate) fn load_one_model(
     anim_handles: &mut ViewerSessionAnimHandles,
     model_source_paths: &mut ModelSourcePaths,
     ik_chains: &mut ViewerIkChains,
+    active_root: &mut ActiveViewerModelRoot,
     commands: &mut Commands,
     explicit_anim_sets: &[String],
 ) {
@@ -305,15 +310,23 @@ pub(crate) fn load_one_model(
         }
 
         if attached_sets.is_empty() {
-            commands.spawn((AdmSceneRoot(adm_handle), Transform::default(), ModelName(stem), AnimationState::default()));
+            let entity = commands
+                .spawn((AdmSceneRoot(adm_handle), Transform::default(), ModelName(stem.clone()), AnimationState::default()))
+                .id();
+            active_root.root = Some(entity);
+            active_root.model_name = Some(stem);
         } else {
-            commands.spawn((
-                AdmSceneRoot(adm_handle),
-                Transform::default(),
-                ModelName(stem),
-                AnimationState::default(),
-                AttachedAnimSets { sets: attached_sets },
-            ));
+            let entity = commands
+                .spawn((
+                    AdmSceneRoot(adm_handle),
+                    Transform::default(),
+                    ModelName(stem.clone()),
+                    AnimationState::default(),
+                    AttachedAnimSets { sets: attached_sets },
+                ))
+                .id();
+            active_root.root = Some(entity);
+            active_root.model_name = Some(stem);
         }
         load_ik_sidecar(&path, ik_chains);
     } else {
@@ -339,7 +352,11 @@ pub(crate) fn load_one_model(
         let scene_path = format!("{}#Scene0", bevy_path);
         let scene_handle: Handle<Scene> = asset_server.load(scene_path);
 
-        commands.spawn((SceneRoot(scene_handle), Transform::default(), ModelName(stem)));
+        let entity = commands
+            .spawn((SceneRoot(scene_handle), Transform::default(), ModelName(stem.clone())))
+            .id();
+        active_root.root = Some(entity);
+        active_root.model_name = Some(stem);
         load_ik_sidecar(&path, ik_chains);
     }
 }

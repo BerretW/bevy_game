@@ -1,8 +1,7 @@
 use bevy::prelude::*;
-use bevy::window::WindowResolution;
 
 use crate::camera;
-use crate::state::{AnimDebugPanel, AnimPanel, ColliderPanel, DebugStatus, InfoOverlay, LodPanel, RigPanel, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton};
+use crate::state::{AnimDebugPanel, AnimPanel, ColliderPanel, DebugStatus, InfoOverlay, LodPanel, NpcBrainPanel, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton};
 
 pub(crate) fn viewer_asset_root() -> String {
     if let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") {
@@ -70,7 +69,8 @@ pub(crate) fn setup_scene(mut commands: Commands) {
         Text::new(
             "Pravé drag: orbit  |  Střední drag: pan  |  Kolečko: zoom  \
              |  R: reset  |  G: mřížka  |  H: info  |  T: textury  |  E: export\n\
-             W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  X: kostra  |  I: IK edit + drag  |  L: LOD úroveň",
+               W: weather preset  |  V: vertex color debug  |  P: vertex paint  |  C: collidery  |  X: kostra  |  I: IK edit + drag  |  L: LOD úroveň\n\
+               F7: NPC brain debug  |  F8: cycle brain  |  F9: cycle task  |  F10: orbit dir",
         ),
         TextFont { font_size: 13.0, ..default() },
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
@@ -138,6 +138,21 @@ pub(crate) fn setup_scene(mut commands: Commands) {
         },
         Visibility::Hidden,
         AnimDebugPanel,
+    ));
+
+    commands.spawn((
+        Text::new(""),
+        TextFont { font_size: 13.0, ..default() },
+        TextColor(Color::srgba(0.95, 0.95, 0.95, 0.90)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(200.0),
+            left: Val::Px(8.0),
+            max_width: Val::Px(500.0),
+            ..default()
+        },
+        Visibility::Hidden,
+        NpcBrainPanel,
     ));
 
     commands.spawn((

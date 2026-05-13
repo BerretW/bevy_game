@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use serde_json::json;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::gltf::Gltf;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
@@ -14,12 +15,421 @@ use core_drawable::{
     StandardPbrMaterial, LayeredEnvMaterial,
     TwoBoneIkSolver,
 };
+use core_resources::{
+    NpcAgent, NpcBrainRegistry, NpcBrainState, NpcBrainTarget, NpcMoveGoal, NpcTaskKind,
+    NpcWanderKind, ReplicatedNpcBrain, ReplicatedNpcSteering, apply_replicated_npc_brain,
+    snapshot_npc_steering,
+};
 
 use crate::camera;
 use crate::state::{
-    ColliderPanel, DebugStatus, GltfHandleCache, InfoOverlay, LodPanel, LodViewerState,
-    RigPanel, RigViewerState, ViewerIkChains, ViewerState, VCOL_DEBUG_MODES, WEATHER_PRESETS, WeatherState,
+    ActiveViewerModelRoot, ColliderPanel, DebugStatus, GltfHandleCache, InfoOverlay, LodPanel,
+    LodViewerState, NpcBrainDebugState, NpcBrainPanel, RigPanel, RigViewerState,
+    ViewerIkChains, ViewerNpcTaskPreset, ViewerState, VCOL_DEBUG_MODES, WEATHER_PRESETS,
+    WeatherState,
 };
+
+fn ordered_brain_ids(registry: &NpcBrainRegistry) -> Vec<String> {
+    let mut ids: Vec<String> = registry.defs.keys().cloned().collect();
+    ids.sort();
+    ids
+}
+
+fn next_rand01(state: &mut u32) -> f32 {
+    *state = state
+        .wrapping_mul(1_664_525)
+        .wrapping_add(1_013_904_223);
+    (*state as f64 / u32::MAX as f64) as f32
+}
+
+fn build_viewer_brain(
+    brain_id: String,
+    task_preset: ViewerNpcTaskPreset,
+    home: Vec3,
+    debug: &NpcBrainDebugState,
+) -> ReplicatedNpcBrain {
+    match task_preset {
+        ViewerNpcTaskPreset::Idle => ReplicatedNpcBrain::new(brain_id, NpcTaskKind::Idle),
+        ViewerNpcTaskPreset::Investigate => {
+            ReplicatedNpcBrain::new(brain_id, NpcTaskKind::Investigate)
+                .with_target(NpcBrainTarget::Position(home + debug.target_offset))
+                .with_params(json!({
+                    "stop_distance": 0.35,
+                }))
+        }
+        ViewerNpcTaskPreset::WanderRandom => ReplicatedNpcBrain::new(brain_id, NpcTaskKind::WanderZone)
+            .with_params(json!({
+                "wander_kind": "random",
+                "radius": debug.wander_radius,
+                "retarget_sec": debug.retarget_sec,
+                "orbit_angular_speed": debug.orbit_speed,
+                "clockwise": debug.clockwise,
+            })),
+        ViewerNpcTaskPreset::Patrol => ReplicatedNpcBrain::new(brain_id, NpcTaskKind::PatrolRoute)
+            .with_params(json!({
+                "wander_kind": "patrol",
+                "radius": debug.wander_radius,
+                "retarget_sec": debug.retarget_sec,
+                "orbit_angular_speed": debug.orbit_speed,
+                "clockwise": debug.clockwise,
+                "patrol_point": [
+                    home.x + debug.patrol_offset.x,
+                    home.y + debug.patrol_offset.y,
+                    home.z + debug.patrol_offset.z,
+                ],
+            })),
+        ViewerNpcTaskPreset::Orbit => ReplicatedNpcBrain::new(brain_id, NpcTaskKind::Ambient)
+            .with_params(json!({
+                "wander_kind": "orbit",
+                "radius": debug.wander_radius.max(0.5),
+                "retarget_sec": debug.retarget_sec,
+                "orbit_angular_speed": debug.orbit_speed,
+                "clockwise": debug.clockwise,
+            })),
+    }
+}
+
+pub(crate) fn handle_npc_brain_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut debug: ResMut<NpcBrainDebugState>,
+    registry: Res<NpcBrainRegistry>,
+) {
+    let ids = ordered_brain_ids(&registry);
+
+    if keys.just_pressed(KeyCode::F7) {
+        debug.enabled = !debug.enabled;
+        debug.revision = debug.revision.wrapping_add(1);
+    }
+    if keys.just_pressed(KeyCode::F8) && !ids.is_empty() {
+        debug.selected_brain_idx = (debug.selected_brain_idx + 1) % ids.len();
+        debug.revision = debug.revision.wrapping_add(1);
+    }
+    if keys.just_pressed(KeyCode::F9) {
+        debug.task_preset = debug.task_preset.cycle();
+        debug.revision = debug.revision.wrapping_add(1);
+    }
+    if keys.just_pressed(KeyCode::F10) {
+        debug.clockwise = !debug.clockwise;
+        debug.revision = debug.revision.wrapping_add(1);
+    }
+}
+
+pub(crate) fn sync_npc_brain_debug(
+    active_root: Res<ActiveViewerModelRoot>,
+    registry: Res<NpcBrainRegistry>,
+    mut debug: ResMut<NpcBrainDebugState>,
+    transforms: Query<&Transform>,
+    mut commands: Commands,
+) {
+    if !debug.enabled {
+        if let Some(previous_root) = debug.attached_root.take() {
+            commands.entity(previous_root).remove::<NpcAgent>();
+            commands.entity(previous_root).remove::<NpcBrainState>();
+            commands.entity(previous_root).remove::<ReplicatedNpcBrain>();
+            commands.entity(previous_root).remove::<ReplicatedNpcSteering>();
+        }
+        return;
+    }
+
+    let Some(root) = active_root.root else { return; };
+
+    if debug.attached_root != Some(root) {
+        if let Some(previous_root) = debug.attached_root.replace(root) {
+            commands.entity(previous_root).remove::<NpcAgent>();
+            commands.entity(previous_root).remove::<NpcBrainState>();
+            commands.entity(previous_root).remove::<ReplicatedNpcBrain>();
+            commands.entity(previous_root).remove::<ReplicatedNpcSteering>();
+        }
+        debug.revision = debug.revision.wrapping_add(1);
+    }
+
+    if debug.applied_revision == debug.revision {
+        return;
+    }
+
+    let ids = ordered_brain_ids(&registry);
+    if ids.is_empty() {
+        return;
+    }
+    let brain_id = ids[debug.selected_brain_idx % ids.len()].clone();
+    let home = transforms.get(root).map(|t| t.translation).unwrap_or(Vec3::ZERO);
+    let brain = build_viewer_brain(brain_id.clone(), debug.task_preset, home, &debug);
+    let mut brain_state = NpcBrainState::new(brain_id);
+    let mut agent = NpcAgent::new(root.to_bits(), home);
+    apply_replicated_npc_brain(&registry, &brain, &mut brain_state, &mut agent);
+    let steering = snapshot_npc_steering(&agent);
+
+    commands.entity(root).insert((brain_state, brain, agent, steering));
+    debug.applied_revision = debug.revision;
+}
+
+pub(crate) fn tick_npc_brain_debug(
+    time: Res<Time>,
+    debug: Res<NpcBrainDebugState>,
+    active_root: Res<ActiveViewerModelRoot>,
+    mut roots: Query<(&mut Transform, &mut NpcAgent, &mut ReplicatedNpcSteering)>,
+) {
+    if !debug.enabled {
+        return;
+    }
+    let Some(root) = active_root.root else { return; };
+    let Ok((mut transform, mut agent, mut steering)) = roots.get_mut(root) else { return; };
+
+    let dt = time.delta_secs();
+    if dt <= 0.0 || matches!(agent.goal, NpcMoveGoal::Idle) {
+        *steering = snapshot_npc_steering(&agent);
+        return;
+    }
+
+    let mut stop_distance = agent.arrive_distance.max(0.01);
+    let mut complete_goal = false;
+    let mut advance_waypoint = false;
+    let goal_snapshot = agent.goal.clone();
+
+    let target_pos = if let Some(waypoint) = agent.current_path.get(agent.waypoint_index) {
+        stop_distance = stop_distance.max(0.1);
+        waypoint.target
+    } else {
+        match goal_snapshot {
+            NpcMoveGoal::Idle => {
+                *steering = snapshot_npc_steering(&agent);
+                return;
+            }
+            NpcMoveGoal::GoToCoord { target, stop_distance: stop } => {
+                stop_distance = stop.max(agent.arrive_distance).max(0.01);
+                target
+            }
+            NpcMoveGoal::GoToEntity { .. } => {
+                *steering = snapshot_npc_steering(&agent);
+                return;
+            }
+            NpcMoveGoal::Wander {
+                kind,
+                radius,
+                retarget_sec,
+                orbit_angular_speed,
+                patrol_point,
+                clockwise,
+            } => {
+                let radius = radius.max(0.1);
+                let retarget_sec = retarget_sec.max(0.05);
+                match kind {
+                    NpcWanderKind::Random => {
+                        agent.wander_timer -= dt;
+                        let dist_to_curr = Vec2::new(
+                            transform.translation.x - agent.wander_target.x,
+                            transform.translation.z - agent.wander_target.z,
+                        )
+                        .length();
+                        if agent.wander_timer <= 0.0 || dist_to_curr <= stop_distance {
+                            let a = next_rand01(&mut agent.rng_state) * std::f32::consts::TAU;
+                            let d = radius * (0.35 + 0.65 * next_rand01(&mut agent.rng_state));
+                            agent.wander_target = Vec3::new(
+                                agent.home.x + a.cos() * d,
+                                transform.translation.y,
+                                agent.home.z + a.sin() * d,
+                            );
+                            agent.wander_timer = retarget_sec;
+                        }
+                        agent.wander_target
+                    }
+                    NpcWanderKind::Patrol => {
+                        let patrol = patrol_point.unwrap_or_else(|| agent.home + Vec3::new(radius, 0.0, 0.0));
+                        let curr_target = if agent.patrol_to_target { patrol } else { agent.home };
+                        let d = Vec2::new(
+                            transform.translation.x - curr_target.x,
+                            transform.translation.z - curr_target.z,
+                        )
+                        .length();
+                        if d <= stop_distance {
+                            agent.patrol_to_target = !agent.patrol_to_target;
+                        }
+                        agent.wander_target = if agent.patrol_to_target { patrol } else { agent.home };
+                        agent.wander_target
+                    }
+                    NpcWanderKind::Orbit => {
+                        let sign = if clockwise { -1.0 } else { 1.0 };
+                        agent.orbit_angle = (agent.orbit_angle + sign * orbit_angular_speed.max(0.05) * dt)
+                            .rem_euclid(std::f32::consts::TAU);
+                        stop_distance = (radius * 0.15).max(agent.arrive_distance).max(0.1);
+                        agent.wander_target = Vec3::new(
+                            agent.home.x + radius * agent.orbit_angle.cos(),
+                            transform.translation.y,
+                            agent.home.z + radius * agent.orbit_angle.sin(),
+                        );
+                        agent.wander_target
+                    }
+                }
+            }
+        }
+    };
+
+    let to_target = Vec2::new(
+        target_pos.x - transform.translation.x,
+        target_pos.z - transform.translation.z,
+    );
+    let dist = to_target.length();
+
+    if dist <= stop_distance {
+        if agent.waypoint_index < agent.current_path.len() {
+            advance_waypoint = true;
+        } else if matches!(goal_snapshot, NpcMoveGoal::GoToCoord { .. }) {
+            complete_goal = true;
+        }
+    } else {
+        let dir = to_target / dist;
+        let step = (agent.move_speed.max(0.0) * dt).min((dist - stop_distance).max(0.0));
+        transform.translation.x += dir.x * step;
+        transform.translation.z += dir.y * step;
+
+        let desired_yaw = dir.x.atan2(dir.y);
+        let desired_rot = Quat::from_rotation_y(desired_yaw);
+        let t = (agent.turn_speed.max(0.0) * dt).clamp(0.0, 1.0);
+        transform.rotation = transform.rotation.slerp(desired_rot, t);
+    }
+
+    if advance_waypoint {
+        agent.waypoint_index += 1;
+        if agent.waypoint_index >= agent.current_path.len() {
+            agent.current_path.clear();
+            agent.waypoint_index = 0;
+            if matches!(goal_snapshot, NpcMoveGoal::GoToCoord { .. }) {
+                complete_goal = true;
+            }
+        }
+    }
+
+    if complete_goal {
+        agent.goal = NpcMoveGoal::Idle;
+    }
+
+    *steering = snapshot_npc_steering(&agent);
+}
+
+pub(crate) fn draw_npc_brain_debug_gizmos(
+    mut gizmos: Gizmos,
+    debug: Res<NpcBrainDebugState>,
+    active_root: Res<ActiveViewerModelRoot>,
+    roots: Query<(&Transform, &NpcAgent)>,
+) {
+    if !debug.enabled {
+        return;
+    }
+    let Some(root) = active_root.root else { return; };
+    let Ok((transform, agent)) = roots.get(root) else { return; };
+
+    draw_cross_gizmo(&mut gizmos, agent.home + Vec3::Y * 0.05, 0.18, Color::srgb(0.2, 1.0, 0.35));
+    draw_cross_gizmo(&mut gizmos, transform.translation + Vec3::Y * 0.05, 0.14, Color::srgb(0.95, 0.95, 1.0));
+
+    if !matches!(agent.goal, NpcMoveGoal::Idle) {
+        draw_cross_gizmo(&mut gizmos, agent.wander_target + Vec3::Y * 0.05, 0.15, Color::srgb(1.0, 0.7, 0.2));
+        gizmos.line(transform.translation + Vec3::Y * 0.03, agent.wander_target + Vec3::Y * 0.03, Color::srgb(1.0, 0.7, 0.2));
+    }
+
+    if !agent.current_path.is_empty() {
+        let mut prev = transform.translation + Vec3::Y * 0.02;
+        for (idx, waypoint) in agent.current_path.iter().enumerate() {
+            let color = if idx == agent.waypoint_index {
+                Color::srgb(0.2, 0.95, 1.0)
+            } else {
+                Color::srgba(0.2, 0.95, 1.0, 0.45)
+            };
+            gizmos.line(prev, waypoint.target + Vec3::Y * 0.02, color);
+            draw_cross_gizmo(&mut gizmos, waypoint.target + Vec3::Y * 0.04, 0.08, color);
+            prev = waypoint.target + Vec3::Y * 0.02;
+        }
+    }
+}
+
+pub(crate) fn update_npc_brain_panel(
+    debug: Res<NpcBrainDebugState>,
+    active_root: Res<ActiveViewerModelRoot>,
+    registry: Res<NpcBrainRegistry>,
+    roots: Query<(&Transform, Option<&NpcAgent>, Option<&NpcBrainState>)>,
+    mut panel: Query<(&mut Text, &mut Visibility), With<NpcBrainPanel>>,
+) {
+    let Ok((mut txt, mut vis)) = panel.single_mut() else { return; };
+    if !debug.enabled {
+        *vis = Visibility::Hidden;
+        return;
+    }
+    *vis = Visibility::Visible;
+
+    let ids = ordered_brain_ids(&registry);
+    let brain_id = if ids.is_empty() {
+        "(none)".to_string()
+    } else {
+        ids[debug.selected_brain_idx % ids.len()].clone()
+    };
+    let brain_def = registry.get(&brain_id).or_else(|| registry.get(&registry.fallback_human_id));
+
+    let mut lines = vec![
+        "── NPC Brain Debug ──".to_string(),
+        format!("Enabled: {}", debug.enabled),
+        format!("Root: {:?}  model:{}", active_root.root, active_root.model_name.as_deref().unwrap_or("-")),
+        format!("Brain: {}", brain_id),
+        format!("Task preset: {}", debug.task_preset.label()),
+        format!("Orbit clockwise: {}", debug.clockwise),
+        "F7 toggle | F8 cycle brain | F9 cycle task | F10 orbit dir".to_string(),
+    ];
+
+    if let Some(def) = brain_def {
+        lines.push(format!(
+            "Kind:{:?}  locomotion:{:?}  default:{:?}",
+            def.kind, def.locomotion, def.default_task
+        ));
+        lines.push(format!(
+            "Motion  cruise:{:.2} sprint:{:.2} turn:{:.2} brake:{:.2}",
+            def.motion.cruise_speed,
+            def.motion.sprint_speed,
+            def.motion.turn_speed,
+            def.motion.brake_distance,
+        ));
+    }
+
+    if let Some(root) = active_root.root {
+        if let Ok((transform, agent, state)) = roots.get(root) {
+            lines.push(format!(
+                "Pos [{:.2}, {:.2}, {:.2}]",
+                transform.translation.x,
+                transform.translation.y,
+                transform.translation.z,
+            ));
+            if let Some(state) = state {
+                lines.push(format!("Applied brain: {}", state.brain_id));
+            }
+            if let Some(agent) = agent {
+                lines.push(format!(
+                    "Agent  speed:{:.2} arrive:{:.2} turn:{:.2}",
+                    agent.move_speed,
+                    agent.arrive_distance,
+                    agent.turn_speed,
+                ));
+                lines.push(format!(
+                    "Home [{:.2}, {:.2}, {:.2}]  target [{:.2}, {:.2}, {:.2}]",
+                    agent.home.x,
+                    agent.home.y,
+                    agent.home.z,
+                    agent.wander_target.x,
+                    agent.wander_target.y,
+                    agent.wander_target.z,
+                ));
+                lines.push(format!(
+                    "Path waypoints:{} idx:{} orbit:{:.2} timer:{:.2}",
+                    agent.current_path.len(),
+                    agent.waypoint_index,
+                    agent.orbit_angle,
+                    agent.wander_timer,
+                ));
+                lines.push(format!("Goal: {:?}", agent.goal));
+            } else {
+                lines.push("Agent: (not attached yet)".to_string());
+            }
+        }
+    }
+
+    txt.0 = lines.join("\n");
+}
 
 pub(crate) fn update_info_overlay(
     mut done: Local<bool>,

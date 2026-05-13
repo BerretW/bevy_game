@@ -13,9 +13,82 @@ pub struct ModelPaths(pub Vec<PathBuf>);
 pub struct ModelSourcePaths(pub HashMap<String, PathBuf>);
 
 #[derive(Resource, Default)]
+pub struct ActiveViewerModelRoot {
+    pub root: Option<Entity>,
+    pub model_name: Option<String>,
+}
+
+#[derive(Resource, Default)]
 pub struct LodViewerState {
     pub forced: Option<u8>,
     pub panel_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewerNpcTaskPreset {
+    #[default]
+    Idle,
+    Investigate,
+    WanderRandom,
+    Patrol,
+    Orbit,
+}
+
+impl ViewerNpcTaskPreset {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Investigate => "investigate",
+            Self::WanderRandom => "wander_random",
+            Self::Patrol => "patrol",
+            Self::Orbit => "orbit",
+        }
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Idle => Self::Investigate,
+            Self::Investigate => Self::WanderRandom,
+            Self::WanderRandom => Self::Patrol,
+            Self::Patrol => Self::Orbit,
+            Self::Orbit => Self::Idle,
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct NpcBrainDebugState {
+    pub enabled: bool,
+    pub selected_brain_idx: usize,
+    pub task_preset: ViewerNpcTaskPreset,
+    pub revision: u64,
+    pub applied_revision: u64,
+    pub attached_root: Option<Entity>,
+    pub target_offset: Vec3,
+    pub patrol_offset: Vec3,
+    pub wander_radius: f32,
+    pub retarget_sec: f32,
+    pub orbit_speed: f32,
+    pub clockwise: bool,
+}
+
+impl Default for NpcBrainDebugState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            selected_brain_idx: 0,
+            task_preset: ViewerNpcTaskPreset::Idle,
+            revision: 0,
+            applied_revision: 0,
+            attached_root: None,
+            target_offset: Vec3::new(3.5, 0.0, 0.0),
+            patrol_offset: Vec3::new(4.0, 0.0, 0.0),
+            wander_radius: 4.0,
+            retarget_sec: 1.4,
+            orbit_speed: 0.9,
+            clockwise: false,
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -117,6 +190,9 @@ pub struct RigPanel;
 
 #[derive(Component)]
 pub struct AnimDebugPanel;
+
+#[derive(Component)]
+pub struct NpcBrainPanel;
 
 #[derive(Component)]
 pub struct UiLoadAdmButton;
