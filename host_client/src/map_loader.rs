@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use bevy::prelude::*;
 use serde::Deserialize;
 
-use core_drawable::{MapManifest, NavmeshRegistry};
+use core_drawable::{MapManifest, NavmeshRegistry, TileGraph, TilePathDef};
 use core_resources::{EntityHandle, LocalObjectMarker, LuaWorldState};
 use core_shared::PlayerMarker;
 
@@ -102,16 +102,34 @@ fn load_maps_on_enter(
     mut world_state: ResMut<LuaWorldState>,
     mut navmesh_registry: ResMut<NavmeshRegistry>,
     mut tile_index: ResMut<WorldTileIndex>,
+    mut tile_graph: ResMut<TileGraph>,
 ) {
     let maps_root = asset_root().join("maps");
     tile_index.maps_root = maps_root.clone();
 
     if let Some(index) = load_world_tile_index(&maps_root) {
         tile_index.active = true;
-        tile_index.tiles = index.tiles;
+        tile_index.tiles = index.tiles.clone();
+        
+        // Build tile graph from index
+        tile_graph.tiles.clear();
+        for tile_def in &index.tiles {
+            tile_graph.tiles.insert(
+                tile_def.id.clone(),
+                TilePathDef {
+                    id: tile_def.id.clone(),
+                    center: Vec3::new(tile_def.center[0], tile_def.center[1], tile_def.center[2]),
+                    load_radius: tile_def.load_radius,
+                    traversal_cost: 1.0, // Default cost; can be parameterized per tile
+                },
+            );
+        }
+        tile_graph.build_adjacency(2500.0); // Max distance threshold for adjacency
+        
         info!(
-            "[map_loader] tile streaming index enabled ({} tiles)",
-            tile_index.tiles.len()
+            "[map_loader] tile streaming index enabled ({} tiles, {} edges)",
+            tile_graph.tiles.len(),
+            tile_graph.adjacency.values().map(|v| v.len()).sum::<usize>()
         );
         return;
     }

@@ -9,6 +9,8 @@ mod material;
 mod navmesh;
 mod registry;
 mod ped;
+mod tile_pathfinding;
+mod hlod;
 
 pub use adm::{
     AdmAnimNotifyEvent, AdmAnimationClip, AdmAnimationNotify, AdmAnimationPlayback, AdmAnimationTrack, AdmKeyframe,
@@ -49,6 +51,8 @@ pub use material::{
 };
 pub use registry::{DrawableManifestRegistry, GltfHandleCache, TextureRegistry};
 pub use navmesh::{NavmeshRegistry, NavmeshData, NavmeshSurface, PathSegment};
+pub use tile_pathfinding::{TileGraph, TilePathDef, TilePortal};
+pub use hlod::{HLODLayer, HLODState, HLODTile, HLODInstanceData, StandardHLODConfig, update_hlod_visibility};
 
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
@@ -110,6 +114,7 @@ impl Plugin for DrawablePlugin {
             .init_resource::<TextureRegistry>()
             .init_resource::<DefaultLodDistances>()
             .init_resource::<NavmeshRegistry>()
+            .init_resource::<TileGraph>()
             .add_observer(observe_scene_ready)
             .add_systems(Startup, setup_fallback_textures)
             .add_systems(

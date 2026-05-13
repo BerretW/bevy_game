@@ -177,9 +177,84 @@ impl NavmeshRegistry {
 
         None // No path found
     }
-}
 
-/// Find which face a point is in
+    /// Find path across multiple tiles using hierarchical A*
+    /// Requires TileGraph to be populated with tile definitions
+    pub fn find_hierarchical_path(
+        &self,
+        tile_graph: &crate::TileGraph,
+        from_map_id: &str,
+        to_map_id: &str,
+        from_pos: Vec3,
+        to_pos: Vec3,
+        agent_radius: f32,
+    ) -> Option<Vec<PathSegment>> {
+        // If same tile, use single-tile pathfinding
+        if from_map_id == to_map_id {
+            return self.find_path(from_map_id, from_pos, to_pos, agent_radius);
+        }
+
+        // Get tile definitions
+        let start_tile_id = from_map_id;
+        let goal_tile_id = to_map_id;
+
+        // Find tile path through graph
+        let tile_path = tile_graph.find_tile_path(start_tile_id, goal_tile_id)?;
+
+        // Build waypoints across all tiles
+        let mut full_waypoints = Vec::new();
+        let mut current_pos = from_pos;
+
+        for i in 0..tile_path.len() {
+            let current_tile = &tile_path[i];
+            let next_tile = if i + 1 < tile_path.len() {
+                Some(&tile_path[i + 1])
+            } else {
+                None
+            };
+
+            let target_pos = if let Some(next) = next_tile {
+                // Find portal between current and next tile
+                let portals = tile_graph.get_portals_between(current_tile, next);
+                if !portals.is_empty() {
+                    // Use first portal's exit position as intermediate target
+                    portals[0].exit_pos
+                } else {
+                    // Fallback to tile center if no portal
+                    if let Some(def) = tile_graph.tiles.get(next) {
+                        def.center
+                    } else {
+                        to_pos
+                    }
+                }
+            } else {
+                // Last tile: target final position
+                to_pos
+            };
+
+            // Find local path within current tile
+            if let Some(mut local_path) = self.find_path(current_tile, current_pos, target_pos, agent_radius)
+            {
+                full_waypoints.append(&mut local_path);
+            } else {
+                // If no path found, add direct waypoint
+                full_waypoints.push(PathSegment {
+                    target: target_pos,
+                    face_index: 0,
+                    surface_id: current_tile.to_string(),
+                });
+            }
+
+            current_pos = target_pos;
+        }
+
+        if full_waypoints.is_empty() {
+            None
+        } else {
+            Some(full_waypoints)
+        }
+    }
+}
 fn find_point_in_surface(surfaces: &[NavmeshSurface], point: Vec3, agent_radius: f32) -> Option<(usize, u32)> {
     for (surf_idx, surface) in surfaces.iter().enumerate() {
         // Check if point height is within walkable range

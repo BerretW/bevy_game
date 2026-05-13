@@ -144,3 +144,19 @@ pub mod player_action {
     pub const INTERACT: u32 = 1 << 6;
     pub const USE_ITEM: u32 = 1 << 7;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Tile-based world streaming (server authority)
+// ---------------------------------------------------------------------------
+
+/// **Server → Client** — server-authoritative tile streaming command.
+/// Sent periodically (~1 Hz) to validate/correct client's loaded tiles.
+///
+/// Action:
+/// - `"load"` — client should load this tile (idempotent)
+/// - `"unload"` — client should unload this tile (idempotent)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TileStreamingCommand {
+    pub tile_id: String,
+    pub action: String, // "load" or "unload"
+}

@@ -68,6 +68,7 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
+- [x] **2026-05-13 (Latest)**: Phase 5 Hierarchical Pathfinding + Server Authority Foundation — Implementován `TileGraph` pro cross-tile routing s adjacency detekcem, dva-úrovňový A* (global přes tile graph + local v navmesh), hierarchický pathfinding v `NavmeshRegistry::find_hierarchical_path()`. `TileGraph::build_adjacency()` automaticky detekuje sousedící tile-y. Přidán `TileStreamingCommand` message type v protocol.rs (server→klient) pro server-side autoritu. Vytvořena HLOD infrastruktura (`HLODLayer`, `HLODState`, `HLODTile`) se třemi distančními vrstvami (0-300m full detail, 300-1000m simplified instanced, 1000m+ culled), distance-based visibility gating. Všechny systémy integrovány do DrawablePlugin a map_loader.
 - [x] **2026-05-13**: Large-world tile streaming foundation — `host_client` map loader podporuje volitelný index `assets/maps/world.index.toml` (nebo `map.index.toml`) s tile záznamy (`map`, `center`, `load_radius`, `always_loaded`). Přidán stream-in/stream-out map souborů podle vzdálenosti lokálního hráče, unload ECS entit + `LuaWorldState` handle mapy mimo radius, a unload navmesh přes nové `NavmeshRegistry::unload_navmesh`. Přidán ukázkový index `host_client/assets/maps/world.index.toml`.
 - [x] **2026-05-12**: NPC Framework + základní AI pohyb — Přidán `NpcAgent` systém v `core_resources` (`tick_npc_agents` ve `FixedUpdate`) s módy `wander` (`random`/`patrol`/`orbit`), `go to entity` a `go to coord`. Rozšířeno Lua API o `World.NpcConfigure/NpcWander/NpcGoToEntity/NpcGoToCoord/NpcStop`. Přidán demo resource `resources/example/npc_test/`.
 - [x] **2026-05-12**: Model Viewer texture browser/export tool — Registrace chybějících systémů `init_texture_browser`, `handle_texture_keys`, `rebuild_panel`, `show_extract_status` do `Update` scheduling. Nástroj na zobrazení a export textur (T pro toggle, E pro export) znovu plně funkční.
@@ -177,6 +178,57 @@ Implementováno:
 Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, `BlendSpaceState` komponenta v cmd_queue, `LuaCommand::PlayBlendSpace`, Lua API `World.PlayBlendSpace(handle, blend_space_name, move_x, move_y, speed?, flags?)`, handler v cmd_queue, test resource `resources/example/blend_space_test/` s rotačním move vektorem.
 
 **Zbývá:** Runtime evaluace vah (nový systém `evaluate_blend_spaces`), ADM v5 parser pro blend space definice, aplikace více klipů v `apply_adm_animations`.
+
+---
+
+## Phase 5 — Large-World Infrastructure & Streaming
+
+**Obsah:** Hierarchické pathfinding, server-side streaming autorita, HLOD/instancing pro mega-mapy (RDR2-class scénáře).
+
+### Phase 5.0 — Hierarchical Pathfinding & Tile Graph [✅ HOTOVO]
+
+Implementováno:
+- `TileGraph` Resource: Adjacency graph tilek, dva-úrovňový A*
+- `TilePathDef`: Tile definition s traversal cost (těžkost terénního typu)
+- `TilePortal`: Crossing point mezi sousedními tiley
+- `NavmeshRegistry::find_hierarchical_path()`: Global A* přes tile graph + local A* v každém tile
+- `TileGraph::build_adjacency()`: Auto-detekce sousedství tilek podle center vzdálenosti
+- `TileGraph::find_tile_path()`: Bezpečný routing skrz graf (min-heap priority queue)
+- Integrace v `host_client/src/map_loader.rs`: TileGraph se buduje automaticky z `world.index.toml` definic
+- Wszystkie struktury budovány s `Serialize`/`Deserialize` pro persistence
+
+**Zbývá:**
+- [ ] Integrace do `tick_npc_agents` — NPC by měli používat `find_hierarchical_path` místo přímého target
+- [ ] Server-side tile path validation (replay protection)
+- [ ] Portal locking/dynamic portals (při destruction objektů)
+
+### Phase 5.1 — Server-Side Streaming Authority [🟡 FOUNDATION READY]
+
+Implementováno:
+- `TileStreamingCommand` message type v `core_net::protocol` (tile_id, action: "load"/"unload")
+- `TileStreamingChannel` v lightyear — SequencedUnreliable server→klient
+- Message registration v `net_plugin.rs`
+
+**Zbývá:**
+- [ ] `ServerTileStreamingPlugin` — track player positions, validate visible tiles, send commands
+- [ ] Client-side command receiver — apply server directives, ignore client-local streaming
+- [ ] Anti-cheat: Detect and reject klient-authoritative tile loads (LOD distance abuse)
+
+### Phase 5.2 — HLOD/Instancing Infrastructure [✅ FOUNDATION READY]
+
+Implementováno:
+- `HLODLayer`: Distance tier s simplification factor a GPU instancing flags
+- `HLODState` Component: Active layer, instance storage, camera distance tracking
+- `HLODTile` Marker: Per-tile HLOD configuration (3-tier: 0-300m full, 300-1000m simplified instanced, 1000m+ culled)
+- `StandardHLODConfig::create()`: Sensible defaults pro 3-tier setup
+- `update_hlod_visibility()` System: Distance-based gating pro visibility
+- `HLODInstanceData`: GPU instance struktura (position_scale, rotation, tint)
+
+**Zbývá:**
+- [ ] GPU instancing buffer creation/update v render graph
+- [ ] Mesh simplification pipeline (Lloyd relaxation či edge-collapse decimation)
+- [ ] Billboard rendering pro far-tier (small quads s instanced texturou)
+- [ ] Integration s map_loader — auto-attach HLODTile ke spawnutým map instances
 
 ---
 
@@ -413,6 +465,9 @@ Hitbox.Register('player_default', {
   registry.rs                    DrawableManifestRegistry, TextureRegistry
   material.rs                    DrawableMaterial, shader extensions (standard_pbr/layered_env/vehicle_glass)
   hook.rs                        DrawableSpawnIntent, DrawableCollision, hook systémy, LOD systém
+  navmesh.rs                     NavmeshRegistry, A* pathfinding, single-tile routing
+  tile_pathfinding.rs            TileGraph, TilePortal, hierarchical cross-tile pathfinding
+  hlod.rs                        HLODLayer, HLODState, HLODTile, distance-based visibility gating
 /model_viewer/src/
   main.rs                        ADS model viewer (CLI args), grid gizmos, ADM dict browser + clip overlay
   camera.rs                      OrbitCamera (orbit/pan/zoom)

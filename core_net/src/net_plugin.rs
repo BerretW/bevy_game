@@ -37,6 +37,7 @@ use core_shared::{NetTransform, NetVelocity, PlayerMarker};
 use crate::protocol::{
     AuthChallenge, AuthCredentials, AuthResult,
     ClientReady, LuaEventMessage, PlayerInput, PlayerStatsUpdate, ServerHello,
+    TileStreamingCommand,
 };
 
 /// Tickrate pro lightyear (musí ladit s herní simulací).
@@ -84,6 +85,12 @@ pub struct StatsChannel;
 /// Phase 4 — ordered reliable kanál pro autentizaci (AuthChallenge / AuthCredentials / AuthResult).
 /// Ztráta nebo přeřazení by znemožnila přihlášení.
 pub struct AuthChannel;
+
+/// Phase 5 — sequenced unreliable kanál pro tile streaming commands (server → klient).
+/// Server validuje které tile by měl klient mít loadnuty a pošle mu update commandy.
+/// Ztráta paketu není kritická — client-side streaming bude i nadále fungovat,
+/// server ho jen periodicky koriguje.
+pub struct TileStreamingChannel;
 
 // ---------------------------------------------------------------------------
 // ProtocolPlugin — sdílený
@@ -149,12 +156,23 @@ impl Plugin for ProtocolPlugin {
         })
         .add_direction(NetworkDirection::Bidirectional);
 
+        // Tile streaming — sequenced unreliable server→klient.
+        app.add_channel::<TileStreamingChannel>(ChannelSettings {
+            mode: ChannelMode::SequencedUnreliable,
+            ..default()
+        })
+        .add_direction(NetworkDirection::ServerToClient);
+
         // Auth messages
         app.register_message::<AuthChallenge>()
             .add_direction(NetworkDirection::ServerToClient);
         app.register_message::<AuthCredentials>()
             .add_direction(NetworkDirection::ClientToServer);
         app.register_message::<AuthResult>()
+            .add_direction(NetworkDirection::ServerToClient);
+
+        // Phase 5 — tile streaming commands (server → klient)
+        app.register_message::<TileStreamingCommand>()
             .add_direction(NetworkDirection::ServerToClient);
 
         // -----------------------------------------------------------------
