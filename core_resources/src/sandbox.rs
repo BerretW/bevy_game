@@ -25,6 +25,7 @@ use bevy::math::{EulerRot, Quat};
 use crate::ace::AceRegistry;
 use crate::cmd_queue::{
     CommandQueue, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
+    EquippedWeapon,
     EnvironmentLightConfigPatch,
     EntityStateCache, LocalPlayerStats, LuaCommand, NpcScenarioDef, NpcWanderKind, PlayerStatsCache,
     RuntimeFogVolumeDef, RuntimeLightDef, RuntimeLightKind,
@@ -3018,6 +3019,157 @@ fn install_runtime_api_inner(
         )?)?;
     }
 
+    {
+        let sc = stats_cache.clone();
+        weapon_ns.set("GetEquipped", lua.create_function(
+            move |lua, args: MultiValue| {
+                if args.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        "Weapon.GetEquipped(player_id, slot?) requires player_id".into(),
+                    ));
+                }
+                let player_id = lua_value_to_u64(&args[0]).unwrap_or(0);
+                let Some(snap) = sc.get(player_id) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let slot = match args.get(1) {
+                    Some(mlua::Value::Integer(v)) if *v >= 0 => *v as usize,
+                    Some(mlua::Value::Number(v)) if *v >= 0.0 => *v as usize,
+                    Some(mlua::Value::Nil) | None => snap.active_weapon_slot as usize,
+                    _ => return Err(mlua::Error::RuntimeError("Weapon.GetEquipped: invalid slot".into())),
+                };
+                let Some(equipped) = snap.weapon_slots.get(slot).and_then(|entry| entry.clone()) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                let json = serde_json::to_value(equipped)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Weapon.GetEquipped: {e}")))?;
+                json_to_lua_value(lua, json)
+            },
+        )?)?;
+    }
+
+    {
+        let cq = cmd_queue.clone();
+        weapon_ns.set("SetEquipped", lua.create_function(
+            move |_, args: MultiValue| {
+                if side != Side::Server {
+                    return Err(mlua::Error::RuntimeError("Weapon.SetEquipped is server-only".into()));
+                }
+                if args.len() < 3 {
+                    return Err(mlua::Error::RuntimeError(
+                        "Weapon.SetEquipped(player_id, slot, def|nil) requires player_id, slot and def".into(),
+                    ));
+                }
+                let player_id = lua_value_to_u64(&args[0]).unwrap_or(0);
+                let slot = match &args[1] {
+                    mlua::Value::Integer(v) if *v >= 0 => *v as u8,
+                    mlua::Value::Number(v) if *v >= 0.0 => *v as u8,
+                    _ => return Err(mlua::Error::RuntimeError("Weapon.SetEquipped: invalid slot".into())),
+                };
+
+                let equipped = match &args[2] {
+                    mlua::Value::Nil => None,
+                    mlua::Value::Table(t) => {
+                        let json = lua_table_to_json(t.clone());
+                        let equipped: EquippedWeapon = serde_json::from_value(json)
+                            .map_err(|e| mlua::Error::RuntimeError(format!("Weapon.SetEquipped: {e}")))?;
+                        Some(equipped)
+                    }
+                    _ => return Err(mlua::Error::RuntimeError("Weapon.SetEquipped: expected table or nil".into())),
+                };
+
+                cq.push(LuaCommand::SetEquippedWeapon {
+                    player_id,
+                    slot,
+                    equipped,
+                });
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let sc = stats_cache.clone();
+        weapon_ns.set("GetAmmoReserve", lua.create_function(
+            move |lua, args: MultiValue| {
+                if args.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        "Weapon.GetAmmoReserve(player_id, ammo_type?) requires player_id".into(),
+                    ));
+                }
+                let player_id = lua_value_to_u64(&args[0]).unwrap_or(0);
+                let Some(snap) = sc.get(player_id) else {
+                    return Ok(mlua::Value::Nil);
+                };
+                if let Some(mlua::Value::String(ammo_type)) = args.get(1) {
+                    let key = ammo_type.to_str()?.to_string();
+                    return Ok(mlua::Value::Integer(
+                        snap.ammo_reserve.get(&key).copied().unwrap_or(0) as i64,
+                    ));
+                }
+                let json = serde_json::to_value(snap.ammo_reserve)
+                    .map_err(|e| mlua::Error::RuntimeError(format!("Weapon.GetAmmoReserve: {e}")))?;
+                json_to_lua_value(lua, json)
+            },
+        )?)?;
+    }
+
+    {
+        let cq = cmd_queue.clone();
+        weapon_ns.set("SetAmmoReserve", lua.create_function(
+            move |_, (player_id_v, ammo_type_id, count): (mlua::Value, String, u32)| {
+                if side != Side::Server {
+                    return Err(mlua::Error::RuntimeError("Weapon.SetAmmoReserve is server-only".into()));
+                }
+                let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+                cq.push(LuaCommand::SetAmmoReserve {
+                    player_id,
+                    ammo_type_id,
+                    count,
+                });
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let sc = stats_cache.clone();
+        weapon_ns.set("GetActiveSlot", lua.create_function(
+            move |_, player_id_v: mlua::Value| {
+                let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+                Ok(sc.get(player_id).map(|snap| snap.active_weapon_slot as i64))
+            },
+        )?)?;
+    }
+
+    {
+        let cq = cmd_queue.clone();
+        weapon_ns.set("SetActiveSlot", lua.create_function(
+            move |_, (player_id_v, slot): (mlua::Value, u8)| {
+                if side != Side::Server {
+                    return Err(mlua::Error::RuntimeError("Weapon.SetActiveSlot is server-only".into()));
+                }
+                let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+                cq.push(LuaCommand::SetActiveWeaponSlot { player_id, slot });
+                Ok(())
+            },
+        )?)?;
+    }
+
+    {
+        let cq = cmd_queue.clone();
+        weapon_ns.set("ForceReload", lua.create_function(
+            move |_, player_id_v: mlua::Value| {
+                if side != Side::Server {
+                    return Err(mlua::Error::RuntimeError("Weapon.ForceReload is server-only".into()));
+                }
+                let player_id = lua_value_to_u64(&player_id_v).unwrap_or(0);
+                cq.push(LuaCommand::ForceReload { player_id });
+                Ok(())
+            },
+        )?)?;
+    }
+
     globals.set("Weapon", weapon_ns)?;
 
     let ammo_ns = lua.create_table()?;
@@ -3252,6 +3404,34 @@ fn install_runtime_api_inner(
                     let t = lua.create_table()?;
                     t.set("hp", snap.health)?;
                     t.set("max_hp", snap.max_health)?;
+                    t.set("active_weapon_slot", snap.active_weapon_slot as i64)?;
+                    let weapon_slots = serde_json::to_value(&snap.weapon_slots)
+                        .map_err(|e| mlua::Error::RuntimeError(format!("Player.GetLocalStats: {e}")))?;
+                    t.set("weapon_slots", json_to_lua_value(lua, weapon_slots)?)?;
+                    let ammo_reserve = serde_json::to_value(&snap.ammo_reserve)
+                        .map_err(|e| mlua::Error::RuntimeError(format!("Player.GetLocalStats: {e}")))?;
+                    t.set("ammo_reserve", json_to_lua_value(lua, ammo_reserve)?)?;
+
+                    let fire = lua.create_table()?;
+                    fire.set("cooldown_remaining", snap.fire_cooldown_remaining)?;
+                    fire.set("trigger_held", snap.fire_trigger_held)?;
+                    t.set("fire", fire)?;
+
+                    let reload = lua.create_table()?;
+                    reload.set("remaining", snap.reload_remaining)?;
+                    reload.set("duration", snap.reload_duration)?;
+                    reload.set("active", snap.reload_remaining > 0.0)?;
+                    t.set("reload", reload)?;
+
+                    let weapon_swap = lua.create_table()?;
+                    weapon_swap.set("remaining", snap.weapon_swap_remaining)?;
+                    weapon_swap.set("duration", snap.weapon_swap_duration)?;
+                    weapon_swap.set("active", snap.weapon_swap_remaining > 0.0)?;
+                    weapon_swap.set(
+                        "target_slot",
+                        snap.weapon_swap_target_slot.map(|value| value as i64),
+                    )?;
+                    t.set("weapon_swap", weapon_swap)?;
                     Ok(t)
                 })?)?;
             } else {
@@ -3259,6 +3439,27 @@ fn install_runtime_api_inner(
                     let t = lua.create_table()?;
                     t.set("hp", 100.0_f32)?;
                     t.set("max_hp", 100.0_f32)?;
+                    t.set("active_weapon_slot", 0_i64)?;
+                    t.set("weapon_slots", lua.create_table()?)?;
+                    t.set("ammo_reserve", lua.create_table()?)?;
+
+                    let fire = lua.create_table()?;
+                    fire.set("cooldown_remaining", 0.0_f32)?;
+                    fire.set("trigger_held", false)?;
+                    t.set("fire", fire)?;
+
+                    let reload = lua.create_table()?;
+                    reload.set("remaining", 0.0_f32)?;
+                    reload.set("duration", 0.0_f32)?;
+                    reload.set("active", false)?;
+                    t.set("reload", reload)?;
+
+                    let weapon_swap = lua.create_table()?;
+                    weapon_swap.set("remaining", 0.0_f32)?;
+                    weapon_swap.set("duration", 0.0_f32)?;
+                    weapon_swap.set("active", false)?;
+                    weapon_swap.set("target_slot", mlua::Value::Nil)?;
+                    t.set("weapon_swap", weapon_swap)?;
                     Ok(t)
                 })?)?;
             }

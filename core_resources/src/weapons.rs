@@ -245,6 +245,17 @@ impl WeaponRegistry {
             .get(id)
             .cloned()
     }
+
+    pub fn resolve_default(&self) -> Option<WeaponDef> {
+        let guard = self.0.read().unwrap_or_else(|p| p.into_inner());
+        if let Some(def) = guard.get("default") {
+            return Some(def.clone());
+        }
+        if guard.len() == 1 {
+            return guard.values().next().cloned();
+        }
+        None
+    }
 }
 
 #[derive(Resource, Clone, Default)]
@@ -350,5 +361,27 @@ mod tests {
         let stored = registry.get("762").expect("ammo should exist");
         assert_eq!(stored.id, "762");
         assert_eq!(stored.caliber, "7.62x39");
+    }
+
+    #[test]
+    fn weapon_registry_prefers_default_id() {
+        let registry = WeaponRegistry::default();
+        registry.insert(
+            "ak47".to_string(),
+            WeaponDef {
+                display_name: "AK-47".to_string(),
+                ..Default::default()
+            },
+        );
+        registry.insert(
+            "default".to_string(),
+            WeaponDef {
+                display_name: "Fallback Rifle".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let stored = registry.resolve_default().expect("default weapon should exist");
+        assert_eq!(stored.id, "default");
     }
 }

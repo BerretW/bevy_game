@@ -5,6 +5,9 @@
 //! tak, že tyto typy obalí. Záměr: kdyby se v budoucnu lightyear vyměnil
 //! (např. za `quinn` přímý), wire-types zůstávají.
 
+use std::collections::HashMap;
+
+use core_resources::EquippedWeapon;
 use serde::{Deserialize, Serialize};
 
 use crate::digest::ResourceDigest;
@@ -130,6 +133,16 @@ pub struct PlayerInput {
 pub struct PlayerStatsUpdate {
     pub hp: f32,
     pub max_hp: f32,
+    pub weapon_slots: Vec<Option<EquippedWeapon>>,
+    pub ammo_reserve: HashMap<String, u32>,
+    pub active_weapon_slot: u8,
+    pub fire_cooldown_remaining: f32,
+    pub fire_trigger_held: bool,
+    pub reload_remaining: f32,
+    pub reload_duration: f32,
+    pub weapon_swap_remaining: f32,
+    pub weapon_swap_duration: f32,
+    pub weapon_swap_target_slot: Option<u8>,
 }
 
 /// **Client → Server** — transform update od owning klienta pro NPC.
@@ -166,6 +179,11 @@ pub mod player_action {
     pub const SPRINT: u32 = 1 << 5;
     pub const INTERACT: u32 = 1 << 6;
     pub const USE_ITEM: u32 = 1 << 7;
+    pub const ADS: u32 = 1 << 12;
+    pub const WEAPON_SLOT_1: u32 = 1 << 13;
+    pub const WEAPON_SLOT_2: u32 = 1 << 14;
+    pub const WEAPON_SLOT_3: u32 = 1 << 15;
+    pub const WEAPON_SLOT_4: u32 = 1 << 16;
 }
 
 // ---------------------------------------------------------------------------

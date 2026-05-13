@@ -1849,6 +1849,11 @@ fn collect_and_send_input(
     if keys.pressed(bindings.sprint) { actions |= player_action::SPRINT; }
     if keys.pressed(bindings.interact) { actions |= player_action::INTERACT; }
     if keys.pressed(bindings.use_item) { actions |= player_action::USE_ITEM; }
+    if keys.pressed(bindings.aim) { actions |= player_action::ADS; }
+    if keys.pressed(bindings.weapon_1) { actions |= player_action::WEAPON_SLOT_1; }
+    if keys.pressed(bindings.weapon_2) { actions |= player_action::WEAPON_SLOT_2; }
+    if keys.pressed(bindings.weapon_3) { actions |= player_action::WEAPON_SLOT_3; }
+    if keys.pressed(bindings.weapon_4) { actions |= player_action::WEAPON_SLOT_4; }
 
     // Aktuální fyzikální pozice lokálního hráče (z Avian Transform, ne NetTransform)
     let physics_pos = local_client_id.as_ref().and_then(|lid| {

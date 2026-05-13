@@ -8,8 +8,11 @@
 
 use bevy::prelude::*;
 use core_resources::{
-    GameBridges, LocalEventBus, LuaWorldState, NpcLastClientUpdate, NpcOwner, NpcPathWaypoint,
-    NpcPedMarker, ReplicatedNpcSteering, apply_replicated_npc_steering,
+    ActiveWeaponSlot, AmmoRegistry, AmmoReserve, FireState, GameBridges, Inventory, LocalEventBus,
+    LuaWorldState, NpcLastClientUpdate, NpcOwner, NpcPathWaypoint, NpcPedMarker,
+    PlayerEntityMap, PlayerStatsCache, ReloadState, Stats, StatsSnapshot,
+    ReplicatedNpcSteering, WeaponRegistry, WeaponSlots, WeaponSwapState,
+    apply_replicated_npc_steering,
 };
 use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
@@ -24,17 +27,12 @@ pub const PLAYER_CROUCH_MULTIPLIER: f32 = 0.45;
 pub const PLAYER_JUMP_SPEED: f32 = 6.5;
 pub const PLAYER_GRAVITY: f32 = 20.0;
 pub const GROUND_Y: f32 = 0.0;
+const DEFAULT_WEAPON_SWAP_SECS: f32 = 0.25;
+const MIN_WEAPON_ACTION_SECS: f32 = 0.05;
 
 // ---------------------------------------------------------------------------
 // Komponenty
 // ---------------------------------------------------------------------------
-
-/// Cooldown zbrane per hrac.
-#[derive(Component, Debug, Default)]
-pub struct WeaponCooldown {
-    /// Sekundy do dalsho mozneho vystrely. 0 = ready.
-    pub remaining: f32,
-}
 
 // ---------------------------------------------------------------------------
 // WeaponConfig — Bevy Resource (Lua resource mu muze pridat vlastni konfiguraci)
@@ -97,8 +95,11 @@ impl Plugin for ServerSimPlugin {
                 // apply_inputs_to_velocity + integrate_velocity nahrazeny trust_client_position.
                 trust_client_position,
                 emit_player_positions,
-                tick_weapon_cooldowns,
+                tick_fire_states,
+                tick_weapon_swap_states,
+                tick_reload_states,
                 process_combat,
+                sync_player_state_cache,
                 broadcast_player_stats,
             )
                 .chain(),
@@ -146,7 +147,14 @@ fn spawn_player_on_connect(
             NetVelocity::default(),
             PlayerMarker { client_id },
             Health::default(),
-            WeaponCooldown::default(),
+            Stats::default(),
+            Inventory::default(),
+            WeaponSlots::default(),
+            AmmoReserve::default(),
+            ActiveWeaponSlot::default(),
+            FireState::default(),
+            ReloadState::default(),
+            WeaponSwapState::default(),
             Replicate::to_clients(NetworkTarget::All),
             PredictionTarget::to_clients(NetworkTarget::All),
         ))
@@ -234,10 +242,252 @@ fn trust_client_position(
     }
 }
 
-fn tick_weapon_cooldowns(mut q: Query<&mut WeaponCooldown>, time: Res<Time<Fixed>>) {
+fn tick_fire_states(mut q: Query<&mut FireState>, time: Res<Time<Fixed>>) {
     let dt = time.delta_secs();
-    for mut cd in q.iter_mut() {
-        cd.remaining = (cd.remaining - dt).max(0.0);
+    for mut fire_state in q.iter_mut() {
+        fire_state.cooldown_remaining = (fire_state.cooldown_remaining - dt).max(0.0);
+    }
+}
+
+fn tick_weapon_swap_states(
+    mut players: Query<(&mut ActiveWeaponSlot, &mut WeaponSwapState)>,
+    time: Res<Time<Fixed>>,
+) {
+    let dt = time.delta_secs();
+    for (mut active_slot, mut swap_state) in players.iter_mut() {
+        if swap_state.remaining <= 0.0 {
+            continue;
+        }
+
+        swap_state.remaining = (swap_state.remaining - dt).max(0.0);
+        if swap_state.remaining > 0.0 {
+            continue;
+        }
+
+        if swap_state.target_slot < 4 {
+            active_slot.0 = swap_state.target_slot;
+        }
+        *swap_state = WeaponSwapState::default();
+    }
+}
+
+fn tick_reload_states(
+    weapon_registry: Res<WeaponRegistry>,
+    mut players: Query<(&mut WeaponSlots, &mut AmmoReserve, &mut ReloadState)>,
+    time: Res<Time<Fixed>>,
+) {
+    let dt = time.delta_secs();
+    for (mut slots, mut reserve, mut reload_state) in players.iter_mut() {
+        if reload_state.remaining <= 0.0 {
+            continue;
+        }
+
+        reload_state.remaining = (reload_state.remaining - dt).max(0.0);
+        if reload_state.remaining > 0.0 {
+            continue;
+        }
+
+        reload_active_weapon(&weapon_registry, &mut slots, &mut reserve, reload_state.slot);
+        *reload_state = ReloadState::default();
+    }
+}
+
+fn reload_active_weapon(
+    weapon_registry: &WeaponRegistry,
+    slots: &mut WeaponSlots,
+    reserve: &mut AmmoReserve,
+    active_slot: u8,
+) -> u32 {
+    let Some(equipped) = slots.get_mut(active_slot) else {
+        return 0;
+    };
+    let Some(weapon_def) = weapon_registry.get(&equipped.weapon_id) else {
+        return 0;
+    };
+    let mag_capacity = weapon_def.mag_capacity;
+    if mag_capacity == 0 || equipped.ammo_in_mag >= mag_capacity {
+        return 0;
+    }
+
+    let ammo_id = if equipped.ammo_type_id.trim().is_empty() {
+        weapon_def.default_ammo.clone()
+    } else {
+        equipped.ammo_type_id.clone()
+    };
+    if ammo_id.trim().is_empty() {
+        return 0;
+    }
+
+    let reserve_entry = reserve.0.entry(ammo_id.clone()).or_insert(0);
+    let needed = mag_capacity.saturating_sub(equipped.ammo_in_mag);
+    let loaded = (*reserve_entry).min(needed);
+    *reserve_entry = reserve_entry.saturating_sub(loaded);
+    equipped.ammo_in_mag = equipped.ammo_in_mag.saturating_add(loaded);
+    if equipped.ammo_type_id.trim().is_empty() {
+        equipped.ammo_type_id = ammo_id;
+    }
+    loaded
+}
+
+fn requested_weapon_slot(actions: u32) -> Option<u8> {
+    if actions & player_action::WEAPON_SLOT_1 != 0 {
+        Some(0)
+    } else if actions & player_action::WEAPON_SLOT_2 != 0 {
+        Some(1)
+    } else if actions & player_action::WEAPON_SLOT_3 != 0 {
+        Some(2)
+    } else if actions & player_action::WEAPON_SLOT_4 != 0 {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+fn weapon_swap_duration(
+    weapon_registry: &WeaponRegistry,
+    slots: &WeaponSlots,
+    active_slot: u8,
+    target_slot: u8,
+) -> f32 {
+    let duration = slots
+        .get(target_slot)
+        .and_then(|weapon| weapon_registry.get(&weapon.weapon_id))
+        .map(|weapon| weapon.ads_time_sec)
+        .filter(|duration| *duration > 0.0)
+        .or_else(|| {
+            slots.get(active_slot)
+                .and_then(|weapon| weapon_registry.get(&weapon.weapon_id))
+                .map(|weapon| weapon.ads_time_sec)
+                .filter(|duration| *duration > 0.0)
+        })
+        .unwrap_or(DEFAULT_WEAPON_SWAP_SECS);
+    duration.max(MIN_WEAPON_ACTION_SECS)
+}
+
+fn reload_duration_for_slot(
+    weapon_registry: &WeaponRegistry,
+    slots: &WeaponSlots,
+    reserve: &AmmoReserve,
+    active_slot: u8,
+) -> Option<f32> {
+    let equipped = slots.get(active_slot)?;
+    let weapon_def = weapon_registry.get(&equipped.weapon_id)?;
+    let mag_capacity = weapon_def.mag_capacity;
+    if mag_capacity == 0 || equipped.ammo_in_mag >= mag_capacity {
+        return None;
+    }
+
+    let ammo_id = if equipped.ammo_type_id.trim().is_empty() {
+        weapon_def.default_ammo.clone()
+    } else {
+        equipped.ammo_type_id.clone()
+    };
+    if ammo_id.trim().is_empty() {
+        return None;
+    }
+
+    if reserve.0.get(&ammo_id).copied().unwrap_or(0) == 0 {
+        return None;
+    }
+
+    let duration = if equipped.ammo_in_mag == 0 {
+        weapon_def.reload_empty_sec
+    } else {
+        weapon_def.reload_tactical_sec
+    };
+
+    Some(duration.max(MIN_WEAPON_ACTION_SECS))
+}
+
+fn is_reload_active(reload_state: &ReloadState) -> bool {
+    reload_state.remaining > 0.0
+}
+
+fn is_weapon_swap_active(weapon_swap: &WeaponSwapState) -> bool {
+    weapon_swap.remaining > 0.0
+}
+
+struct EffectiveCombatWeaponConfig {
+    weapon_id: String,
+    fire_rate: f32,
+    damage: f32,
+    range: f32,
+    cone_angle: f32,
+    weapon_type: WeaponType,
+}
+
+fn resolve_combat_weapon_config(
+    weapon_registry: &WeaponRegistry,
+    ammo_registry: &AmmoRegistry,
+    fallback: &WeaponConfig,
+    equipped_weapon: Option<&core_resources::EquippedWeapon>,
+) -> EffectiveCombatWeaponConfig {
+    let weapon_def = equipped_weapon
+        .and_then(|weapon| weapon_registry.get(&weapon.weapon_id))
+        .or_else(|| weapon_registry.resolve_default());
+
+    let Some(weapon_def) = weapon_def else {
+        return EffectiveCombatWeaponConfig {
+            weapon_id: "default".to_string(),
+            fire_rate: fallback.fire_rate,
+            damage: fallback.damage,
+            range: fallback.range,
+            cone_angle: fallback.cone_angle,
+            weapon_type: fallback.weapon_type.clone(),
+        };
+    };
+
+    let fire_rate = if weapon_def.rpm > 0.0 {
+        (weapon_def.rpm / 60.0).max(0.01)
+    } else {
+        fallback.fire_rate
+    };
+
+    let ammo_id = equipped_weapon
+        .and_then(|weapon| {
+            let ammo_id = weapon.ammo_type_id.trim();
+            if ammo_id.is_empty() {
+                None
+            } else {
+                Some(ammo_id.to_string())
+            }
+        })
+        .filter(|ammo_id| !ammo_id.is_empty())
+        .or_else(|| {
+            if weapon_def.default_ammo.trim().is_empty() {
+                None
+            } else {
+                Some(weapon_def.default_ammo.clone())
+            }
+        });
+
+    let damage = if let Some(ammo_id) = ammo_id {
+        ammo_registry
+            .get(&ammo_id)
+            .map(|ammo| ammo.base_damage)
+            .filter(|value| *value > 0.0)
+            .unwrap_or(fallback.damage)
+    } else {
+        fallback.damage
+    };
+
+    let weapon_type = match weapon_def.category.trim().to_ascii_lowercase().as_str() {
+        "melee" => WeaponType::Melee,
+        _ => WeaponType::Ranged,
+    };
+
+    let range = match weapon_type {
+        WeaponType::Melee => 3.0,
+        WeaponType::Ranged => fallback.range,
+    };
+
+    EffectiveCombatWeaponConfig {
+        weapon_id: weapon_def.id,
+        fire_rate,
+        damage,
+        range,
+        cone_angle: fallback.cone_angle,
+        weapon_type,
     }
 }
 
@@ -247,7 +497,7 @@ fn tick_weapon_cooldowns(mut q: Query<&mut WeaponCooldown>, time: Res<Time<Fixed
 
 /// Server-side combat systemy:
 /// 1. Nacte nejnovejsi input kazdeho klienta.
-/// 2. Zkontroluje PRIMARY_FIRE bitflag a WeaponCooldown.
+/// 2. Zkontroluje PRIMARY_FIRE bitflag a FireState.
 /// 3. Proximity + angle check vuci ostatnim hracum.
 /// 4. Aplikuje damage, emituje Lua eventy onPlayerHit / onPlayerDeath.
 fn process_combat(
@@ -255,48 +505,114 @@ fn process_combat(
     // apply_inputs_to_velocity. Musime mit vlastni kopii nebo drat last input.
     // Reseni: pouzijeme LastInput resource naplnenou v apply_inputs_to_velocity.
     last_inputs: Res<LastPlayerInputs>,
+    weapon_registry: Res<WeaponRegistry>,
+    ammo_registry: Res<AmmoRegistry>,
     weapon_cfg: Res<WeaponConfig>,
     mut players: Query<(
         Entity,
         &PlayerMarker,
         &NetTransform,
         &mut Health,
-        &mut WeaponCooldown,
+        &mut WeaponSlots,
+        &mut AmmoReserve,
+        &mut ActiveWeaponSlot,
+        &mut FireState,
+        &mut ReloadState,
+        &mut WeaponSwapState,
     )>,
     local_bus: Res<LocalEventBus>,
 ) {
-    let fire_interval = if weapon_cfg.fire_rate > 0.0 {
-        1.0 / weapon_cfg.fire_rate
-    } else {
-        f32::MAX
-    };
-
     // Sbir potencialnich strelcu
     struct Attacker {
         entity: Entity,
         client_id: u64,
         pos: Vec3,
         look_yaw: f32,
+        weapon: EffectiveCombatWeaponConfig,
     }
 
     let mut attackers: Vec<Attacker> = Vec::new();
 
     // Iterujeme hrace a zjistime, kteri chtejí strilet (na zaklade LastPlayerInputs)
     {
-        for (entity, marker, transform, _health, mut cooldown) in players.iter_mut() {
+        for (entity, marker, transform, _health, mut slots, reserve, active_slot, mut fire_state, mut reload_state, mut weapon_swap) in players.iter_mut() {
             let Some(input) = last_inputs.get(marker.client_id) else { continue };
+            fire_state.trigger_held = input.actions & player_action::PRIMARY_FIRE != 0;
+
+            if let Some(slot) = requested_weapon_slot(input.actions) {
+                if slot < 4 && slot != active_slot.0 {
+                    *fire_state = FireState::default();
+                    if is_reload_active(&reload_state) {
+                        *reload_state = ReloadState::default();
+                    }
+                    if !is_weapon_swap_active(&weapon_swap) || weapon_swap.target_slot != slot {
+                        let duration = weapon_swap_duration(&weapon_registry, &slots, active_slot.0, slot);
+                        *weapon_swap = WeaponSwapState {
+                            remaining: duration,
+                            duration,
+                            target_slot: slot,
+                        };
+                    }
+                }
+            }
+
+            let active_slot_value = active_slot.0;
+
+            if input.actions & player_action::RELOAD != 0
+                && !is_weapon_swap_active(&weapon_swap)
+                && !is_reload_active(&reload_state)
+            {
+                *fire_state = FireState::default();
+                if let Some(duration) = reload_duration_for_slot(&weapon_registry, &slots, &reserve, active_slot_value) {
+                    *reload_state = ReloadState {
+                        remaining: duration,
+                        duration,
+                        slot: active_slot_value,
+                    };
+                }
+            }
+
+            if is_weapon_swap_active(&weapon_swap) || is_reload_active(&reload_state) {
+                continue;
+            }
+
             if input.actions & player_action::PRIMARY_FIRE == 0 {
                 continue;
             }
-            if cooldown.remaining > 0.0 {
+
+            let equipped_snapshot = slots.get(active_slot_value).cloned();
+            let effective_weapon = resolve_combat_weapon_config(
+                &weapon_registry,
+                &ammo_registry,
+                &weapon_cfg,
+                equipped_snapshot.as_ref(),
+            );
+
+            let fire_interval = if effective_weapon.fire_rate > 0.0 {
+                1.0 / effective_weapon.fire_rate
+            } else {
+                f32::MAX
+            };
+            fire_state.shot_interval = fire_interval;
+
+            if fire_state.cooldown_remaining > 0.0 {
                 continue;
             }
-            cooldown.remaining = fire_interval;
+
+            if let Some(equipped) = slots.get_mut(active_slot_value) {
+                if equipped.ammo_in_mag == 0 {
+                    continue;
+                }
+                equipped.ammo_in_mag = equipped.ammo_in_mag.saturating_sub(1);
+            }
+
+            fire_state.cooldown_remaining = fire_interval;
             attackers.push(Attacker {
                 entity,
                 client_id: marker.client_id,
                 pos: transform.translation,
                 look_yaw: input.look[0],
+                weapon: effective_weapon,
             });
         }
     }
@@ -305,19 +621,17 @@ fn process_combat(
         return;
     }
 
-    // Pro kazdého strelce najdeme zasazeného hrace
-    let range_sq = weapon_cfg.range * weapon_cfg.range;
-    let half_cone = weapon_cfg.cone_angle.to_radians();
-
     // Snap shot pozic vsech hracu
     let targets: Vec<(Entity, u64, Vec3, f32)> = players
         .iter()
-        .map(|(e, m, t, h, _)| (e, m.client_id, t.translation, h.current))
+        .map(|(e, m, t, h, _, _, _, _, _, _)| (e, m.client_id, t.translation, h.current))
         .collect();
 
-    let damage = weapon_cfg.damage;
-
     for attacker in &attackers {
+        let range_sq = attacker.weapon.range * attacker.weapon.range;
+        let half_cone = attacker.weapon.cone_angle.to_radians();
+        let damage = attacker.weapon.damage;
+
         for &(target_entity, target_cid, target_pos, _target_hp) in &targets {
             if target_entity == attacker.entity {
                 continue; // nelze trefeni sám sebe
@@ -341,14 +655,16 @@ fn process_combat(
                 look_dir
             };
 
-            let dot = look_dir.dot(to_target).clamp(-1.0, 1.0);
-            let angle = dot.acos();
-            if angle > half_cone {
-                continue;
+            if matches!(attacker.weapon.weapon_type, WeaponType::Ranged) {
+                let dot = look_dir.dot(to_target).clamp(-1.0, 1.0);
+                let angle = dot.acos();
+                if angle > half_cone {
+                    continue;
+                }
             }
 
             // Zasah!
-            if let Ok((_, _, _, mut health, _)) = players.get_mut(target_entity) {
+            if let Ok((_, _, _, mut health, _, _, _, _, _, _)) = players.get_mut(target_entity) {
                 health.current -= damage;
                 let died = health.current <= 0.0;
                 if died {
@@ -360,7 +676,7 @@ fn process_combat(
                     "attacker": attacker.client_id.to_string(),
                     "victim": target_cid.to_string(),
                     "damage": damage,
-                    "weapon": "default",
+                    "weapon": attacker.weapon.weapon_id,
                     "position": { "x": hit_pos.x, "y": hit_pos.y, "z": hit_pos.z }
                 }))
                 .unwrap_or_default();
@@ -557,7 +873,16 @@ pub fn receive_npc_transform_updates(
 // ---------------------------------------------------------------------------
 
 fn broadcast_player_stats(
-    players: Query<(&PlayerMarker, &Health)>,
+    players: Query<(
+        &PlayerMarker,
+        &Health,
+        Option<&WeaponSlots>,
+        Option<&AmmoReserve>,
+        Option<&ActiveWeaponSlot>,
+        Option<&FireState>,
+        Option<&ReloadState>,
+        Option<&WeaponSwapState>,
+    )>,
     mut senders: Query<(&mut MessageSender<PlayerStatsUpdate>, &RemoteId)>,
     mut tick: Local<u32>,
 ) {
@@ -572,12 +897,81 @@ fn broadcast_player_stats(
             _ => continue,
         };
         // Najdi entitu hráče patřící tomuto klientovi
-        if let Some((_, health)) = players.iter().find(|(m, _)| m.client_id == client_id) {
+        if let Some((_, health, weapon_slots, ammo_reserve, active_slot, fire_state, reload_state, weapon_swap)) =
+            players.iter().find(|(m, _, _, _, _, _, _, _)| m.client_id == client_id)
+        {
             let msg = PlayerStatsUpdate {
                 hp: health.current,
                 max_hp: health.max,
+                weapon_slots: weapon_slots
+                    .map(|value| value.0.iter().cloned().collect())
+                    .unwrap_or_else(|| vec![None, None, None, None]),
+                ammo_reserve: ammo_reserve.map(|value| value.0.clone()).unwrap_or_default(),
+                active_weapon_slot: active_slot.map(|value| value.0).unwrap_or(0),
+                fire_cooldown_remaining: fire_state.map(|value| value.cooldown_remaining).unwrap_or(0.0),
+                fire_trigger_held: fire_state.map(|value| value.trigger_held).unwrap_or(false),
+                reload_remaining: reload_state.map(|value| value.remaining).unwrap_or(0.0),
+                reload_duration: reload_state.map(|value| value.duration).unwrap_or(0.0),
+                weapon_swap_remaining: weapon_swap.map(|value| value.remaining).unwrap_or(0.0),
+                weapon_swap_duration: weapon_swap.map(|value| value.duration).unwrap_or(0.0),
+                weapon_swap_target_slot: weapon_swap
+                    .map(|value| if value.remaining > 0.0 { Some(value.target_slot) } else { None })
+                    .unwrap_or(None),
             };
             sender.send::<StatsChannel>(msg);
         }
     }
+}
+
+fn sync_player_state_cache(
+    players: Query<
+        (
+            Entity,
+            &PlayerMarker,
+            &Health,
+            Option<&Stats>,
+            Option<&Inventory>,
+            Option<&WeaponSlots>,
+            Option<&AmmoReserve>,
+            Option<&ActiveWeaponSlot>,
+            Option<&FireState>,
+            Option<&ReloadState>,
+            Option<&WeaponSwapState>,
+        ),
+    >,
+    mut player_map: ResMut<PlayerEntityMap>,
+    stats_cache: Res<PlayerStatsCache>,
+) {
+    let mut seen = std::collections::HashSet::new();
+
+    for (entity, marker, health, stats, inventory, weapon_slots, ammo_reserve, active_slot, fire_state, reload_state, weapon_swap) in &players {
+        seen.insert(marker.client_id);
+        player_map.map.insert(marker.client_id, entity);
+        stats_cache.update(
+            marker.client_id,
+            StatsSnapshot {
+                stats: stats.map(|value| value.0.clone()).unwrap_or_default(),
+                inventory: inventory.map(|value| value.0.clone()).unwrap_or_default(),
+                health: health.current,
+                max_health: health.max,
+                weapon_slots: weapon_slots
+                    .map(|value| value.0.iter().cloned().collect())
+                    .unwrap_or_else(|| vec![None, None, None, None]),
+                ammo_reserve: ammo_reserve.map(|value| value.0.clone()).unwrap_or_default(),
+                active_weapon_slot: active_slot.map(|value| value.0).unwrap_or(0),
+                fire_cooldown_remaining: fire_state.map(|value| value.cooldown_remaining).unwrap_or(0.0),
+                fire_trigger_held: fire_state.map(|value| value.trigger_held).unwrap_or(false),
+                reload_remaining: reload_state.map(|value| value.remaining).unwrap_or(0.0),
+                reload_duration: reload_state.map(|value| value.duration).unwrap_or(0.0),
+                weapon_swap_remaining: weapon_swap.map(|value| value.remaining).unwrap_or(0.0),
+                weapon_swap_duration: weapon_swap.map(|value| value.duration).unwrap_or(0.0),
+                weapon_swap_target_slot: weapon_swap
+                    .map(|value| if value.remaining > 0.0 { Some(value.target_slot) } else { None })
+                    .unwrap_or(None),
+            },
+        );
+    }
+
+    player_map.map.retain(|client_id, _| seen.contains(client_id));
+    stats_cache.retain_ids(&seen);
 }

@@ -72,6 +72,13 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
+- [X] **2026-05-13 (Example HUD Weapon State Panel)**: `resources/example/hud/` teď kromě health baru a FPS zobrazuje i lokální weapon snapshot z `Player.GetLocalStats()`: aktivní slot, `weapon_id`, `ammo_in_mag`, reserve ammo a pending `fire/reload/weapon_swap` časy. To dává okamžitý client-side debug panel pro nový server weapon state bez nutnosti psát ad hoc test resource nebo sahat do Rust UI.
+- [X] **2026-05-13 (Client Local Weapon State Snapshot)**: `PlayerStatsUpdate` už neposílá jen `hp/max_hp`, ale i lokální weapon snapshot (`weapon_slots`, `ammo_reserve`, `active_weapon_slot`, `fire/reload/swap` timing pole). `core_net::broadcast_player_stats()` ho skládá z autoritativních serverových komponent, `core_net::lua_rpc::receive_player_stats()` ho zapisuje do `LocalPlayerStats` jako plný `StatsSnapshot`, a klientské Lua `Player.GetLocalStats()` teď vrací nejen HP, ale i aktivní slot, zásobníky, reserve ammo a pending fire/reload/swap stav pro HUD/debug resources.
+- [X] **2026-05-13 (Shared Fire State Foundation)**: Server weapon flow už nepoužívá izolovaný `WeaponCooldown` mimo zbytek player weapon state. Přidán sdílený ECS komponent `FireState { cooldown_remaining, shot_interval, trigger_held }` do `core_resources`, serverový spawn ho zakládá vedle `ReloadState`/`WeaponSwapState`, `core_net::process_combat()` ho používá jako jediný zdroj pravdy pro gating střelby a `sync_player_state_cache()` teď publikuje i `fire_cooldown_remaining` + `fire_trigger_held` do `StatsSnapshot`. Tím je reload/swap/fire konečně na jedné společné state vrstvě místo mixu shared komponent a lokálního server-only cooldown hacku.
+- [X] **2026-05-13 (Timed Reload + Weapon Swap States)**: Weapon flow už není čistě instantní. Přidány ECS komponenty `ReloadState` a `WeaponSwapState` na server player entity, nové fixed-step systémy `tick_reload_states()` a `tick_weapon_swap_states()`, a `core_net::process_combat()` teď při `RELOAD` nebo `WEAPON_SLOT_1..4` pouze zahajuje pending akci místo přímé mutace munice/aktivního slotu. Reload completion používá `WeaponDef.reload_empty_sec` / `reload_tactical_sec`, slot swap má krátké serverové zpoždění odvozené z weapon timings a pending reload se při slot switch requestu ruší.
+- [X] **2026-05-13 (Weapon Slot Input Wiring + ADS Bit)**: `PlayerInput.actions` teď skutečně nese i `ADS` a `WEAPON_SLOT_1..4` bity. `host_client::gameplay` je serializuje z existujících bindů `aim` a `weapon_1..weapon_4`, `core_net::protocol::player_action` je má definované na bitech 12 a 13–16 a server `process_combat()` při přijetí inputu okamžitě přepíná `ActiveWeaponSlot` hráče ještě před reload/fire logikou. Tím už weapon state nejde měnit jen přes Lua API, ale i přímo standardním klientským input flow.
+- [X] **2026-05-13 (Per-Player Weapon State Foundation)**: Server hráči teď dostávají skutečný weapon state místo čistě implicitního combat defaultu. Přidány ECS komponenty `WeaponSlots` (4 sloty), `EquippedWeapon`, `AmmoReserve` a `ActiveWeaponSlot`, jejich synchronizace do `PlayerStatsCache`/`PlayerEntityMap`, a server-side Lua API `Weapon.GetEquipped/SetEquipped`, `Weapon.GetAmmoReserve/SetAmmoReserve`, `Weapon.GetActiveSlot/SetActiveSlot`, `Weapon.ForceReload`. `core_net::process_combat()` už při střelbě používá aktivní slot konkrétního hráče, odečítá `ammo_in_mag`, respektuje `RELOAD` bit pro okamžité přebití z rezervy a fallbackuje na registry default jen pokud hráč zatím nemá vybavenou žádnou zbraň.
+- [X] **2026-05-13 (Combat Reads Default Weapon Registry Entry)**: `core_net::process_combat()` už nepoužívá jen slepý globální `WeaponConfig`. Server combat si nově bere výchozí zbraň z `WeaponRegistry` (`id="default"` nebo jediná registrovaná položka), z ní počítá `fire_rate` z `rpm`, přebírá `weapon_type` z `category` a damage z navázaného `AmmoRegistry` `default_ammo.base_damage`. Event payload `onPlayerHit` teď navíc nese skutečné `weapon` ID z registru. `WeaponConfig` zatím zůstává jako fallback pro legacy/simple combat pole, která nová registry foundation ještě autoritativně neřídí (`range`, `cone_angle` a fallback damage/rate při neúplné definici).
 - [X] **2026-05-13 (Weapon/Ammo Registry Foundation)**: `core_resources` teď obsahuje typed runtime registry pro `WeaponDef`, `AmmoDef`, `AttachmentDef` a `MaterialDef` místo původního jediného `core_net::WeaponConfig` defaultu. Přidány Bevy resources `WeaponRegistry`, `AmmoRegistry`, `AttachmentRegistry`, `MaterialRegistry`, nový modul `core_resources/src/weapons.rs` a Lua API `Weapon.Register/Get`, `Ammo.Register/Get`, `Attachment.Register/Get`, `Material.Register/Get`, takže resources už mohou definovat zbraňová data v runtime bez rebuildu Rustu. Zatím jde o lokální registry foundation; navazující balistika, equip state a síťová/gameplay integrace zůstávají v dalších bodech roadmapy.
 - [X] **2026-05-13 (Additional Per-Entity Shader Profiles)**: `standard_pbr` per-entitní shader profile branch už neumí jen `debug_stripes`, ale i `hologram`, `heat` a `dissolve`. `resources/example/shader_override_test/` teď na lokálním hráči přes `F8` cykluje mezi čtyřmi profily, takže je možné rychle ověřit několik odlišných shader efektů nad jednou konkrétní entitou bez globálního přepnutí celé materiálové šablony.
 - [X] **2026-05-13 (Per-Entity Drawable Shader Profile Override)**: Drawable materiály teď umí i per-entitní shader profile přes existující `LuaMaterialOverride` pipeline místo globálního template switchu. Nové Lua API `World.SetEntityShaderProfile(handle, profile)` / `World.ClearEntityShaderProfile(handle)` zapisuje profile na konkrétní root handle; `core_drawable::hook::apply_material_overrides()` ho promítne do `DrawableParams.profile.x` jen pro danou entitu a `standard_pbr` shader zatím interpretuje `debug_stripes` profile jako výrazný cyan/orange stripe vzhled. To umožňuje nasadit shader efekt na konkrétní entitu ve hře bez přepnutí celé materiálové šablony.
@@ -319,7 +326,7 @@ Implementováno: `DrawableCollision` → Avian `Collider` pipeline, axis-lock fl
 - [X] `WeaponDef`, `AmmoDef`, `AttachmentDef`, `MaterialDef` structs
 - [X] `WeaponRegistry`, `AmmoRegistry`, `AttachmentRegistry`, `MaterialRegistry` Bevy Resources
 - [X] Lua API: `Weapon.Register/Get`, `Ammo.Register/Get`, `Attachment.Register/Get`, `Material.Register/Get`
-- [ ] Integrace registrů do combat/equip/ballistics pipeline místo starého globálního `WeaponConfig`
+- [ ] Dokončit integraci registrů do equip/ballistics pipeline; simple server combat už čte default z `WeaponRegistry`, ale `range`/`cone_angle` a per-player weapon selection stále fallbackují na starý `WeaponConfig`
 
 **WeaponDef schéma:**
 
@@ -408,13 +415,13 @@ Hitbox.Register('player_default', {
 
 ---
 
-#### 5.4 — Weapon State [ ]
+#### 5.4 — Weapon State [🟡 FOUNDATION READY]
 
-- [ ] `WeaponSlots` (4 sloty), `EquippedWeapon {weapon_id, ammo_in_mag, ammo_type_id, attachments}`, `AmmoReserve`, `ActiveSlot`
-- [ ] `ReloadState` FSM (`Idle|Reloading{elapsed,duration,type}`), `FireState` (`Ready|Firing|Cooling`), `WeaponSwapState`
-- [ ] `reload_system`, `fire_system` (FixedUpdate)
-- [ ] Nové `PlayerInput` bity: `RELOAD` (2), `ADS` (12), `WEAPON_SLOT_1..4` (13–16)
-- [ ] Lua: `Weapon.GetEquipped/SetEquipped/GetAmmoReserve/SetAmmoReserve/GetActiveSlot/ForceReload`
+- [X] `WeaponSlots` (4 sloty), `EquippedWeapon {weapon_id, ammo_in_mag, ammo_type_id, attachments}`, `AmmoReserve`, `ActiveSlot`
+- [X] `ReloadState`, `WeaponSwapState` a `FireState` foundation (`remaining`, `duration`, pending slot, fire cooldown/trigger`) pro server player entities
+- [ ] Plně časovaný `reload_system`, `fire_system` (FixedUpdate); reload a slot swap už běží přes timed server states a střelba už přešla na `FireState`, ale stále chybí bohatší `FireState` FSM (`Ready|Burst|Cooling`) a weapon-specific modes/hold semantics
+- [X] Nové `PlayerInput` bity: `RELOAD` (2), `ADS` (12), `WEAPON_SLOT_1..4` (13–16)
+- [X] Lua: `Weapon.GetEquipped/SetEquipped/GetAmmoReserve/SetAmmoReserve/GetActiveSlot/SetActiveSlot/ForceReload`
 
 ---
 
@@ -486,7 +493,7 @@ Hitbox.Register('player_default', {
 | ------------------------------------------------------- | ----------- | ----------------------------------------------- |
 | `Weapon.Register/Get`                                 | both        | Runtime WeaponDef registry na aktuální straně   |
 | `Weapon.GetEquipped/SetEquipped`                      | server      | Equipment hráče                               |
-| `Weapon.GetAmmoReserve/SetAmmoReserve/ForceReload`    | server      | Munice                                          |
+| `Weapon.GetAmmoReserve/SetAmmoReserve/GetActiveSlot/SetActiveSlot/ForceReload` | server | Munice + aktivní weapon slot |
 | `Ammo/Attachment/Material.Register/Get`               | both        | Runtime Ammo/Attachment/Material registry       |
 | `Hitbox.Register(model,def)`                          | server      | Hitbox definition                               |
 | `Player.GetArmor/SetArmor`                            | server      | Brnění                                        |

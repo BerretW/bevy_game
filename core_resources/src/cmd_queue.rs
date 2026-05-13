@@ -14,7 +14,7 @@ pub struct PedProfileOverride(pub String);
 // * `PlayerStatsCache` — Arc<Mutex> snapshot pro synchronní Lua čtení.
 // * `LuaCommand::SetStat`, `GiveItem`, `TakeItem` — mutace přes frontu.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,7 @@ use crate::npc_brain::{
 use crate::plugin::ResourcesSide;
 use crate::model_registry::AnimSetCommandQueue;
 use crate::types::Side;
+use crate::weapons::WeaponRegistry;
 
 // ---------------------------------------------------------------------------
 // LuaCommand — záměry, které Lua enqueuje přes World.* API
@@ -283,6 +284,27 @@ pub enum LuaCommand {
         player_id: u64,
         item: String,
         count: i32,
+    },
+    /// Phase 5 — nastaví nebo vymaže equipped weapon v daném slotu hráče.
+    SetEquippedWeapon {
+        player_id: u64,
+        slot: u8,
+        equipped: Option<EquippedWeapon>,
+    },
+    /// Phase 5 — nastaví rezervu munice pro konkrétní ammo typ.
+    SetAmmoReserve {
+        player_id: u64,
+        ammo_type_id: String,
+        count: u32,
+    },
+    /// Phase 5 — přepne aktivní weapon slot hráče.
+    SetActiveWeaponSlot {
+        player_id: u64,
+        slot: u8,
+    },
+    /// Phase 5 — vynutí přebití aktivní zbraně z ammo reserve.
+    ForceReload {
+        player_id: u64,
     },
     /// Phase 5 — zapne nebo vypne kolizi entity a jejích potomků.
     /// Fyzikální backend reaguje přes `CollisionEnabled` komponent.
@@ -2067,6 +2089,68 @@ pub struct Stats(pub HashMap<String, f64>);
 #[derive(Component, Debug, Clone, Default)]
 pub struct Inventory(pub HashMap<String, u32>);
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EquippedWeapon {
+    pub weapon_id: String,
+    pub ammo_in_mag: u32,
+    pub ammo_type_id: String,
+    pub attachments: Vec<String>,
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct WeaponSlots(pub [Option<EquippedWeapon>; 4]);
+
+impl Default for WeaponSlots {
+    fn default() -> Self {
+        Self([None, None, None, None])
+    }
+}
+
+impl WeaponSlots {
+    pub fn get(&self, slot: u8) -> Option<&EquippedWeapon> {
+        self.0.get(slot as usize).and_then(|entry| entry.as_ref())
+    }
+
+    pub fn get_mut(&mut self, slot: u8) -> Option<&mut EquippedWeapon> {
+        self.0.get_mut(slot as usize).and_then(|entry| entry.as_mut())
+    }
+
+    pub fn set(&mut self, slot: u8, equipped: Option<EquippedWeapon>) -> bool {
+        let Some(dst) = self.0.get_mut(slot as usize) else {
+            return false;
+        };
+        *dst = equipped;
+        true
+    }
+}
+
+#[derive(Component, Debug, Clone, Default)]
+pub struct AmmoReserve(pub HashMap<String, u32>);
+
+#[derive(Component, Debug, Clone, Default)]
+pub struct ActiveWeaponSlot(pub u8);
+
+#[derive(Component, Debug, Clone, Default)]
+pub struct FireState {
+    pub cooldown_remaining: f32,
+    pub shot_interval: f32,
+    pub trigger_held: bool,
+}
+
+#[derive(Component, Debug, Clone, Default)]
+pub struct ReloadState {
+    pub remaining: f32,
+    pub duration: f32,
+    pub slot: u8,
+}
+
+#[derive(Component, Debug, Clone, Default)]
+pub struct WeaponSwapState {
+    pub remaining: f32,
+    pub duration: f32,
+    pub target_slot: u8,
+}
+
 /// Snapshot stavu hráče — synchronizovaný každý FixedUpdate tick
 /// systémem `sync_stats_cache` v `core_net/sim.rs`.
 /// Lua sandbox ho čte synchronně (bez latence).
@@ -2076,6 +2160,16 @@ pub struct StatsSnapshot {
     pub inventory: HashMap<String, u32>,
     pub health: f32,
     pub max_health: f32,
+    pub weapon_slots: Vec<Option<EquippedWeapon>>,
+    pub ammo_reserve: HashMap<String, u32>,
+    pub active_weapon_slot: u8,
+    pub fire_cooldown_remaining: f32,
+    pub fire_trigger_held: bool,
+    pub reload_remaining: f32,
+    pub reload_duration: f32,
+    pub weapon_swap_remaining: f32,
+    pub weapon_swap_duration: f32,
+    pub weapon_swap_target_slot: Option<u8>,
 }
 
 /// Sdílená cache: client_id → StatsSnapshot. Arc<Mutex> umožňuje
@@ -2105,6 +2199,13 @@ impl PlayerStatsCache {
             .get(&client_id)
             .cloned()
     }
+
+    pub fn retain_ids(&self, keep: &HashSet<u64>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|client_id, _| keep.contains(client_id));
+    }
 }
 
 /// Mapa client_id → Entity. Udržovaná observery v `core_net/sim.rs`
@@ -2115,16 +2216,21 @@ pub struct PlayerEntityMap {
     pub map: HashMap<u64, Entity>,
 }
 
+#[derive(SystemParam)]
+pub struct PlayerRuntimeState<'w> {
+    player_map: Res<'w, PlayerEntityMap>,
+    weapon_registry: Res<'w, WeaponRegistry>,
+}
+
 /// Stats lokálního hráče na klientu — aktualizovány serverem přes `PlayerStatsUpdate`.
 /// Arc<Mutex> sdíleno se sandbox closurami pro synchronní čtení z `Player.GetLocalStats()`.
 #[derive(Resource, Clone, Default)]
 pub struct LocalPlayerStats(pub Arc<Mutex<StatsSnapshot>>);
 
 impl LocalPlayerStats {
-    pub fn update_health(&self, hp: f32, max_hp: f32) {
+    pub fn update_snapshot(&self, snapshot: StatsSnapshot) {
         let mut snap = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        snap.health = hp;
-        snap.max_health = max_hp;
+        *snap = snapshot;
     }
 
     pub fn get(&self) -> StatsSnapshot {
@@ -2142,7 +2248,7 @@ pub fn process_lua_commands(
     cmd_queue: Res<CommandQueue>,
     mut world_state: ResMut<LuaWorldState>,
     mut npc_registries: NpcRuntimeRegistries,
-    player_map: Res<PlayerEntityMap>,
+    player_runtime: PlayerRuntimeState,
     npc_brain_states: Query<&NpcBrainState>,
     npc_replicated_brains: Query<&ReplicatedNpcBrain>,
     mut commands: Commands,
@@ -2152,7 +2258,17 @@ pub fn process_lua_commands(
     socket_maps: Query<&AdsSocketMap>,
     anim_set_cmds: Res<AnimSetCommandQueue>,
     mut attached_anim_sets: Query<&mut AttachedAnimSets>,
-    mut player_stats: Query<(&PlayerMarker, &mut Stats, &mut Inventory)>,
+    mut player_stats: Query<(
+        &PlayerMarker,
+        &mut Stats,
+        &mut Inventory,
+        &mut WeaponSlots,
+        &mut AmmoReserve,
+        &mut ActiveWeaponSlot,
+        &mut FireState,
+        &mut ReloadState,
+        &mut WeaponSwapState,
+    )>,
     mut mat_overrides: Query<&mut LuaMaterialOverride>,
     mut npc_agents: Query<&mut NpcAgent>,
 ) {
@@ -3064,8 +3180,8 @@ pub fn process_lua_commands(
             }
 
             LuaCommand::SetStat { player_id, name, value } => {
-                if let Some(&entity) = player_map.map.get(&player_id) {
-                    if let Ok((_, mut stats, _)) = player_stats.get_mut(entity) {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, mut stats, _, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
                         stats.0.insert(name.clone(), value);
                         debug!("[cmd_queue] SetStat player={} {}={}", player_id, name, value);
                     } else {
@@ -3077,8 +3193,8 @@ pub fn process_lua_commands(
             }
 
             LuaCommand::GiveItem { player_id, item, count } => {
-                if let Some(&entity) = player_map.map.get(&player_id) {
-                    if let Ok((_, _, mut inv)) = player_stats.get_mut(entity) {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, _, mut inv, _, _, _, _, _, _)) = player_stats.get_mut(entity) {
                         let entry = inv.0.entry(item.clone()).or_insert(0);
                         if count >= 0 {
                             *entry = entry.saturating_add(count as u32);
@@ -3095,6 +3211,117 @@ pub fn process_lua_commands(
                     }
                 } else {
                     warn!("[cmd_queue] GiveItem: unknown player_id {}", player_id);
+                }
+            }
+
+            LuaCommand::SetEquippedWeapon {
+                player_id,
+                slot,
+                equipped,
+            } => {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, _, _, mut slots, _, _, _, _, _)) = player_stats.get_mut(entity) {
+                        if slots.set(slot, equipped.clone()) {
+                            debug!(
+                                "[cmd_queue] SetEquippedWeapon player={} slot={} weapon={:?}",
+                                player_id,
+                                slot,
+                                equipped.as_ref().map(|value| value.weapon_id.as_str())
+                            );
+                        } else {
+                            warn!("[cmd_queue] SetEquippedWeapon: invalid slot {}", slot);
+                        }
+                    } else {
+                        warn!("[cmd_queue] SetEquippedWeapon: player {} missing WeaponSlots", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] SetEquippedWeapon: unknown player_id {}", player_id);
+                }
+            }
+
+            LuaCommand::SetAmmoReserve {
+                player_id,
+                ammo_type_id,
+                count,
+            } => {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, _, _, _, mut reserve, _, _, _, _)) = player_stats.get_mut(entity) {
+                        reserve.0.insert(ammo_type_id.clone(), count);
+                        debug!(
+                            "[cmd_queue] SetAmmoReserve player={} ammo={} count={}",
+                            player_id,
+                            ammo_type_id,
+                            count
+                        );
+                    } else {
+                        warn!("[cmd_queue] SetAmmoReserve: player {} missing AmmoReserve", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] SetAmmoReserve: unknown player_id {}", player_id);
+                }
+            }
+
+            LuaCommand::SetActiveWeaponSlot { player_id, slot } => {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, _, _, _, _, mut active_slot, mut fire_state, mut reload_state, mut weapon_swap)) = player_stats.get_mut(entity) {
+                        if slot < 4 {
+                            active_slot.0 = slot;
+                            *fire_state = FireState::default();
+                            *reload_state = ReloadState::default();
+                            *weapon_swap = WeaponSwapState::default();
+                            debug!("[cmd_queue] SetActiveWeaponSlot player={} slot={}", player_id, slot);
+                        } else {
+                            warn!("[cmd_queue] SetActiveWeaponSlot: invalid slot {}", slot);
+                        }
+                    } else {
+                        warn!("[cmd_queue] SetActiveWeaponSlot: player {} missing ActiveWeaponSlot", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] SetActiveWeaponSlot: unknown player_id {}", player_id);
+                }
+            }
+
+            LuaCommand::ForceReload { player_id } => {
+                if let Some(&entity) = player_runtime.player_map.map.get(&player_id) {
+                    if let Ok((_, _, _, mut slots, mut reserve, active_slot, mut fire_state, mut reload_state, mut weapon_swap)) = player_stats.get_mut(entity) {
+                        *fire_state = FireState::default();
+                        *reload_state = ReloadState::default();
+                        *weapon_swap = WeaponSwapState::default();
+                        let Some(equipped) = slots.get_mut(active_slot.0) else {
+                            continue;
+                        };
+                        let Some(weapon_def) = player_runtime.weapon_registry.get(&equipped.weapon_id) else {
+                            continue;
+                        };
+                        let mag_capacity = weapon_def.mag_capacity;
+                        if mag_capacity == 0 || equipped.ammo_in_mag >= mag_capacity {
+                            continue;
+                        }
+                        let ammo_id = if equipped.ammo_type_id.trim().is_empty() {
+                            weapon_def.default_ammo.clone()
+                        } else {
+                            equipped.ammo_type_id.clone()
+                        };
+                        let reserve_entry = reserve.0.entry(ammo_id.clone()).or_insert(0);
+                        let needed = mag_capacity.saturating_sub(equipped.ammo_in_mag);
+                        let loaded = (*reserve_entry).min(needed);
+                        *reserve_entry = reserve_entry.saturating_sub(loaded);
+                        equipped.ammo_in_mag = equipped.ammo_in_mag.saturating_add(loaded);
+                        if equipped.ammo_type_id.trim().is_empty() {
+                            equipped.ammo_type_id = ammo_id;
+                        }
+                        debug!(
+                            "[cmd_queue] ForceReload player={} slot={} weapon={} loaded={}",
+                            player_id,
+                            active_slot.0,
+                            equipped.weapon_id,
+                            loaded
+                        );
+                    } else {
+                        warn!("[cmd_queue] ForceReload: player {} missing weapon state", player_id);
+                    }
+                } else {
+                    warn!("[cmd_queue] ForceReload: unknown player_id {}", player_id);
                 }
             }
 

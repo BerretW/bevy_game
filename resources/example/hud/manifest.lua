@@ -1,7 +1,7 @@
 resource_type 'script'
 author       'Developer'
 version      '1.0.0'
-description  'Ukázkový HUD — health bar + crosshair + fps counter.'
+description  'Ukázkový HUD — health bar, crosshair, fps counter a weapon state panel.'
 
 client_scripts { 'client/hud.lua' }
 

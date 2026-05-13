@@ -24,8 +24,10 @@ mod watcher;
 mod weapons;
 
 pub use cmd_queue::{
+    ActiveWeaponSlot, AmmoReserve,
     AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
     ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
+    EquippedWeapon,
     EnvironmentLightConfig, EnvironmentLightConfigPatch, RuntimeFogVolumeDef, RuntimeLightDef, RuntimeLightKind, StairsCollider,
     EntityStateCache, IkEnabledComponent, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     NpcAgent, NpcAiLodConfig, NpcAiLodConfigPatch, NpcAiLodLevel, NpcAiLodState, NpcLastClientUpdate, NpcMoveGoal,
@@ -34,7 +36,8 @@ pub use cmd_queue::{
     NpcScenarioClockConfigPatch, NpcScenarioTime, NpcPopulationAssignment, NpcWanderKind, PedProfileOverride,
     ReplicatedNpcSteering, apply_replicated_npc_steering, snapshot_npc_steering,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, NpcPedMarker, PendingDamageEvent,
-    PlayerEntityMap, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
+    FireState, PlayerEntityMap, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
+    ReloadState, WeaponSlots, WeaponSwapState,
     advance_npc_scenario_time, apply_replicated_npc_brain, assign_npc_owners, process_lua_commands,
     run_npc_population_director, sync_entity_state_cache, sync_npc_scenario_runtime,
 };

@@ -8,6 +8,7 @@
 
 use bevy::prelude::*;
 use core_resources::{GameBridges, LocalPlayerStats, LuaEventDirection, SandboxRegistry};
+use core_resources::StatsSnapshot;
 use lightyear::prelude::*;
 
 use crate::net_plugin::LuaRpcChannel;
@@ -162,7 +163,21 @@ fn receive_player_stats(
             last = Some(msg);
         }
         if let Some(update) = last {
-            local_stats.update_health(update.hp, update.max_hp);
+            local_stats.update_snapshot(StatsSnapshot {
+                health: update.hp,
+                max_health: update.max_hp,
+                weapon_slots: update.weapon_slots,
+                ammo_reserve: update.ammo_reserve,
+                active_weapon_slot: update.active_weapon_slot,
+                fire_cooldown_remaining: update.fire_cooldown_remaining,
+                fire_trigger_held: update.fire_trigger_held,
+                reload_remaining: update.reload_remaining,
+                reload_duration: update.reload_duration,
+                weapon_swap_remaining: update.weapon_swap_remaining,
+                weapon_swap_duration: update.weapon_swap_duration,
+                weapon_swap_target_slot: update.weapon_swap_target_slot,
+                ..StatsSnapshot::default()
+            });
         }
     }
 }
