@@ -15,6 +15,7 @@ use bevy::scene::{InstanceId, SceneInstanceReady, SceneSpawner};
 use core_resources::{AdsSocketMap, LuaMaterialOverride, ModelName};
 
 use crate::lod::{parse_lod_level, DefaultLodDistances, LodGroup, LodLevel};
+use crate::lights::apply_runtime_light;
 use crate::manifest::{CollisionMaterial, CollisionShape, DrawableManifest, EntityDef, MaterialDef, MaterialParams, TextureSource};
 use crate::material::{
     DrawableParams,
@@ -413,6 +414,11 @@ pub fn hook_drawable_scenes(
                     },
                 ));
                 continue;
+            }
+
+            if let Some(EntityDef::LIGHT { light }) = entity_def {
+                let mut entity_cmd = commands.entity(entity);
+                apply_runtime_light(&mut entity_cmd, light);
             }
 
             // LOD: sleduj pojmenované uzly (ne COL_) — jejich viditelnost řídí subtree

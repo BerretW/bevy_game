@@ -27,6 +27,7 @@ use crate::hook::{
     AdsSocket,
     DisableDrawableCollisions,
 };
+use crate::lights::apply_runtime_light;
 
 // ---------------------------------------------------------------------------
 // Konstanty
@@ -986,6 +987,12 @@ pub fn spawn_adm_scenes(
                 AdmNodeType::Empty | AdmNodeType::Bone | AdmNodeType::IkTarget | AdmNodeType::Mechanical => {}
                 AdmNodeType::Socket => {
                     entity_cmd.insert(Visibility::Hidden);
+                }
+            }
+
+            if let Some(manifest) = manifest {
+                if let Some(crate::manifest::EntityDef::LIGHT { light }) = manifest.entities.get(&node.name) {
+                    apply_runtime_light(&mut entity_cmd, light);
                 }
             }
 

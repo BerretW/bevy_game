@@ -24,7 +24,8 @@ mod watcher;
 
 pub use cmd_queue::{
     AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
-    ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider,
+    ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
+    EnvironmentLightConfig, EnvironmentLightConfigPatch, RuntimeFogVolumeDef, RuntimeLightDef, RuntimeLightKind, StairsCollider,
     EntityStateCache, IkEnabledComponent, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
     NpcAgent, NpcAiLodConfig, NpcAiLodConfigPatch, NpcAiLodLevel, NpcAiLodState, NpcLastClientUpdate, NpcMoveGoal,
     NpcOwner, NpcPathWaypoint, NpcScenarioDef, NpcScenarioRegistry, NpcScenarioRuntimeState,

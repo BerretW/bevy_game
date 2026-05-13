@@ -211,6 +211,10 @@ fn attach_or_update_dummy_colliders(
                 DummyPrimitiveKind::Cuboid
                 | DummyPrimitiveKind::Cube
                 | DummyPrimitiveKind::Stairs => DummyColliderShape::Box,
+                DummyPrimitiveKind::PointLight
+                | DummyPrimitiveKind::SpotLight
+                | DummyPrimitiveKind::DirectionalLight
+                | DummyPrimitiveKind::FogVolume => DummyColliderShape::None,
             },
             other => other,
         };
@@ -463,6 +467,10 @@ fn dummy_collider_defaults(marker: &DummyObjectMarker) -> ([f32; 3], f32, f32) {
             let h = (r * 2.0).max(0.01);
             ([marker.size[0].max(0.01), h, marker.size[2].max(0.01)], marker.size[2].max(0.01) * 0.5, h)
         }
+        DummyPrimitiveKind::PointLight
+        | DummyPrimitiveKind::SpotLight
+        | DummyPrimitiveKind::DirectionalLight
+        | DummyPrimitiveKind::FogVolume => ([0.1, 0.1, 0.1], 0.1, 0.1),
     }
 }
 

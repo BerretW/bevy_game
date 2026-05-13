@@ -4,6 +4,83 @@ local zombie_chaser = nil
 local zombie_scout = nil
 local town_guard = nil
 local lure_anchor = nil
+local tracked_players = {}
+local hunter_target_player_id = nil
+local hunter_target_pos = nil
+
+local function copy_vec3(pos)
+    if not pos then
+        return nil
+    end
+    return {
+        x = tonumber(pos.x) or 0.0,
+        y = tonumber(pos.y) or 0.0,
+        z = tonumber(pos.z) or 0.0,
+    }
+end
+
+local function distance_sq(a, b)
+    local dx = (tonumber(a.x) or 0.0) - (tonumber(b.x) or 0.0)
+    local dy = (tonumber(a.y) or 0.0) - (tonumber(b.y) or 0.0)
+    local dz = (tonumber(a.z) or 0.0) - (tonumber(b.z) or 0.0)
+    return dx * dx + dy * dy + dz * dz
+end
+
+local function refresh_hunter_target()
+    if not zombie_chaser or not World.IsValid(zombie_chaser) then
+        hunter_target_player_id = nil
+        hunter_target_pos = nil
+        return
+    end
+
+    local zombie_pos = World.GetPosition(zombie_chaser)
+    if not zombie_pos then
+        return
+    end
+
+    local best_player_id = nil
+    local best_pos = nil
+    local best_dist_sq = nil
+
+    for player_id, pos in pairs(tracked_players) do
+        local dist_sq = distance_sq(zombie_pos, pos)
+        if not best_dist_sq or dist_sq < best_dist_sq then
+            best_player_id = player_id
+            best_pos = pos
+            best_dist_sq = dist_sq
+        end
+    end
+
+    hunter_target_player_id = best_player_id
+    hunter_target_pos = copy_vec3(best_pos)
+end
+
+local function update_hunter_behavior(force)
+    if not zombie_chaser or not World.IsValid(zombie_chaser) then
+        return
+    end
+
+    refresh_hunter_target()
+
+    if hunter_target_pos then
+        if force then
+            log_info(string.format('[hello] hunter zombie locked player %s', tostring(hunter_target_player_id)))
+        end
+        World.NpcSetTask(zombie_chaser, 'chase_target', {
+            target_pos = hunter_target_pos,
+            stop_distance = 1.1,
+            combat_range = 1.4,
+            leash_radius = 28.0,
+        })
+        return
+    end
+
+    World.NpcSetTask(zombie_chaser, 'wander_zone', {
+        radius = 7.5,
+        retarget_sec = 1.1,
+        wander_kind = 'random',
+    })
+end
 
 local function register_custom_brains()
     World.NpcRegisterBrain(AGGRESSIVE_ZOMBIE_BRAIN_ID, {
@@ -141,13 +218,7 @@ local function ensure_setup()
         arrive_distance = 0.8,
         turn_speed = 7.0,
     })
-    World.NpcSetTask(zombie_chaser, 'chase_target', {
-        scenario_id = 'hello/hunt_lure',
-        target_handle = lure_anchor,
-        stop_distance = 0.8,
-        combat_range = 1.4,
-        leash_radius = 18.0,
-    })
+    update_hunter_behavior(true)
 
     zombie_scout = spawn_npc('zombie', { x = -2.5, y = 0.0, z = 2.5 }, 'monster')
     World.NpcSetBrain(zombie_scout, AGGRESSIVE_ZOMBIE_BRAIN_ID)
@@ -181,6 +252,36 @@ local function ensure_setup()
     end)
 
     CreateThread(function()
+        local last_target_pos = nil
+        local last_target_player_id = nil
+        while true do
+            Wait(450)
+            if not zombie_chaser or not World.IsValid(zombie_chaser) then
+                break
+            end
+
+            refresh_hunter_target()
+
+            if hunter_target_pos then
+                local changed_player = hunter_target_player_id ~= last_target_player_id
+                local moved_target = (not last_target_pos)
+                    or distance_sq(hunter_target_pos, last_target_pos) >= (0.75 * 0.75)
+                if changed_player or moved_target then
+                    update_hunter_behavior(changed_player)
+                    last_target_player_id = hunter_target_player_id
+                    last_target_pos = copy_vec3(hunter_target_pos)
+                end
+            else
+                if last_target_player_id or not last_target_pos then
+                    update_hunter_behavior(false)
+                    last_target_player_id = nil
+                    last_target_pos = nil
+                end
+            end
+        end
+    end)
+
+    CreateThread(function()
         while true do
             Wait(9000)
             if zombie_scout and World.IsValid(zombie_scout) then
@@ -208,6 +309,37 @@ local function ensure_setup()
 end
 
 ensure_setup()
+
+RegisterEvent('onPlayerPosition', function(payload)
+    if type(payload) ~= 'table' or type(payload.players) ~= 'table' then
+        return
+    end
+
+    for _, entry in ipairs(payload.players) do
+        local player_id = tonumber(entry.id)
+        if player_id then
+            tracked_players[player_id] = {
+                x = tonumber(entry.x) or 0.0,
+                y = 0.0,
+                z = tonumber(entry.z) or 0.0,
+            }
+        end
+    end
+end)
+
+RegisterEvent('playerDropped', function(payload)
+    if type(payload) ~= 'table' then
+        return
+    end
+    local player_id = tonumber(payload.id)
+    if player_id then
+        tracked_players[player_id] = nil
+        if hunter_target_player_id == player_id then
+            hunter_target_player_id = nil
+            hunter_target_pos = nil
+        end
+    end
+end)
 
 RegisterEvent('onServerReady', function()
     ensure_setup()

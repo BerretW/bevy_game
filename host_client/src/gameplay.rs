@@ -12,6 +12,8 @@ const ANIM_GROUNDED_GRACE_SECS: f32 = 0.18;
 
 use bevy::input::mouse::MouseMotion;
 use bevy::ecs::message::MessageReader;
+use bevy::light::{FogVolume, GlobalAmbientLight, VolumetricFog, VolumetricLight};
+use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::transform::{components::TransformTreeChanged, TransformSystems};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
@@ -29,16 +31,16 @@ use bevy_gltf::{
     GltfMeshName,
     GltfSceneExtras,
 };
-use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver, OnStairs};
+use core_drawable::{DisableDrawableCollisions, TwoBoneIkSolver, OnStairs, apply_runtime_light, clear_runtime_light};
 use core_net::{player_action, InputChannel, NpcTransformChannel, NpcTransformUpdate, PlayerInput};
 use core_resources::{
     apply_replicated_npc_brain,
     apply_replicated_npc_steering,
     AnimationState, AttachedAnimSets, CameraAttachment, ConnectionInfo, CrosshairHit,
     DummyObjectMarker, DummyPrimitiveKind, EntityHandle, GameBridges, InputSnapshot,
-    IkEnabledComponent, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
+    EnvironmentLightConfig, IkEnabledComponent, LocalEventBus, LocalObjectMarker, LuaWorldState, ModelAnimationRegistry, ModelName,
     NpcAgent, NpcBrainRegistry, NpcBrainState, NpcOwner, NpcPedMarker, NpcScenarioRegistry, ReplicatedNpcBrain,
-    ReplicatedNpcSteering,
+    ReplicatedNpcSteering, RuntimeLightKind,
     ModelRegistry, StairsCollider, process_lua_commands, sync_entity_state_cache,
 };
 use core_shared::{NetTransform, PlayerMarker};
@@ -46,6 +48,7 @@ use lightyear::prelude::*;
 use lightyear::prelude::Predicted;
 
 use crate::config::ClientConfigResource;
+use crate::map_loader::StreamingVisibilityBoundary;
 use crate::native_assets::{AdmHandleCache, PedAdsAnimIndex};
 use crate::drawable::AdmSceneRoot;
 use crate::AppState;
@@ -102,6 +105,12 @@ struct LocalObjectVisualAttached;
 
 #[derive(Component)]
 struct DummyObjectVisualAttached;
+
+#[derive(Component)]
+struct EnvironmentLightMarker;
+
+#[derive(Component)]
+struct DummyFogVolumeAttached;
 
 #[derive(Component)]
 struct NpcCapsuleAttached;
@@ -243,6 +252,10 @@ impl Plugin for ClientGameplayPlugin {
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
         app.add_systems(OnExit(AppState::InGame), reset_connection_bridge);
+        app.add_systems(
+            Update,
+            apply_environment_light.run_if(in_state(AppState::InGame)),
+        );
         app.add_systems(
             Update,
             (
@@ -585,27 +598,160 @@ fn resolve_ped_profile_for_model<'a>(
 fn setup_scene_and_camera(
     mut commands: Commands,
 ) {
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::WHITE,
+        brightness: 0.0,
+        ..default()
+    });
+
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(-5.0, 6.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+        DistanceFog::default(),
         MainGameplayCamera,
     ));
 
-    commands.spawn((
+    info!("[gameplay/client] 3D scene ready (camera toggle: F6)");
+}
+
+fn apply_environment_light(
+    mut commands: Commands,
+    config: Res<EnvironmentLightConfig>,
+    streaming_boundary: Option<Res<StreamingVisibilityBoundary>>,
+    mut ambient: ResMut<GlobalAmbientLight>,
+    mut existing: Query<(Entity, &mut DirectionalLight, &mut Transform, Option<&VolumetricLight>), With<EnvironmentLightMarker>>,
+    camera_q: Query<Entity, With<MainGameplayCamera>>,
+) {
+    ambient.color = Color::srgba(
+        config.ambient_color[0].clamp(0.0, 1.0),
+        config.ambient_color[1].clamp(0.0, 1.0),
+        config.ambient_color[2].clamp(0.0, 1.0),
+        config.ambient_color[3].clamp(0.0, 1.0),
+    );
+    ambient.brightness = if config.ambient_enabled {
+        config.ambient_brightness.max(0.0)
+    } else {
+        0.0
+    };
+
+    let mut fog_start = config.fog_start.max(0.0);
+    let mut fog_end = config.fog_end.max(fog_start);
+    if config.fog_follow_streaming_boundary {
+        if let Some(boundary) = streaming_boundary.as_ref() {
+            if boundary.active {
+                let edge = boundary.radius.max(0.0);
+                fog_start = (edge - config.fog_boundary_inner_distance.max(0.0)).max(0.0);
+                fog_end = edge + config.fog_boundary_outer_distance.max(0.0);
+                if fog_end < fog_start {
+                    fog_end = fog_start;
+                }
+            }
+        }
+    }
+
+    if let Ok(camera_entity) = camera_q.single() {
+        if config.fog_enabled {
+            commands.entity(camera_entity).insert(DistanceFog {
+                color: Color::srgba(
+                    config.fog_color[0].clamp(0.0, 1.0),
+                    config.fog_color[1].clamp(0.0, 1.0),
+                    config.fog_color[2].clamp(0.0, 1.0),
+                    config.fog_color[3].clamp(0.0, 1.0),
+                ),
+                directional_light_color: Color::srgba(
+                    config.fog_directional_light_color[0].clamp(0.0, 1.0),
+                    config.fog_directional_light_color[1].clamp(0.0, 1.0),
+                    config.fog_directional_light_color[2].clamp(0.0, 1.0),
+                    config.fog_directional_light_color[3].clamp(0.0, 1.0),
+                ),
+                directional_light_exponent: config.fog_directional_light_exponent.max(0.0),
+                falloff: FogFalloff::Linear {
+                    start: fog_start,
+                    end: fog_end,
+                },
+            });
+        } else {
+            commands.entity(camera_entity).remove::<DistanceFog>();
+        }
+
+        if config.volumetric_fog_enabled {
+            commands.entity(camera_entity).insert(VolumetricFog {
+                ambient_color: Color::srgba(
+                    config.volumetric_fog_ambient_color[0].clamp(0.0, 1.0),
+                    config.volumetric_fog_ambient_color[1].clamp(0.0, 1.0),
+                    config.volumetric_fog_ambient_color[2].clamp(0.0, 1.0),
+                    config.volumetric_fog_ambient_color[3].clamp(0.0, 1.0),
+                ),
+                ambient_intensity: config.volumetric_fog_ambient_intensity.max(0.0),
+                jitter: config.volumetric_fog_jitter.max(0.0),
+                step_count: config.volumetric_fog_step_count.max(1),
+            });
+        } else {
+            commands.entity(camera_entity).remove::<VolumetricFog>();
+        }
+    }
+
+    if !config.enabled {
+        for (entity, _, _, _) in &mut existing {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
+    let daylight = ((config.hour_of_day - 6.0) / 12.0) * std::f32::consts::PI;
+    let elevation = daylight.sin().clamp(-1.0, 1.0) * config.max_elevation_deg.clamp(0.0, 89.0).to_radians();
+    let azimuth = config.azimuth_deg.to_radians();
+    let transform = Transform::from_rotation(Quat::from_euler(
+        EulerRot::YXZ,
+        azimuth,
+        -elevation,
+        0.0,
+    ));
+    let color = Color::srgba(
+        config.color[0].clamp(0.0, 1.0),
+        config.color[1].clamp(0.0, 1.0),
+        config.color[2].clamp(0.0, 1.0),
+        config.color[3].clamp(0.0, 1.0),
+    );
+
+    if let Ok((entity, mut light, mut light_transform, volumetric)) = existing.single_mut() {
+        light.color = color;
+        light.illuminance = config.illuminance.max(0.0);
+        light.shadows_enabled = config.shadows_enabled;
+        *light_transform = transform;
+        let enable_volumetric_light = config.volumetric_fog_enabled && config.shadows_enabled;
+        if enable_volumetric_light && volumetric.is_none() {
+            commands.entity(entity).insert(VolumetricLight);
+        } else if !enable_volumetric_light && volumetric.is_some() {
+            commands.entity(entity).remove::<VolumetricLight>();
+        }
+        return;
+    }
+
+    let mut entity = commands.spawn((
         DirectionalLight {
-            illuminance: 15000.0,
-            shadows_enabled: true,
+            color,
+            illuminance: config.illuminance.max(0.0),
+            shadows_enabled: config.shadows_enabled,
             ..default()
         },
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::XYZ,
-            -1.0,
-            -0.8,
-            0.0,
-        )),
+        transform,
+        EnvironmentLightMarker,
     ));
+    if config.volumetric_fog_enabled && config.shadows_enabled {
+        entity.insert(VolumetricLight);
+    }
+}
 
-    info!("[gameplay/client] 3D scene ready (camera toggle: F6)");
+fn fog_volume_scale_from_dummy(marker: &DummyObjectMarker) -> Vec3 {
+    match marker.kind {
+        DummyPrimitiveKind::Sphere => Vec3::splat(marker.radius.max(0.01) * 2.0),
+        DummyPrimitiveKind::Cube => Vec3::splat(marker.size[0].max(0.01)),
+        _ => {
+            let y = marker.size[1].max(marker.height.max(0.01));
+            Vec3::new(marker.size[0].max(0.01), y, marker.size[2].max(0.01))
+        }
+    }
 }
 
 /// Aktualizuje `RaycastBridge` podle aktualni pozice mysi.
@@ -1194,19 +1340,18 @@ fn bootstrap_owned_npc_agents(
             &NpcOwner,
             &ReplicatedNpcBrain,
             &ReplicatedNpcSteering,
-            &NpcBrainState,
         ),
         (With<NpcPedMarker>, Without<NpcAgent>),
     >,
 ) {
     let Some(local_id) = local_client_id.map(|v| v.0) else { return; };
 
-    for (entity, handle, transform, owner, brain, steering, state) in &npcs {
+    for (entity, handle, transform, owner, brain, steering) in &npcs {
         if owner.0 != Some(local_id) {
             continue;
         }
         let mut agent = NpcAgent::new(handle.0, transform.translation);
-        let mut local_state = state.clone();
+        let mut local_state = NpcBrainState::new(brain.brain_id.clone());
         apply_replicated_npc_brain(&brain_registry, &scenario_registry, brain, &mut local_state, &mut agent);
         apply_replicated_npc_steering(&mut agent, steering);
         commands.entity(entity).insert((agent, local_state));
@@ -2348,13 +2493,54 @@ fn attach_mesh_to_dummy_objects(
     >,
 ) {
     for (entity, marker) in new_objs.iter() {
-        commands.entity(entity).insert((
+        let mut entity_cmd = commands.entity(entity);
+        entity_cmd.insert((
             GlobalTransform::default(),
             Visibility::Visible,
             InheritedVisibility::default(),
             ViewVisibility::default(),
             DummyObjectVisualAttached,
         ));
+
+        if let Some(light) = marker.light {
+            apply_runtime_light(&mut entity_cmd, &light);
+        } else {
+            clear_runtime_light(&mut entity_cmd);
+        }
+
+        if let Some(fog) = marker.fog_volume {
+            let volume_scale = fog_volume_scale_from_dummy(marker);
+            entity_cmd.with_children(|p| {
+                p.spawn((
+                    FogVolume {
+                        fog_color: Color::srgba(
+                            fog.color[0].clamp(0.0, 1.0),
+                            fog.color[1].clamp(0.0, 1.0),
+                            fog.color[2].clamp(0.0, 1.0),
+                            fog.color[3].clamp(0.0, 1.0),
+                        ),
+                        density_factor: fog.density_factor.max(0.0),
+                        absorption: fog.absorption.max(0.0),
+                        scattering: fog.scattering.max(0.0),
+                        scattering_asymmetry: fog.scattering_asymmetry.clamp(-0.99, 0.99),
+                        light_tint: Color::srgba(
+                            fog.light_tint[0].clamp(0.0, 1.0),
+                            fog.light_tint[1].clamp(0.0, 1.0),
+                            fog.light_tint[2].clamp(0.0, 1.0),
+                            fog.light_tint[3].clamp(0.0, 1.0),
+                        ),
+                        light_intensity: fog.light_intensity.max(0.0),
+                        ..default()
+                    },
+                    Transform::from_scale(volume_scale),
+                    GlobalTransform::default(),
+                    Visibility::Visible,
+                    InheritedVisibility::default(),
+                    ViewVisibility::default(),
+                    DummyFogVolumeAttached,
+                ));
+            });
+        }
 
         let base_material = materials.add(StandardMaterial {
             base_color: Color::srgba(
@@ -2371,21 +2557,21 @@ fn attach_mesh_to_dummy_objects(
                 let sx = marker.size[0].max(0.01);
                 let sy = marker.size[1].max(0.01);
                 let sz = marker.size[2].max(0.01);
-                commands.entity(entity).insert((
+                entity_cmd.insert((
                     Mesh3d(meshes.add(Cuboid::new(sx, sy, sz))),
                     MeshMaterial3d(base_material.clone()),
                 ));
             }
             DummyPrimitiveKind::Cube => {
                 let s = marker.size[0].max(0.01);
-                commands.entity(entity).insert((
+                entity_cmd.insert((
                     Mesh3d(meshes.add(Cuboid::new(s, s, s))),
                     MeshMaterial3d(base_material.clone()),
                 ));
             }
             DummyPrimitiveKind::Sphere => {
                 let r = marker.radius.max(0.01);
-                commands.entity(entity).insert((
+                entity_cmd.insert((
                     Mesh3d(meshes.add(Sphere::new(r))),
                     MeshMaterial3d(base_material.clone()),
                 ));
@@ -2398,7 +2584,7 @@ fn attach_mesh_to_dummy_objects(
                 let step_h = total_height / steps as f32;
                 let step_d = total_depth / steps as f32;
 
-                commands.entity(entity).with_children(|p| {
+                entity_cmd.with_children(|p| {
                     for i in 0..steps {
                         let y = -total_height * 0.5 + step_h * (i as f32 + 0.5);
                         let z = -total_depth * 0.5 + step_d * (i as f32 + 0.5);
@@ -2421,7 +2607,7 @@ fn attach_mesh_to_dummy_objects(
                 let segments = marker.segments.max(3);
                 let inner_r = (outer_r - thickness).max(0.02);
 
-                commands.entity(entity).with_children(|p| {
+                entity_cmd.with_children(|p| {
                     for i in 0..segments {
                         let t0 = (i as f32 / segments as f32) * std::f32::consts::PI;
                         let t1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::PI;
@@ -2447,6 +2633,21 @@ fn attach_mesh_to_dummy_objects(
                         ));
                     }
                 });
+            }
+            DummyPrimitiveKind::PointLight | DummyPrimitiveKind::SpotLight | DummyPrimitiveKind::DirectionalLight | DummyPrimitiveKind::FogVolume => {
+                entity_cmd.remove::<Mesh3d>();
+                entity_cmd.remove::<MeshMaterial3d<StandardMaterial>>();
+
+                if marker.light.is_none() {
+                    let default_kind = match marker.kind {
+                        DummyPrimitiveKind::SpotLight => RuntimeLightKind::Spot,
+                        DummyPrimitiveKind::DirectionalLight => RuntimeLightKind::Directional,
+                        _ => RuntimeLightKind::Point,
+                    };
+                    if !matches!(marker.kind, DummyPrimitiveKind::FogVolume) {
+                        warn!("[dummy] light entity {:?} missing explicit light config, defaulting to {:?}", entity, default_kind);
+                    }
+                }
             }
         }
     }

@@ -182,12 +182,14 @@ impl TwoBoneIkSolver {
 /// Detekuje, když se hráč ocitne na schodech (kolize s STAIRS materiálem).
 pub fn detect_stairs_on_collision(
     mut commands: Commands,
-    players: Query<(Entity, &Transform), Added<Transform>>,
+    players: Query<(Entity, &Transform), (Added<Transform>, Without<OnStairs>)>,
 ) {
     for (entity, _) in &players {
         // Zatím jen vytvoříme komponent, detekce je zakomentována
         // dokud nebude řádně integrován avian3d query
-        commands.entity(entity).insert(OnStairs::default());
+        if let Ok(mut entity_commands) = commands.get_entity(entity) {
+            entity_commands.insert(OnStairs::default());
+        }
     }
 }
 

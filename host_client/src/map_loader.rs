@@ -29,6 +29,7 @@ impl Plugin for ClientMapPlugin {
         app.init_resource::<LoadedMapFiles>()
             .init_resource::<NavmeshRegistry>()
             .init_resource::<WorldTileIndex>()
+            .init_resource::<StreamingVisibilityBoundary>()
             .init_resource::<ServerTileStreamingState>()
             .add_systems(OnEnter(AppState::InGame), load_maps_on_enter)
             .add_systems(OnExit(AppState::InGame), cleanup_maps_on_exit)
@@ -61,6 +62,21 @@ struct WorldTileIndex {
     maps_root: PathBuf,
     tiles: Vec<WorldTileDef>,
     active: bool,
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct StreamingVisibilityBoundary {
+    pub active: bool,
+    pub radius: f32,
+}
+
+impl Default for StreamingVisibilityBoundary {
+    fn default() -> Self {
+        Self {
+            active: false,
+            radius: 0.0,
+        }
+    }
 }
 
 #[derive(Resource, Debug, Default)]
@@ -129,8 +145,11 @@ fn load_maps_on_enter(
     mut world_state: ResMut<LuaWorldState>,
     mut navmesh_registry: ResMut<NavmeshRegistry>,
     mut tile_index: ResMut<WorldTileIndex>,
+    mut streaming_boundary: ResMut<StreamingVisibilityBoundary>,
     mut tile_graph: ResMut<TileGraph>,
 ) {
+    streaming_boundary.active = false;
+    streaming_boundary.radius = 0.0;
     let maps_root = asset_root().join("maps");
     tile_index.maps_root = maps_root.clone();
 
@@ -199,8 +218,11 @@ fn stream_world_tiles(
     mut navmesh_registry: ResMut<NavmeshRegistry>,
     tile_index: Res<WorldTileIndex>,
     server_streaming: Res<ServerTileStreamingState>,
+    mut streaming_boundary: ResMut<StreamingVisibilityBoundary>,
 ) {
     if !tile_index.active {
+        streaming_boundary.active = false;
+        streaming_boundary.radius = 0.0;
         return;
     }
 
@@ -216,19 +238,34 @@ fn stream_world_tiles(
 
     let use_server_override = server_streaming.has_server_override
         && (time.elapsed_secs_f64() - server_streaming.last_update_secs) <= 5.0;
+    let mut boundary_radius: Option<f32> = None;
 
     for tile in &tile_index.tiles {
+        let center = Vec3::new(tile.center[0], tile.center[1], tile.center[2]);
+        let radius = tile.load_radius.max(1.0);
         if use_server_override {
             if server_streaming.authoritative_tiles.contains(&tile.runtime_id()) {
                 wanted.insert(tile_index.maps_root.join(&tile.map));
+                boundary_radius = Some(boundary_radius.map_or(radius, |current| current.min(radius)));
             }
         } else {
-            let center = Vec3::new(tile.center[0], tile.center[1], tile.center[2]);
-            let radius = tile.load_radius.max(1.0);
             if tile.always_loaded || focus.distance(center) <= radius {
                 wanted.insert(tile_index.maps_root.join(&tile.map));
+                if !tile.always_loaded {
+                    let remaining = (radius - focus.distance(center)).max(0.0);
+                    let candidate = remaining.max(radius * 0.35);
+                    boundary_radius = Some(boundary_radius.map_or(candidate, |current| current.min(candidate)));
+                }
             }
         }
+    }
+
+    if let Some(radius) = boundary_radius {
+        streaming_boundary.active = true;
+        streaming_boundary.radius = radius.max(1.0);
+    } else {
+        streaming_boundary.active = false;
+        streaming_boundary.radius = 0.0;
     }
 
     for path in &wanted {
@@ -562,6 +599,7 @@ fn cleanup_maps_on_exit(
     mut navmesh_registry: ResMut<NavmeshRegistry>,
     mut tile_index: ResMut<WorldTileIndex>,
     mut server_streaming: ResMut<ServerTileStreamingState>,
+    mut streaming_boundary: ResMut<StreamingVisibilityBoundary>,
 ) {
     let paths: Vec<PathBuf> = loaded_maps.loaded.keys().cloned().collect();
     for path in paths {
@@ -580,6 +618,8 @@ fn cleanup_maps_on_exit(
     server_streaming.authoritative_tiles.clear();
     server_streaming.has_server_override = false;
     server_streaming.last_update_secs = 0.0;
+    streaming_boundary.active = false;
+    streaming_boundary.radius = 0.0;
     info!("[map_loader] cleaned map instances and reset tile streaming state");
 }
 

@@ -10,7 +10,7 @@ use crate::cmd_queue::{
     advance_npc_scenario_time, assign_npc_owners, process_lua_commands, run_npc_population_director,
     sync_entity_state_cache, CommandQueue, EntityStateCache, sync_npc_brains_to_agents,
     sync_npc_scenario_runtime, tick_npc_agents, NpcAiLodConfig, NpcScenarioClockConfig,
-    NpcPopulationDirectorConfig, NpcScenarioRegistry, NpcScenarioTime,
+    NpcPopulationDirectorConfig, NpcScenarioRegistry, NpcScenarioTime, EnvironmentLightConfig,
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
@@ -110,7 +110,8 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<NpcPopulationDirectorConfig>();
         app.init_resource::<NpcScenarioTime>();
         app.init_resource::<NpcAiLodConfig>();
-        app.add_message::<PendingDamageEvent>();
+            app.init_resource::<EnvironmentLightConfig>();
+            app.add_message::<PendingDamageEvent>();
         app.add_systems(PostUpdate, process_lua_commands);
         app.add_systems(FixedUpdate, (sync_npc_scenario_runtime, sync_npc_brains_to_agents, tick_npc_agents).chain());
         app.add_systems(Update, (advance_npc_scenario_time, run_npc_population_director, assign_npc_owners).chain());

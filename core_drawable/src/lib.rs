@@ -1,6 +1,7 @@
 mod adm;
 mod hook;
 mod ik;
+mod lights;
 mod loader;
 mod lod;
 mod map;
@@ -35,6 +36,7 @@ pub use ik::{
     OnStairs, IkChain, IkSolverState, IkEnabled, TwoBoneIkSolver,
     detect_stairs_on_collision, raycaster_ground_height, apply_ik_to_skeleton,
 };
+pub use lights::{apply_runtime_light, clear_runtime_light};
 pub use loader::DrawableManifestLoader;
 pub use lod::{DefaultLodDistances, LodGroup, LodLevel, apply_skeletal_pruning, parse_lod_level, update_lod_visibility};
 pub use map::{MapInstanceDef, MapManifest};

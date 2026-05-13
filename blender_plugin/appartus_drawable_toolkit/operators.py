@@ -29,9 +29,9 @@ def _get_active_material(context):
 def _resolve_export_asset_name(context, objects):
     candidates = []
     active_object = context.active_object if context else None
-    if active_object and active_object.type == 'MESH':
+    if active_object and active_object.type in {'MESH', 'LIGHT'}:
         candidates.append(active_object)
-    candidates.extend(obj for obj in objects if obj and obj.type == 'MESH')
+    candidates.extend(obj for obj in objects if obj and obj.type in {'MESH', 'LIGHT'})
 
     for obj in candidates:
         props = getattr(obj, "bevy_toolkit_obj", None)
@@ -1253,7 +1253,7 @@ class BEVY_OT_Export(bpy.types.Operator):
 
         target_meshes = gather_target_meshes(context, settings)
         if not target_meshes:
-            self.report({"WARNING"}, "No mesh objects match selected export scope")
+            self.report({"WARNING"}, "No mesh/light objects match selected export scope")
             return {"CANCELLED"}
 
         asset_name = _resolve_export_asset_name(context, target_meshes)
@@ -1270,7 +1270,7 @@ class BEVY_OT_Export(bpy.types.Operator):
         # Encode bevy_masks2 into a temporary UV channel before GLB export.
         encoded_uv_meshes = []
         for obj in target_meshes:
-            if not is_collision_object(obj):
+            if obj.type == 'MESH' and not is_collision_object(obj):
                 ensure_mask_attribute(obj.data)
                 uv_name = encode_masks2_to_uv(obj.data)
                 if uv_name:
@@ -2136,12 +2136,12 @@ class ADS_OT_export_adm(bpy.types.Operator):
         settings = context.scene.bevy_toolkit_export
 
         if self.use_selection:
-            objects = [o for o in context.selected_objects if o.type == 'MESH']
+            objects = [o for o in context.selected_objects if o.type in {'MESH', 'LIGHT'}]
         else:
-            objects = [o for o in context.scene.objects if o.type == 'MESH']
+            objects = [o for o in context.scene.objects if o.type in {'MESH', 'LIGHT'}]
 
         if not objects:
-            self.report({'WARNING'}, "Žádné mesh objekty k exportu")
+            self.report({'WARNING'}, "Žádné mesh/light objekty k exportu")
             return {'CANCELLED'}
 
         export_name  = _resolve_export_asset_name(context, objects)

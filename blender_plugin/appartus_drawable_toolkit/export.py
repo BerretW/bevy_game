@@ -56,13 +56,52 @@ def _collision_shape_inline(obj, shape: str) -> str:
 def gather_target_meshes(context, settings):
     scope = settings.export_scope
     if scope == "SELECTED":
-        return [obj for obj in context.selected_objects if obj.type == "MESH"]
+        return [obj for obj in context.selected_objects if obj.type in {"MESH", "LIGHT"}]
     if scope == "ACTIVE_COLLECTION":
         active_layer = context.view_layer.active_layer_collection
         if not active_layer:
             return []
-        return [obj for obj in active_layer.collection.all_objects if obj.type == "MESH"]
-    return [obj for obj in bpy.data.objects if obj.type == "MESH"]
+        return [obj for obj in active_layer.collection.all_objects if obj.type in {"MESH", "LIGHT"}]
+    return [obj for obj in bpy.data.objects if obj.type in {"MESH", "LIGHT"}]
+
+
+def _light_entity_inline(obj) -> str:
+    light = obj.data
+    light_type = getattr(light, "type", "POINT")
+    kind = "POINT"
+    if light_type == "SPOT":
+        kind = "SPOT"
+    elif light_type == "SUN":
+        kind = "DIRECTIONAL"
+
+    color = getattr(light, "color", (1.0, 1.0, 1.0))
+    energy = max(0.0, float(getattr(light, "energy", 0.0)))
+    radius = max(0.0, float(getattr(light, "shadow_soft_size", 0.0)))
+    use_custom_distance = bool(getattr(light, "use_custom_distance", False))
+    range_value = float(getattr(light, "cutoff_distance", 20.0)) if use_custom_distance else 20.0
+    shadows_enabled = bool(getattr(light, "use_shadow", True))
+    illuminance = energy if kind == "DIRECTIONAL" else energy
+    outer_angle_deg = 45.0
+    inner_angle_deg = 22.5
+
+    if light_type == "SPOT":
+        outer_angle_deg = float(getattr(light, "spot_size", 0.78539816339)) * 57.29577951308232
+        inner_angle_deg = outer_angle_deg * max(0.0, 1.0 - float(getattr(light, "spot_blend", 0.15)))
+
+    return (
+        '{ '
+        + 'type = "LIGHT", '
+        + f'kind = "{kind}", '
+        + f'color = [{format_float(color[0])}, {format_float(color[1])}, {format_float(color[2])}, 1.0], '
+        + f'intensity = {format_float(energy)}, '
+        + f'illuminance = {format_float(illuminance)}, '
+        + f'range = {format_float(max(0.01, range_value))}, '
+        + f'radius = {format_float(radius)}, '
+        + f'shadows_enabled = {bool_to_toml(shadows_enabled)}, '
+        + f'inner_angle_deg = {format_float(inner_angle_deg)}, '
+        + f'outer_angle_deg = {format_float(max(inner_angle_deg, outer_angle_deg))}'
+        + ' }'
+    )
 
 
 def validate_export_consistency(target_meshes):
@@ -70,6 +109,8 @@ def validate_export_consistency(target_meshes):
     checked_materials = set()
 
     for obj in target_meshes:
+        if obj.type != "MESH":
+            continue
         if not obj.material_slots:
             warnings.append(f"Mesh '{obj.name}' has no material slots")
         for slot_idx, slot in enumerate(obj.material_slots, start=1):
@@ -86,6 +127,8 @@ def validate_export_consistency(target_meshes):
                 )
 
     for obj in target_meshes:
+        if obj.type != "MESH":
+            continue
         for slot in obj.material_slots:
             mat = slot.material
             if not mat or mat.name in checked_materials:
@@ -151,6 +194,9 @@ def build_drawable_toml(asset_name: str, target_meshes, used_materials) -> list:
     lines.append("[entities]")
     for obj in target_meshes:
         key = f'"{toml_escape(obj.name)}"'
+        if obj.type == "LIGHT":
+            lines.append(key + " = " + _light_entity_inline(obj))
+            continue
         if is_collision_object(obj):
             props      = obj.bevy_toolkit_obj
             tags       = parse_tags(props.tags_csv)

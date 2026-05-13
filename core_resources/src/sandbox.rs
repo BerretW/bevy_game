@@ -25,7 +25,9 @@ use bevy::math::{EulerRot, Quat};
 use crate::ace::AceRegistry;
 use crate::cmd_queue::{
     CommandQueue, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
+    EnvironmentLightConfigPatch,
     EntityStateCache, LocalPlayerStats, LuaCommand, NpcScenarioDef, NpcWanderKind, PlayerStatsCache,
+    RuntimeFogVolumeDef, RuntimeLightDef, RuntimeLightKind,
 };
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
@@ -893,6 +895,22 @@ fn table_to_vec3(t: &mlua::Table) -> [f32; 3] {
     [get("x", 1), get("y", 2), get("z", 3)]
 }
 
+fn table_to_vec4(t: &mlua::Table) -> [f32; 4] {
+    let get = |name: &str, idx: i32, default: f32| -> f32 {
+        t.get::<f32>(name)
+            .or_else(|_| t.get::<i64>(name).map(|v| v as f32))
+            .or_else(|_| t.get::<f32>(idx))
+            .or_else(|_| t.get::<i64>(idx).map(|v| v as f32))
+            .unwrap_or(default)
+    };
+    [
+        get("r", 1, 1.0),
+        get("g", 2, 1.0),
+        get("b", 3, 1.0),
+        get("a", 4, 1.0),
+    ]
+}
+
 fn parse_dummy_kind(name: &str) -> DummyPrimitiveKind {
     match name.to_ascii_lowercase().as_str() {
         "cuboid" | "kvadr" | "kvádr" => DummyPrimitiveKind::Cuboid,
@@ -900,7 +918,19 @@ fn parse_dummy_kind(name: &str) -> DummyPrimitiveKind {
         "cube" | "krychle" => DummyPrimitiveKind::Cube,
         "stairs" | "schody" => DummyPrimitiveKind::Stairs,
         "arch" | "oblouk" => DummyPrimitiveKind::Arch,
+        "point_light" | "pointlight" | "light" | "svetlo" | "světlo" => DummyPrimitiveKind::PointLight,
+        "spot_light" | "spotlight" | "reflektor" => DummyPrimitiveKind::SpotLight,
+        "directional_light" | "directionallight" | "sun_light" | "sun" | "slunce" => DummyPrimitiveKind::DirectionalLight,
+        "fog_volume" | "fogvolume" | "mist" | "mlha" | "kour" | "kouř" => DummyPrimitiveKind::FogVolume,
         _ => DummyPrimitiveKind::Cuboid,
+    }
+}
+
+fn parse_runtime_light_kind(name: &str) -> RuntimeLightKind {
+    match name.to_ascii_lowercase().as_str() {
+        "spot" | "spot_light" | "spotlight" | "reflektor" => RuntimeLightKind::Spot,
+        "directional" | "directional_light" | "directionallight" | "sun" | "sun_light" => RuntimeLightKind::Directional,
+        _ => RuntimeLightKind::Point,
     }
 }
 
@@ -931,11 +961,270 @@ fn table_bool(t: &mlua::Table, name: &str, default: bool) -> bool {
     t.get::<bool>(name).unwrap_or(default)
 }
 
+fn parse_runtime_light_from_lua(t: &mlua::Table, default_kind: RuntimeLightKind) -> RuntimeLightDef {
+    let mut light = RuntimeLightDef {
+        kind: default_kind,
+        ..Default::default()
+    };
+
+    if let Ok(kind) = t.get::<String>("kind") {
+        light.kind = parse_runtime_light_kind(&kind);
+    }
+
+    light.enabled = table_bool(t, "enabled", light.enabled);
+    light.intensity = table_f32(t, "intensity", light.intensity).max(0.0);
+    light.illuminance = table_f32(t, "illuminance", light.illuminance).max(0.0);
+    light.range = table_f32(t, "range", light.range).max(0.01);
+    light.radius = table_f32(t, "radius", light.radius).max(0.0);
+    light.shadows_enabled = table_bool(t, "shadows", light.shadows_enabled);
+    light.inner_angle_deg = table_f32(t, "inner_angle_deg", light.inner_angle_deg).clamp(0.0, 179.0);
+    light.outer_angle_deg = table_f32(t, "outer_angle_deg", light.outer_angle_deg).clamp(0.0, 179.0);
+
+    if let Ok(color_t) = t.get::<mlua::Table>("color") {
+        light.color = table_to_vec4(&color_t);
+    } else {
+        light.color = [
+            table_f32(t, "r", light.color[0]).clamp(0.0, 1.0),
+            table_f32(t, "g", light.color[1]).clamp(0.0, 1.0),
+            table_f32(t, "b", light.color[2]).clamp(0.0, 1.0),
+            table_f32(t, "a", light.color[3]).clamp(0.0, 1.0),
+        ];
+    }
+
+    if light.outer_angle_deg < light.inner_angle_deg {
+        light.outer_angle_deg = light.inner_angle_deg;
+    }
+
+    light
+}
+
+fn parse_runtime_fog_volume_from_lua(t: &mlua::Table) -> RuntimeFogVolumeDef {
+    let mut fog = RuntimeFogVolumeDef::default();
+
+    fog.enabled = table_bool(t, "enabled", fog.enabled);
+    fog.density_factor = table_f32(t, "density", fog.density_factor).max(0.0);
+    fog.absorption = table_f32(t, "absorption", fog.absorption).max(0.0);
+    fog.scattering = table_f32(t, "scattering", fog.scattering).max(0.0);
+    fog.scattering_asymmetry = table_f32(t, "scattering_asymmetry", fog.scattering_asymmetry).clamp(-0.99, 0.99);
+    fog.light_intensity = table_f32(t, "light_intensity", fog.light_intensity).max(0.0);
+
+    if let Ok(color_t) = t.get::<mlua::Table>("color") {
+        fog.color = table_to_vec4(&color_t);
+    }
+    if let Ok(color_t) = t.get::<mlua::Table>("light_tint") {
+        fog.light_tint = table_to_vec4(&color_t);
+    }
+
+    fog
+}
+
+fn parse_environment_light_patch_from_lua(t: &mlua::Table) -> EnvironmentLightConfigPatch {
+    let mut patch = EnvironmentLightConfigPatch::default();
+
+    if let Ok(value) = t.get::<bool>("enabled") {
+        patch.enabled = Some(value);
+    }
+    if let Ok(value) = t.get::<bool>("shadows") {
+        patch.shadows_enabled = Some(value);
+    } else if let Ok(value) = t.get::<bool>("shadows_enabled") {
+        patch.shadows_enabled = Some(value);
+    }
+    if let Ok(color_t) = t.get::<mlua::Table>("color") {
+        patch.color = Some(table_to_vec4(&color_t));
+    }
+    if let Ok(value) = t.get::<f32>("illuminance") {
+        patch.illuminance = Some(value);
+    } else if let Ok(value) = t.get::<i64>("illuminance") {
+        patch.illuminance = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<bool>("ambient_enabled") {
+        patch.ambient_enabled = Some(value);
+    }
+    if let Ok(color_t) = t.get::<mlua::Table>("ambient_color") {
+        patch.ambient_color = Some(table_to_vec4(&color_t));
+    }
+    if let Ok(value) = t.get::<f32>("ambient_brightness") {
+        patch.ambient_brightness = Some(value);
+    } else if let Ok(value) = t.get::<i64>("ambient_brightness") {
+        patch.ambient_brightness = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<f32>("hour_of_day") {
+        patch.hour_of_day = Some(value);
+    } else if let Ok(value) = t.get::<i64>("hour_of_day") {
+        patch.hour_of_day = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<f32>("azimuth_deg") {
+        patch.azimuth_deg = Some(value);
+    } else if let Ok(value) = t.get::<i64>("azimuth_deg") {
+        patch.azimuth_deg = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<f32>("max_elevation_deg") {
+        patch.max_elevation_deg = Some(value);
+    } else if let Ok(value) = t.get::<i64>("max_elevation_deg") {
+        patch.max_elevation_deg = Some(value as f32);
+    }
+
+    let fog_table = t.get::<mlua::Table>("fog").ok();
+
+    if let Some(fog_src) = fog_table.as_ref() {
+        if let Ok(value) = fog_src.get::<bool>("enabled") {
+            patch.fog_enabled = Some(value);
+        }
+        if let Ok(color_t) = fog_src.get::<mlua::Table>("color") {
+            patch.fog_color = Some(table_to_vec4(&color_t));
+        }
+        if let Ok(color_t) = fog_src.get::<mlua::Table>("directional_color") {
+            patch.fog_directional_light_color = Some(table_to_vec4(&color_t));
+        } else if let Ok(color_t) = fog_src.get::<mlua::Table>("directional_light_color") {
+            patch.fog_directional_light_color = Some(table_to_vec4(&color_t));
+        }
+        if let Ok(value) = fog_src.get::<f32>("directional_exponent") {
+            patch.fog_directional_light_exponent = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("directional_exponent") {
+            patch.fog_directional_light_exponent = Some(value as f32);
+        } else if let Ok(value) = fog_src.get::<f32>("directional_light_exponent") {
+            patch.fog_directional_light_exponent = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("directional_light_exponent") {
+            patch.fog_directional_light_exponent = Some(value as f32);
+        }
+        if let Ok(value) = fog_src.get::<f32>("start") {
+            patch.fog_start = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("start") {
+            patch.fog_start = Some(value as f32);
+        }
+        if let Ok(value) = fog_src.get::<f32>("end") {
+            patch.fog_end = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("end") {
+            patch.fog_end = Some(value as f32);
+        }
+        if let Ok(value) = fog_src.get::<bool>("follow_streaming_boundary") {
+            patch.fog_follow_streaming_boundary = Some(value);
+        }
+        if let Ok(value) = fog_src.get::<f32>("boundary_inner_distance") {
+            patch.fog_boundary_inner_distance = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("boundary_inner_distance") {
+            patch.fog_boundary_inner_distance = Some(value as f32);
+        }
+        if let Ok(value) = fog_src.get::<f32>("boundary_outer_distance") {
+            patch.fog_boundary_outer_distance = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("boundary_outer_distance") {
+            patch.fog_boundary_outer_distance = Some(value as f32);
+        }
+        if let Ok(value) = fog_src.get::<bool>("volumetric_enabled") {
+            patch.volumetric_fog_enabled = Some(value);
+        }
+        if let Ok(color_t) = fog_src.get::<mlua::Table>("ambient_color") {
+            patch.volumetric_fog_ambient_color = Some(table_to_vec4(&color_t));
+        }
+        if let Ok(value) = fog_src.get::<f32>("ambient_intensity") {
+            patch.volumetric_fog_ambient_intensity = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("ambient_intensity") {
+            patch.volumetric_fog_ambient_intensity = Some(value as f32);
+        }
+        if let Ok(value) = fog_src.get::<f32>("jitter") {
+            patch.volumetric_fog_jitter = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("jitter") {
+            patch.volumetric_fog_jitter = Some(value as f32);
+        }
+        if let Ok(value) = fog_src.get::<u32>("step_count") {
+            patch.volumetric_fog_step_count = Some(value);
+        } else if let Ok(value) = fog_src.get::<i64>("step_count") {
+            patch.volumetric_fog_step_count = Some(value.max(1) as u32);
+        }
+    }
+
+    if let Ok(value) = t.get::<bool>("fog_enabled") {
+        patch.fog_enabled = Some(value);
+    }
+    if let Ok(color_t) = t.get::<mlua::Table>("fog_color") {
+        patch.fog_color = Some(table_to_vec4(&color_t));
+    }
+    if let Ok(color_t) = t.get::<mlua::Table>("fog_directional_light_color") {
+        patch.fog_directional_light_color = Some(table_to_vec4(&color_t));
+    }
+    if let Ok(value) = t.get::<f32>("fog_directional_light_exponent") {
+        patch.fog_directional_light_exponent = Some(value);
+    } else if let Ok(value) = t.get::<i64>("fog_directional_light_exponent") {
+        patch.fog_directional_light_exponent = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<f32>("fog_start") {
+        patch.fog_start = Some(value);
+    } else if let Ok(value) = t.get::<i64>("fog_start") {
+        patch.fog_start = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<f32>("fog_end") {
+        patch.fog_end = Some(value);
+    } else if let Ok(value) = t.get::<i64>("fog_end") {
+        patch.fog_end = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<bool>("fog_follow_streaming_boundary") {
+        patch.fog_follow_streaming_boundary = Some(value);
+    }
+    if let Ok(value) = t.get::<f32>("fog_boundary_inner_distance") {
+        patch.fog_boundary_inner_distance = Some(value);
+    } else if let Ok(value) = t.get::<i64>("fog_boundary_inner_distance") {
+        patch.fog_boundary_inner_distance = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<f32>("fog_boundary_outer_distance") {
+        patch.fog_boundary_outer_distance = Some(value);
+    } else if let Ok(value) = t.get::<i64>("fog_boundary_outer_distance") {
+        patch.fog_boundary_outer_distance = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<bool>("volumetric_fog_enabled") {
+        patch.volumetric_fog_enabled = Some(value);
+    }
+    if let Ok(color_t) = t.get::<mlua::Table>("volumetric_fog_ambient_color") {
+        patch.volumetric_fog_ambient_color = Some(table_to_vec4(&color_t));
+    }
+    if let Ok(value) = t.get::<f32>("volumetric_fog_ambient_intensity") {
+        patch.volumetric_fog_ambient_intensity = Some(value);
+    } else if let Ok(value) = t.get::<i64>("volumetric_fog_ambient_intensity") {
+        patch.volumetric_fog_ambient_intensity = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<f32>("volumetric_fog_jitter") {
+        patch.volumetric_fog_jitter = Some(value);
+    } else if let Ok(value) = t.get::<i64>("volumetric_fog_jitter") {
+        patch.volumetric_fog_jitter = Some(value as f32);
+    }
+    if let Ok(value) = t.get::<u32>("volumetric_fog_step_count") {
+        patch.volumetric_fog_step_count = Some(value);
+    } else if let Ok(value) = t.get::<i64>("volumetric_fog_step_count") {
+        patch.volumetric_fog_step_count = Some(value.max(1) as u32);
+    }
+
+    patch
+}
+
 fn parse_dummy_from_lua(shape: &str, params: Option<mlua::Table>) -> DummyObjectMarker {
     let mut out = DummyObjectMarker {
         kind: parse_dummy_kind(shape),
         ..Default::default()
     };
+
+    if matches!(
+        out.kind,
+        DummyPrimitiveKind::PointLight | DummyPrimitiveKind::SpotLight | DummyPrimitiveKind::DirectionalLight
+    ) {
+        let default_kind = match out.kind {
+            DummyPrimitiveKind::PointLight => RuntimeLightKind::Point,
+            DummyPrimitiveKind::SpotLight => RuntimeLightKind::Spot,
+            DummyPrimitiveKind::DirectionalLight => RuntimeLightKind::Directional,
+            _ => RuntimeLightKind::Point,
+        };
+        out.light = Some(RuntimeLightDef {
+            kind: default_kind,
+            ..Default::default()
+        });
+        out.collider.enabled = false;
+        out.collider.shape = DummyColliderShape::None;
+    }
+
+    if matches!(out.kind, DummyPrimitiveKind::FogVolume) {
+        out.fog_volume = Some(RuntimeFogVolumeDef::default());
+        out.collider.enabled = false;
+        out.collider.shape = DummyColliderShape::None;
+        out.color = [0.0, 0.0, 0.0, 0.0];
+    }
 
     let Some(t) = params else { return out };
 
@@ -978,6 +1267,27 @@ fn parse_dummy_from_lua(shape: &str, params: Option<mlua::Table>) -> DummyObject
             c.shape = parse_dummy_collider_shape(&shape_name);
         }
         out.collider = c;
+    }
+
+    if let Ok(light_t) = t.get::<mlua::Table>("light") {
+        let default_kind = out.light.map(|light| light.kind).unwrap_or(RuntimeLightKind::Point);
+        out.light = Some(parse_runtime_light_from_lua(&light_t, default_kind));
+    } else if out.light.is_some() {
+        let default_kind = out.light.map(|light| light.kind).unwrap_or(RuntimeLightKind::Point);
+        out.light = Some(parse_runtime_light_from_lua(&t, default_kind));
+    }
+
+    if let Ok(fog_t) = t.get::<mlua::Table>("fog_volume") {
+        out.fog_volume = Some(parse_runtime_fog_volume_from_lua(&fog_t));
+    } else if out.fog_volume.is_some() {
+        out.fog_volume = Some(parse_runtime_fog_volume_from_lua(&t));
+    }
+
+    if out.light.is_some() || out.fog_volume.is_some() {
+        out.collider.enabled = table_bool(&t, "collider_enabled", out.collider.enabled);
+        if !out.collider.enabled {
+            out.collider.shape = DummyColliderShape::None;
+        }
     }
 
     out
@@ -1949,7 +2259,17 @@ fn install_runtime_api_inner(
                 ));
             };
 
-            let json = lua_table_to_json(def_t);
+            let mut json = lua_table_to_json(def_t);
+            if let serde_json::Value::Object(obj) = &mut json {
+                let needs_id = obj
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true);
+                if needs_id {
+                    obj.insert("id".to_string(), serde_json::Value::String(brain_id.clone()));
+                }
+            }
             let mut def: NpcBrainDef = serde_json::from_value(json)
                 .map_err(|e| mlua::Error::RuntimeError(format!("NpcRegisterBrain: {e}")))?;
             if def.id.trim().is_empty() {
@@ -1971,7 +2291,17 @@ fn install_runtime_api_inner(
                 ));
             };
 
-            let json = lua_table_to_json(def_t);
+            let mut json = lua_table_to_json(def_t);
+            if let serde_json::Value::Object(obj) = &mut json {
+                let needs_id = obj
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true);
+                if needs_id {
+                    obj.insert("id".to_string(), serde_json::Value::String(scenario_id.clone()));
+                }
+            }
             let mut def: NpcScenarioDef = serde_json::from_value(json)
                 .map_err(|e| mlua::Error::RuntimeError(format!("NpcRegisterScenario: {e}")))?;
             if def.id.trim().is_empty() {
@@ -2039,6 +2369,37 @@ fn install_runtime_api_inner(
     world.set("NpcSetScenarioTime", lua.create_function(
         move |_, hour_of_day: f32| {
             cq.push(LuaCommand::SetNpcScenarioTime { hour_of_day });
+            Ok(())
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("ConfigureEnvironmentLight", lua.create_function(
+        move |_, opts_v: mlua::Value| {
+            if side != Side::Client {
+                return Err(mlua::Error::RuntimeError(
+                    "World.ConfigureEnvironmentLight is client-only".into(),
+                ));
+            }
+            let opts = match opts_v {
+                mlua::Value::Table(t) => t,
+                _ => return Err(mlua::Error::RuntimeError("ConfigureEnvironmentLight expects a table".into())),
+            };
+            let config = parse_environment_light_patch_from_lua(&opts);
+            cq.push(LuaCommand::ConfigureEnvironmentLight { config });
+            Ok(())
+        },
+    )?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("SetEnvironmentTime", lua.create_function(
+        move |_, hour_of_day: f32| {
+            if side != Side::Client {
+                return Err(mlua::Error::RuntimeError(
+                    "World.SetEnvironmentTime is client-only".into(),
+                ));
+            }
+            cq.push(LuaCommand::SetEnvironmentTime { hour_of_day });
             Ok(())
         },
     )?)?;

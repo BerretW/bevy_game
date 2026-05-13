@@ -847,10 +847,10 @@ def _get_image_bytes(img):
 def export_adm(filepath, objects=None, export_textures=True, armature_object=None):
     """
     Exportuje objekty do .adm souboru.
-    objects: seznam bpy.types.Object; None = všechny mesh objekty ve scéně.
+    objects: seznam bpy.types.Object; None = všechny mesh/light objekty ve scéně.
     """
     if objects is None:
-        objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+        objects = [o for o in bpy.context.scene.objects if o.type in {'MESH', 'LIGHT'}]
 
     if armature_object is not None and armature_object not in objects:
         objects = list(objects) + [armature_object]
@@ -886,6 +886,8 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
         name_up = obj.name.upper()
         if obj.type == 'ARMATURE':
             node_type = 2  # EMPTY (armature root)
+        elif obj.type == 'LIGHT':
+            node_type = 2  # EMPTY + LIGHT metadata v .drawable
         elif 'COL_' in name_up or name_up.startswith('COL'):
             node_type = 1  # COLLISION
         else:
@@ -964,7 +966,7 @@ def export_adm(filepath, objects=None, export_textures=True, armature_object=Non
                 exported_local_by_obj[obj] = exported_local
         else:
             # Single material nebo COLLISION
-            mat_name = obj.active_material.name if obj.active_material else ''
+            mat_name = obj.active_material.name if getattr(obj, 'active_material', None) else ''
 
             mesh_idx = -1
             

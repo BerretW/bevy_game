@@ -4,6 +4,28 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
+mod replicated_json {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value as Json;
+
+    pub fn serialize<S>(value: &Json, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_json::to_string(value)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Json, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        serde_json::from_str(&encoded).map_err(serde::de::Error::custom)
+    }
+}
+
 pub const CORE_HUMAN_BRAIN_ID: &str = "core/human";
 pub const CORE_ANIMAL_BRAIN_ID: &str = "core/animal";
 pub const CORE_VEHICLE_BRAIN_ID: &str = "core/vehicle";
@@ -341,6 +363,7 @@ pub struct ReplicatedNpcBrain {
     pub task: NpcTaskKind,
     pub scenario_id: Option<String>,
     pub target: NpcBrainTarget,
+    #[serde(with = "replicated_json")]
     pub params: Json,
 }
 

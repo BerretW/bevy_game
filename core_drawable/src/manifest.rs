@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use core_resources::RuntimeLightDef;
 use serde::Deserialize;
 
 /// Párovací soubor k `.glb` assetu — definuje materiály, shadery a entity (mesh/kolize).
@@ -98,6 +99,10 @@ pub enum EntityDef {
     MESH {
         #[serde(default)]
         cast_shadows: bool,
+    },
+    LIGHT {
+        #[serde(flatten)]
+        light: RuntimeLightDef,
     },
     /// Phase 5: generování collideru. Prozatím uzel schováme.
     COLLISION {

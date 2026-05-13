@@ -229,6 +229,12 @@ pub enum LuaCommand {
     SetNpcScenarioTime {
         hour_of_day: f32,
     },
+    ConfigureEnvironmentLight {
+        config: EnvironmentLightConfigPatch,
+    },
+    SetEnvironmentTime {
+        hour_of_day: f32,
+    },
     SetNpcBrain {
         handle: u64,
         brain_id: String,
@@ -400,6 +406,76 @@ pub enum DummyPrimitiveKind {
     Cube,
     Stairs,
     Arch,
+    PointLight,
+    SpotLight,
+    DirectionalLight,
+    FogVolume,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLightKind {
+    Point,
+    Spot,
+    Directional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeLightDef {
+    pub enabled: bool,
+    pub kind: RuntimeLightKind,
+    pub color: [f32; 4],
+    pub intensity: f32,
+    pub illuminance: f32,
+    pub range: f32,
+    pub radius: f32,
+    pub shadows_enabled: bool,
+    pub inner_angle_deg: f32,
+    pub outer_angle_deg: f32,
+}
+
+impl Default for RuntimeLightDef {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            kind: RuntimeLightKind::Point,
+            color: [1.0, 1.0, 1.0, 1.0],
+            intensity: 1_000_000.0,
+            illuminance: 10_000.0,
+            range: 20.0,
+            radius: 0.0,
+            shadows_enabled: true,
+            inner_angle_deg: 22.5,
+            outer_angle_deg: 45.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeFogVolumeDef {
+    pub enabled: bool,
+    pub color: [f32; 4],
+    pub density_factor: f32,
+    pub absorption: f32,
+    pub scattering: f32,
+    pub scattering_asymmetry: f32,
+    pub light_tint: [f32; 4],
+    pub light_intensity: f32,
+}
+
+impl Default for RuntimeFogVolumeDef {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            color: [0.85, 0.88, 0.92, 0.72],
+            density_factor: 0.16,
+            absorption: 0.24,
+            scattering: 0.40,
+            scattering_asymmetry: 0.60,
+            light_tint: [1.0, 1.0, 1.0, 1.0],
+            light_intensity: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -463,6 +539,8 @@ pub struct DummyObjectMarker {
     pub segments: u32,
     pub color: [f32; 4],
     pub collider: DummyColliderDef,
+    pub light: Option<RuntimeLightDef>,
+    pub fog_volume: Option<RuntimeFogVolumeDef>,
 }
 
 /// Samostatný collider objekt bez render mesh.
@@ -482,6 +560,8 @@ impl Default for DummyObjectMarker {
             segments: 12,
             color: [0.65, 0.75, 0.9, 1.0],
             collider: DummyColliderDef::default(),
+            light: None,
+            fog_volume: None,
         }
     }
 }
@@ -807,6 +887,117 @@ impl Default for NpcScenarioClockConfig {
     }
 }
 
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct EnvironmentLightConfig {
+    pub enabled: bool,
+    pub shadows_enabled: bool,
+    pub color: [f32; 4],
+    pub illuminance: f32,
+    pub ambient_enabled: bool,
+    pub ambient_color: [f32; 4],
+    pub ambient_brightness: f32,
+    pub hour_of_day: f32,
+    pub azimuth_deg: f32,
+    pub max_elevation_deg: f32,
+    pub fog_enabled: bool,
+    pub fog_color: [f32; 4],
+    pub fog_directional_light_color: [f32; 4],
+    pub fog_directional_light_exponent: f32,
+    pub fog_start: f32,
+    pub fog_end: f32,
+    pub fog_follow_streaming_boundary: bool,
+    pub fog_boundary_inner_distance: f32,
+    pub fog_boundary_outer_distance: f32,
+    pub volumetric_fog_enabled: bool,
+    pub volumetric_fog_ambient_color: [f32; 4],
+    pub volumetric_fog_ambient_intensity: f32,
+    pub volumetric_fog_jitter: f32,
+    pub volumetric_fog_step_count: u32,
+}
+
+impl Default for EnvironmentLightConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            shadows_enabled: true,
+            color: [1.0, 0.97, 0.92, 1.0],
+            illuminance: 15000.0,
+            ambient_enabled: false,
+            ambient_color: [0.55, 0.60, 0.70, 1.0],
+            ambient_brightness: 0.0,
+            hour_of_day: 12.0,
+            azimuth_deg: -45.0,
+            max_elevation_deg: 75.0,
+            fog_enabled: false,
+            fog_color: [0.62, 0.70, 0.78, 0.55],
+            fog_directional_light_color: [1.0, 0.94, 0.88, 0.30],
+            fog_directional_light_exponent: 20.0,
+            fog_start: 180.0,
+            fog_end: 320.0,
+            fog_follow_streaming_boundary: false,
+            fog_boundary_inner_distance: 140.0,
+            fog_boundary_outer_distance: 35.0,
+            volumetric_fog_enabled: false,
+            volumetric_fog_ambient_color: [0.55, 0.60, 0.70, 1.0],
+            volumetric_fog_ambient_intensity: 0.06,
+            volumetric_fog_jitter: 0.02,
+            volumetric_fog_step_count: 48,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnvironmentLightConfigPatch {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub shadows_enabled: Option<bool>,
+    #[serde(default)]
+    pub color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub illuminance: Option<f32>,
+    #[serde(default)]
+    pub ambient_enabled: Option<bool>,
+    #[serde(default)]
+    pub ambient_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub ambient_brightness: Option<f32>,
+    #[serde(default)]
+    pub hour_of_day: Option<f32>,
+    #[serde(default)]
+    pub azimuth_deg: Option<f32>,
+    #[serde(default)]
+    pub max_elevation_deg: Option<f32>,
+    #[serde(default)]
+    pub fog_enabled: Option<bool>,
+    #[serde(default)]
+    pub fog_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub fog_directional_light_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub fog_directional_light_exponent: Option<f32>,
+    #[serde(default)]
+    pub fog_start: Option<f32>,
+    #[serde(default)]
+    pub fog_end: Option<f32>,
+    #[serde(default)]
+    pub fog_follow_streaming_boundary: Option<bool>,
+    #[serde(default)]
+    pub fog_boundary_inner_distance: Option<f32>,
+    #[serde(default)]
+    pub fog_boundary_outer_distance: Option<f32>,
+    #[serde(default)]
+    pub volumetric_fog_enabled: Option<bool>,
+    #[serde(default)]
+    pub volumetric_fog_ambient_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub volumetric_fog_ambient_intensity: Option<f32>,
+    #[serde(default)]
+    pub volumetric_fog_jitter: Option<f32>,
+    #[serde(default)]
+    pub volumetric_fog_step_count: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NpcScenarioClockConfigPatch {
     #[serde(default)]
@@ -865,6 +1056,7 @@ pub struct NpcRuntimeRegistries<'w> {
     pub npc_scenario_clock: ResMut<'w, NpcScenarioClockConfig>,
     pub npc_ai_lod: ResMut<'w, NpcAiLodConfig>,
     pub npc_population_director: ResMut<'w, NpcPopulationDirectorConfig>,
+    pub environment_light: ResMut<'w, EnvironmentLightConfig>,
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -1613,7 +1805,7 @@ pub fn assign_npc_owners(
         &mut NpcOwnershipLease,
         &mut NpcAiLodState,
     ), With<NpcAgent>>,
-    players: Query<(&Transform, &PlayerMarker)>,
+    players: Query<(&NetTransform, &PlayerMarker)>,
 ) {
     *timer += time.delta_secs();
     if *timer < NPC_OWNERSHIP_ASSIGN_INTERVAL {
@@ -2621,6 +2813,88 @@ pub fn process_lua_commands(
                 commands.insert_resource(NpcScenarioTime {
                     hour_of_day: hour_of_day.rem_euclid(24.0),
                 });
+            }
+
+            LuaCommand::ConfigureEnvironmentLight { config } => {
+                if let Some(value) = config.enabled {
+                    npc_registries.environment_light.enabled = value;
+                }
+                if let Some(value) = config.shadows_enabled {
+                    npc_registries.environment_light.shadows_enabled = value;
+                }
+                if let Some(value) = config.color {
+                    npc_registries.environment_light.color = value;
+                }
+                if let Some(value) = config.illuminance {
+                    npc_registries.environment_light.illuminance = value.max(0.0);
+                }
+                if let Some(value) = config.ambient_enabled {
+                    npc_registries.environment_light.ambient_enabled = value;
+                }
+                if let Some(value) = config.ambient_color {
+                    npc_registries.environment_light.ambient_color = value;
+                }
+                if let Some(value) = config.ambient_brightness {
+                    npc_registries.environment_light.ambient_brightness = value.max(0.0);
+                }
+                if let Some(value) = config.hour_of_day {
+                    npc_registries.environment_light.hour_of_day = value.rem_euclid(24.0);
+                }
+                if let Some(value) = config.azimuth_deg {
+                    npc_registries.environment_light.azimuth_deg = value;
+                }
+                if let Some(value) = config.max_elevation_deg {
+                    npc_registries.environment_light.max_elevation_deg = value.clamp(0.0, 89.0);
+                }
+                if let Some(value) = config.fog_enabled {
+                    npc_registries.environment_light.fog_enabled = value;
+                }
+                if let Some(value) = config.fog_color {
+                    npc_registries.environment_light.fog_color = value;
+                }
+                if let Some(value) = config.fog_directional_light_color {
+                    npc_registries.environment_light.fog_directional_light_color = value;
+                }
+                if let Some(value) = config.fog_directional_light_exponent {
+                    npc_registries.environment_light.fog_directional_light_exponent = value.max(0.0);
+                }
+                if let Some(value) = config.fog_start {
+                    npc_registries.environment_light.fog_start = value.max(0.0);
+                }
+                if let Some(value) = config.fog_end {
+                    npc_registries.environment_light.fog_end = value.max(0.0);
+                }
+                if let Some(value) = config.fog_follow_streaming_boundary {
+                    npc_registries.environment_light.fog_follow_streaming_boundary = value;
+                }
+                if let Some(value) = config.fog_boundary_inner_distance {
+                    npc_registries.environment_light.fog_boundary_inner_distance = value.max(0.0);
+                }
+                if let Some(value) = config.fog_boundary_outer_distance {
+                    npc_registries.environment_light.fog_boundary_outer_distance = value.max(0.0);
+                }
+                if npc_registries.environment_light.fog_end < npc_registries.environment_light.fog_start {
+                    npc_registries.environment_light.fog_end = npc_registries.environment_light.fog_start;
+                }
+                if let Some(value) = config.volumetric_fog_enabled {
+                    npc_registries.environment_light.volumetric_fog_enabled = value;
+                }
+                if let Some(value) = config.volumetric_fog_ambient_color {
+                    npc_registries.environment_light.volumetric_fog_ambient_color = value;
+                }
+                if let Some(value) = config.volumetric_fog_ambient_intensity {
+                    npc_registries.environment_light.volumetric_fog_ambient_intensity = value.max(0.0);
+                }
+                if let Some(value) = config.volumetric_fog_jitter {
+                    npc_registries.environment_light.volumetric_fog_jitter = value.max(0.0);
+                }
+                if let Some(value) = config.volumetric_fog_step_count {
+                    npc_registries.environment_light.volumetric_fog_step_count = value.max(1);
+                }
+            }
+
+            LuaCommand::SetEnvironmentTime { hour_of_day } => {
+                npc_registries.environment_light.hour_of_day = hour_of_day.rem_euclid(24.0);
             }
 
             LuaCommand::SetNpcTask {

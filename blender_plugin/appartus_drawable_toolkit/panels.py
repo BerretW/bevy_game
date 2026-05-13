@@ -92,6 +92,27 @@ def _draw_bevy_material_props(layout, mat):
         oc.prop(props, "alpha_threshold", slider=True)
 
 
+def _draw_light_entity_props(entity_box, obj):
+    light = obj.data
+    entity_box.prop(obj.bevy_toolkit_obj, "export_name")
+    entity_box.label(text=f"Light Type: {light.type}", icon="LIGHT")
+    entity_box.prop(light, "color")
+    entity_box.prop(light, "energy")
+    entity_box.prop(light, "use_shadow", text="Shadows")
+    entity_box.prop(light, "shadow_soft_size", text="Radius")
+
+    if light.type != 'SUN':
+        entity_box.prop(light, "use_custom_distance", text="Custom Range")
+        if light.use_custom_distance:
+            entity_box.prop(light, "cutoff_distance", text="Range")
+        else:
+            entity_box.label(text="Range export fallback: 20 m", icon="INFO")
+
+    if light.type == 'SPOT':
+        entity_box.prop(light, "spot_size", text="Outer Cone")
+        entity_box.prop(light, "spot_blend", text="Inner Blend")
+
+
 class BEVY_PT_MaterialPanel(bpy.types.Panel):
     bl_label      = "Appartu Drawable Toolkit"
     bl_idname     = "MATERIAL_PT_bevy_ads"
@@ -119,7 +140,7 @@ class BEVY_PT_ObjectPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.active_object is not None and context.active_object.type == "MESH"
+        return context.active_object is not None and context.active_object.type in {"MESH", "LIGHT"}
 
     def draw(self, context):
         layout  = self.layout
@@ -128,39 +149,41 @@ class BEVY_PT_ObjectPanel(bpy.types.Panel):
 
         entity_box, entity_open = _collapsible_box(layout, settings, "ui_show_entity", "Entity", "PHYSICS")
         if entity_open:
-            entity_box.prop(obj.bevy_toolkit_obj, "export_name")
-            entity_box.prop(obj.bevy_toolkit_obj, "is_col")
-            if is_collision_object(obj):
-                entity_box.prop(obj.bevy_toolkit_obj, "col_shape")
-                entity_box.prop(obj.bevy_toolkit_obj, "mass")
-                entity_box.prop(obj.bevy_toolkit_obj, "is_static")
-                entity_box.prop(obj.bevy_toolkit_obj, "col_climbable")
-                entity_box.prop(obj.bevy_toolkit_obj, "col_ladder")
-                entity_box.prop(obj.bevy_toolkit_obj, "col_material")
-                entity_box.prop(obj.bevy_toolkit_obj, "friction")
-                entity_box.prop(obj.bevy_toolkit_obj, "restitution")
-                entity_box.prop(obj.bevy_toolkit_obj, "tags_csv")
-                entity_box.label(text="Axis Locks")
-                row = entity_box.row(align=True)
-                row.prop(obj.bevy_toolkit_obj, "lock_tx", text="Move X")
-                row.prop(obj.bevy_toolkit_obj, "lock_ty", text="Move Y")
-                row.prop(obj.bevy_toolkit_obj, "lock_tz", text="Move Z")
-                row = entity_box.row(align=True)
-                row.prop(obj.bevy_toolkit_obj, "lock_rx", text="Rot X")
-                row.prop(obj.bevy_toolkit_obj, "lock_ry", text="Rot Y")
-                row.prop(obj.bevy_toolkit_obj, "lock_rz", text="Rot Z")
+            if obj.type == "LIGHT":
+                _draw_light_entity_props(entity_box, obj)
             else:
-                entity_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
-                entity_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
+                entity_box.prop(obj.bevy_toolkit_obj, "export_name")
+                entity_box.prop(obj.bevy_toolkit_obj, "is_col")
+                if is_collision_object(obj):
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_shape")
+                    entity_box.prop(obj.bevy_toolkit_obj, "mass")
+                    entity_box.prop(obj.bevy_toolkit_obj, "is_static")
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_climbable")
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_ladder")
+                    entity_box.prop(obj.bevy_toolkit_obj, "col_material")
+                    entity_box.prop(obj.bevy_toolkit_obj, "friction")
+                    entity_box.prop(obj.bevy_toolkit_obj, "restitution")
+                    entity_box.prop(obj.bevy_toolkit_obj, "tags_csv")
+                    entity_box.label(text="Axis Locks")
+                    row = entity_box.row(align=True)
+                    row.prop(obj.bevy_toolkit_obj, "lock_tx", text="Move X")
+                    row.prop(obj.bevy_toolkit_obj, "lock_ty", text="Move Y")
+                    row.prop(obj.bevy_toolkit_obj, "lock_tz", text="Move Z")
+                    row = entity_box.row(align=True)
+                    row.prop(obj.bevy_toolkit_obj, "lock_rx", text="Rot X")
+                    row.prop(obj.bevy_toolkit_obj, "lock_ry", text="Rot Y")
+                    row.prop(obj.bevy_toolkit_obj, "lock_rz", text="Rot Z")
+                else:
+                    entity_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
+                    entity_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
 
-                # LOD info (pouze pro mesh objekty)
-                export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
-                lod_level = _lod_level_from_name(export_name)
-                lod_row = entity_box.row()
-                lod_row.label(
-                    text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
-                    icon="MOD_DECIM",
-                )
+                    export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
+                    lod_level = _lod_level_from_name(export_name)
+                    lod_row = entity_box.row()
+                    lod_row.label(
+                        text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
+                        icon="MOD_DECIM",
+                    )
 
         export_box, export_open = _collapsible_box(layout, settings, "ui_show_import_export", "Import / Export", "EXPORT")
         if export_open:
@@ -321,61 +344,65 @@ class BEVY_PT_Panel(bpy.types.Panel):
             self._draw_export_box(layout, settings)
             return
 
-        if obj.type == "MESH":
+        if obj.type in {"MESH", "LIGHT"}:
             entity_box, entity_open = _collapsible_box(layout, settings, "ui_show_entity", "Entity", "PHYSICS")
             if entity_open:
-                entity_box.prop(obj.bevy_toolkit_obj, "export_name")
-                entity_box.prop(obj.bevy_toolkit_obj, "is_col")
-                if is_collision_object(obj):
-                    entity_box.prop(obj.bevy_toolkit_obj, "col_shape")
-                    entity_box.prop(obj.bevy_toolkit_obj, "mass")
-                    entity_box.prop(obj.bevy_toolkit_obj, "is_static")
-                    entity_box.prop(obj.bevy_toolkit_obj, "col_climbable")
-                    entity_box.prop(obj.bevy_toolkit_obj, "col_ladder")
-                    entity_box.prop(obj.bevy_toolkit_obj, "col_material")
-                    entity_box.prop(obj.bevy_toolkit_obj, "friction")
-                    entity_box.prop(obj.bevy_toolkit_obj, "restitution")
-                    entity_box.prop(obj.bevy_toolkit_obj, "tags_csv")
-                    entity_box.label(text="Axis Locks")
-                    row = entity_box.row(align=True)
-                    row.prop(obj.bevy_toolkit_obj, "lock_tx", text="Move X")
-                    row.prop(obj.bevy_toolkit_obj, "lock_ty", text="Move Y")
-                    row.prop(obj.bevy_toolkit_obj, "lock_tz", text="Move Z")
-                    row = entity_box.row(align=True)
-                    row.prop(obj.bevy_toolkit_obj, "lock_rx", text="Rot X")
-                    row.prop(obj.bevy_toolkit_obj, "lock_ry", text="Rot Y")
-                    row.prop(obj.bevy_toolkit_obj, "lock_rz", text="Rot Z")
+                if obj.type == "LIGHT":
+                    _draw_light_entity_props(entity_box, obj)
                 else:
-                    entity_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
-                    entity_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
+                    entity_box.prop(obj.bevy_toolkit_obj, "export_name")
+                    entity_box.prop(obj.bevy_toolkit_obj, "is_col")
+                    if is_collision_object(obj):
+                        entity_box.prop(obj.bevy_toolkit_obj, "col_shape")
+                        entity_box.prop(obj.bevy_toolkit_obj, "mass")
+                        entity_box.prop(obj.bevy_toolkit_obj, "is_static")
+                        entity_box.prop(obj.bevy_toolkit_obj, "col_climbable")
+                        entity_box.prop(obj.bevy_toolkit_obj, "col_ladder")
+                        entity_box.prop(obj.bevy_toolkit_obj, "col_material")
+                        entity_box.prop(obj.bevy_toolkit_obj, "friction")
+                        entity_box.prop(obj.bevy_toolkit_obj, "restitution")
+                        entity_box.prop(obj.bevy_toolkit_obj, "tags_csv")
+                        entity_box.label(text="Axis Locks")
+                        row = entity_box.row(align=True)
+                        row.prop(obj.bevy_toolkit_obj, "lock_tx", text="Move X")
+                        row.prop(obj.bevy_toolkit_obj, "lock_ty", text="Move Y")
+                        row.prop(obj.bevy_toolkit_obj, "lock_tz", text="Move Z")
+                        row = entity_box.row(align=True)
+                        row.prop(obj.bevy_toolkit_obj, "lock_rx", text="Rot X")
+                        row.prop(obj.bevy_toolkit_obj, "lock_ry", text="Rot Y")
+                        row.prop(obj.bevy_toolkit_obj, "lock_rz", text="Rot Z")
+                    else:
+                        entity_box.prop(obj.bevy_toolkit_obj, "cast_shadows")
+                        entity_box.operator("bevy.gen_col", icon="MESH_CUBE", text="Generate COL_ proxy")
 
-                    export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
-                    lod_level = _lod_level_from_name(export_name)
-                    entity_box.label(
-                        text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
-                        icon="MOD_DECIM",
-                    )
+                        export_name = obj.bevy_toolkit_obj.export_name.strip() or obj.name
+                        lod_level = _lod_level_from_name(export_name)
+                        entity_box.label(
+                            text=f"LOD Level: {lod_level}" + (" (base)" if lod_level == 0 else ""),
+                            icon="MOD_DECIM",
+                        )
 
-            paint_box, paint_open = _collapsible_box(layout, settings, "ui_show_vertex_masks", "Vertex Masks", "VPAINT_HLT")
-            if paint_open:
-                paint_box.label(text="bevy_masks  (COLOR_0)")
-                paint_box.label(text="R=NormSupp/L1  G=dirt  B=wet  A=palette")
-                paint_box.operator("bevy.init_project", text="Initialize bevy_masks")
-                row = paint_box.row(align=True)
-                row.operator("bevy.set_paint", text="Norm/L1 (R)").mode = "NORMAL_SUPP"
-                row.operator("bevy.set_paint", text="Dirt (G)").mode    = "DIRT"
-                row.operator("bevy.set_paint", text="Wet (B)").mode     = "WET"
-                row.operator("bevy.set_paint", text="Erase").mode       = "ERASE"
+            if obj.type == "MESH":
+                paint_box, paint_open = _collapsible_box(layout, settings, "ui_show_vertex_masks", "Vertex Masks", "VPAINT_HLT")
+                if paint_open:
+                    paint_box.label(text="bevy_masks  (COLOR_0)")
+                    paint_box.label(text="R=NormSupp/L1  G=dirt  B=wet  A=palette")
+                    paint_box.operator("bevy.init_project", text="Initialize bevy_masks")
+                    row = paint_box.row(align=True)
+                    row.operator("bevy.set_paint", text="Norm/L1 (R)").mode = "NORMAL_SUPP"
+                    row.operator("bevy.set_paint", text="Dirt (G)").mode    = "DIRT"
+                    row.operator("bevy.set_paint", text="Wet (B)").mode     = "WET"
+                    row.operator("bevy.set_paint", text="Erase").mode       = "ERASE"
 
-                paint_box.separator(factor=0.4)
-                paint_box.label(text="Presets (fill all vertices):")
-                row = paint_box.row(align=True)
-                row.operator("bevy.apply_vertex_preset", text="Standard").preset = "standard"
-                row.operator("bevy.apply_vertex_preset", text="Metal").preset    = "metal"
-                row.operator("bevy.apply_vertex_preset", text="Wood").preset     = "wood"
-                row.operator("bevy.apply_vertex_preset", text="Brick").preset    = "brick"
-                row = paint_box.row(align=True)
-                row.prop(settings, "alpha_fill_value")
+                    paint_box.separator(factor=0.4)
+                    paint_box.label(text="Presets (fill all vertices):")
+                    row = paint_box.row(align=True)
+                    row.operator("bevy.apply_vertex_preset", text="Standard").preset = "standard"
+                    row.operator("bevy.apply_vertex_preset", text="Metal").preset    = "metal"
+                    row.operator("bevy.apply_vertex_preset", text="Wood").preset     = "wood"
+                    row.operator("bevy.apply_vertex_preset", text="Brick").preset    = "brick"
+                    row = paint_box.row(align=True)
+                    row.prop(settings, "alpha_fill_value")
                 row.operator("bevy.fill_alpha_mask", text="Fill A (palette)")
 
                 paint_box.separator(factor=0.5)
