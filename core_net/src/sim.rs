@@ -531,6 +531,12 @@ pub fn receive_npc_transform_updates(
                     update.formation_offset[1],
                     update.formation_offset[2],
                 ),
+                avoidance_offset: Vec3::new(
+                    update.avoidance_offset[0],
+                    update.avoidance_offset[1],
+                    update.avoidance_offset[2],
+                ),
+                avoidance_timer: update.avoidance_timer,
             };
             transform.translation = translation;
             transform.rotation = rotation;

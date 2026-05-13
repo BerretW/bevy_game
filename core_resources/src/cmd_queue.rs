@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::ecs::hierarchy::ChildOf;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::reflect::Reflect;
 use core_shared::{Health, NetTransform, PlayerMarker};
@@ -211,6 +212,22 @@ pub enum LuaCommand {
     RegisterNpcBrain {
         brain_id: String,
         def: NpcBrainDef,
+    },
+    RegisterNpcScenario {
+        scenario_id: String,
+        def: NpcScenarioDef,
+    },
+    ConfigureNpcScenarioClock {
+        config: NpcScenarioClockConfigPatch,
+    },
+    ConfigureNpcAiLod {
+        config: NpcAiLodConfigPatch,
+    },
+    ConfigureNpcPopulationDirector {
+        config: NpcPopulationDirectorConfigPatch,
+    },
+    SetNpcScenarioTime {
+        hour_of_day: f32,
     },
     SetNpcBrain {
         handle: u64,
@@ -631,6 +648,8 @@ pub struct ReplicatedNpcSteering {
     pub entity_target_position: Option<Vec3>,
     pub entity_target_velocity: Vec3,
     pub formation_offset: Vec3,
+    pub avoidance_offset: Vec3,
+    pub avoidance_timer: f32,
 }
 
 impl Default for ReplicatedNpcSteering {
@@ -648,6 +667,8 @@ impl Default for ReplicatedNpcSteering {
             entity_target_position: None,
             entity_target_velocity: Vec3::ZERO,
             formation_offset: Vec3::ZERO,
+            avoidance_offset: Vec3::ZERO,
+            avoidance_timer: 0.0,
         }
     }
 }
@@ -680,6 +701,9 @@ pub struct NpcAiLodConfig {
     pub reduced_tick_interval: f32,
     pub full_budget_per_player: usize,
     pub reduced_budget_per_player: usize,
+    pub zone_size: f32,
+    pub full_budget_per_zone: usize,
+    pub reduced_budget_per_zone: usize,
 }
 
 impl Default for NpcAiLodConfig {
@@ -690,8 +714,181 @@ impl Default for NpcAiLodConfig {
             reduced_tick_interval: 0.25,
             full_budget_per_player: 24,
             reduced_budget_per_player: 48,
+            zone_size: 160.0,
+            full_budget_per_zone: 32,
+            reduced_budget_per_zone: 72,
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NpcAiLodConfigPatch {
+    #[serde(default)]
+    pub full_radius: Option<f32>,
+    #[serde(default)]
+    pub reduced_radius: Option<f32>,
+    #[serde(default)]
+    pub reduced_tick_interval: Option<f32>,
+    #[serde(default)]
+    pub full_budget_per_player: Option<usize>,
+    #[serde(default)]
+    pub reduced_budget_per_player: Option<usize>,
+    #[serde(default)]
+    pub zone_size: Option<f32>,
+    #[serde(default)]
+    pub full_budget_per_zone: Option<usize>,
+    #[serde(default)]
+    pub reduced_budget_per_zone: Option<usize>,
+}
+
+fn default_json_object() -> Json {
+    Json::Object(JsonMap::new())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NpcScenarioDef {
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub task: Option<NpcTaskKind>,
+    #[serde(default)]
+    pub target_pos: Option<Vec3>,
+    #[serde(default)]
+    pub active_from_hour: Option<f32>,
+    #[serde(default)]
+    pub active_until_hour: Option<f32>,
+    #[serde(default)]
+    pub max_occupants: Option<usize>,
+    #[serde(default)]
+    pub lod_priority: u8,
+    #[serde(default)]
+    pub auto_assign: bool,
+    #[serde(default)]
+    pub assignment_radius: Option<f32>,
+    #[serde(default)]
+    pub release_distance: Option<f32>,
+    #[serde(default)]
+    pub required_tags: Vec<String>,
+    #[serde(default)]
+    pub preferred_brain_kind: Option<crate::npc_brain::NpcBrainKind>,
+    #[serde(default = "default_json_object")]
+    pub params: Json,
+}
+
+#[derive(Resource, Debug, Clone, Default)]
+pub struct NpcScenarioRegistry {
+    pub defs: HashMap<String, NpcScenarioDef>,
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct NpcScenarioTime {
+    pub hour_of_day: f32,
+}
+
+impl Default for NpcScenarioTime {
+    fn default() -> Self {
+        Self { hour_of_day: 12.0 }
+    }
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct NpcScenarioClockConfig {
+    pub auto_advance: bool,
+    pub day_length_seconds: f32,
+}
+
+impl Default for NpcScenarioClockConfig {
+    fn default() -> Self {
+        Self {
+            auto_advance: true,
+            day_length_seconds: 1200.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NpcScenarioClockConfigPatch {
+    #[serde(default)]
+    pub auto_advance: Option<bool>,
+    #[serde(default)]
+    pub day_length_seconds: Option<f32>,
+}
+
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct NpcPopulationDirectorConfig {
+    pub default_assignment_radius: f32,
+    pub release_distance_multiplier: f32,
+    pub default_release_distance: f32,
+}
+
+impl Default for NpcPopulationDirectorConfig {
+    fn default() -> Self {
+        Self {
+            default_assignment_radius: 96.0,
+            release_distance_multiplier: 1.5,
+            default_release_distance: 96.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NpcPopulationDirectorConfigPatch {
+    #[serde(default)]
+    pub default_assignment_radius: Option<f32>,
+    #[serde(default)]
+    pub release_distance_multiplier: Option<f32>,
+    #[serde(default)]
+    pub default_release_distance: Option<f32>,
+}
+
+impl NpcScenarioRegistry {
+    pub fn upsert(&mut self, mut def: NpcScenarioDef) {
+        if def.id.trim().is_empty() {
+            return;
+        }
+        if !matches!(def.params, Json::Object(_)) {
+            def.params = default_json_object();
+        }
+        self.defs.insert(def.id.clone(), def);
+    }
+
+    pub fn get(&self, scenario_id: &str) -> Option<&NpcScenarioDef> {
+        self.defs.get(scenario_id)
+    }
+}
+
+#[derive(SystemParam)]
+pub struct NpcRuntimeRegistries<'w> {
+    pub npc_brains: ResMut<'w, NpcBrainRegistry>,
+    pub npc_scenarios: ResMut<'w, NpcScenarioRegistry>,
+    pub npc_scenario_clock: ResMut<'w, NpcScenarioClockConfig>,
+    pub npc_ai_lod: ResMut<'w, NpcAiLodConfig>,
+    pub npc_population_director: ResMut<'w, NpcPopulationDirectorConfig>,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct NpcScenarioRuntimeState {
+    pub active: bool,
+    pub occupancy_granted: bool,
+    pub occupancy_slot: Option<usize>,
+    pub lod_priority: u8,
+}
+
+impl Default for NpcScenarioRuntimeState {
+    fn default() -> Self {
+        Self {
+            active: true,
+            occupancy_granted: true,
+            occupancy_slot: None,
+            lod_priority: 0,
+        }
+    }
+}
+
+#[derive(Component, Debug, Clone)]
+pub struct NpcPopulationAssignment {
+    pub scenario_id: String,
 }
 
 #[derive(Component, Debug, Clone)]
@@ -714,6 +911,8 @@ pub struct NpcAgent {
     pub entity_target_position: Option<Vec3>,
     pub entity_target_velocity: Vec3,
     pub formation_offset: Vec3,
+    pub avoidance_offset: Vec3,
+    pub avoidance_timer: f32,
 }
 
 impl NpcAgent {
@@ -740,6 +939,8 @@ impl NpcAgent {
             entity_target_position: None,
             entity_target_velocity: Vec3::ZERO,
             formation_offset: Vec3::ZERO,
+            avoidance_offset: Vec3::ZERO,
+            avoidance_timer: 0.0,
         }
     }
 
@@ -752,6 +953,8 @@ impl NpcAgent {
         self.entity_target_position = None;
         self.entity_target_velocity = Vec3::ZERO;
         self.formation_offset = Vec3::ZERO;
+        self.avoidance_offset = Vec3::ZERO;
+        self.avoidance_timer = 0.0;
     }
 
     fn next_rand01(&mut self) -> f32 {
@@ -837,6 +1040,342 @@ fn decode_vec3_json(value: &Json) -> Option<Vec3> {
     ))
 }
 
+fn merge_json_objects(base: &Json, overlay: &Json) -> Json {
+    let mut merged = match base {
+        Json::Object(map) => map.clone(),
+        _ => JsonMap::new(),
+    };
+
+    if let Json::Object(overlay_map) = overlay {
+        for (key, value) in overlay_map {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+
+    Json::Object(merged)
+}
+
+fn apply_scenario_to_brain(
+    scenario_registry: &NpcScenarioRegistry,
+    brain: &ReplicatedNpcBrain,
+) -> ReplicatedNpcBrain {
+    let Some(scenario_id) = brain.scenario_id.as_deref() else {
+        return brain.clone();
+    };
+    let Some(scenario) = scenario_registry.get(scenario_id) else {
+        return brain.clone();
+    };
+
+    let mut effective = brain.clone();
+    effective.params = merge_json_objects(&scenario.params, &effective.params);
+
+    if matches!(effective.target, NpcBrainTarget::None) {
+        if let Some(target_pos) = scenario.target_pos {
+            effective.target = NpcBrainTarget::Position(target_pos);
+        }
+    }
+
+    if matches!(effective.task, NpcTaskKind::UseScenarioPoint) {
+        effective.task = scenario.task.unwrap_or(NpcTaskKind::Investigate);
+    }
+
+    effective
+}
+
+fn scenario_is_active(def: &NpcScenarioDef, hour_of_day: f32) -> bool {
+    match (def.active_from_hour, def.active_until_hour) {
+        (Some(start), Some(end)) => {
+            let hour = hour_of_day.rem_euclid(24.0);
+            let start = start.rem_euclid(24.0);
+            let end = end.rem_euclid(24.0);
+            if start <= end {
+                hour >= start && hour <= end
+            } else {
+                hour >= start || hour <= end
+            }
+        }
+        _ => true,
+    }
+}
+
+fn npc_supports_scenario(
+    brain_registry: &NpcBrainRegistry,
+    brain_state: Option<&NpcBrainState>,
+    brain: &ReplicatedNpcBrain,
+    scenario: &NpcScenarioDef,
+) -> bool {
+    let brain_id = brain_state
+        .map(|state| state.brain_id.as_str())
+        .unwrap_or(brain.brain_id.as_str());
+    let brain_def = brain_registry.resolve_or_fallback(brain_id);
+
+    if let Some(required_kind) = scenario.preferred_brain_kind {
+        if brain_def.kind != required_kind {
+            return false;
+        }
+    }
+
+    scenario.required_tags.iter().all(|required_tag| {
+        brain_def
+            .scenario_tags
+            .iter()
+            .any(|tag| tag.eq_ignore_ascii_case(required_tag))
+    })
+}
+
+fn release_population_assignment(
+    brain_registry: &NpcBrainRegistry,
+    brain_state: Option<&NpcBrainState>,
+    brain: &mut ReplicatedNpcBrain,
+) {
+    let brain_id = brain_state
+        .map(|state| state.brain_id.as_str())
+        .unwrap_or(brain.brain_id.as_str());
+    let brain_def = brain_registry.resolve_or_fallback(brain_id);
+    brain.scenario_id = None;
+    brain.target = NpcBrainTarget::None;
+    brain.task = brain_def.default_task;
+    brain.params = default_json_object();
+}
+
+fn task_priority(task: NpcTaskKind) -> i32 {
+    match task {
+        NpcTaskKind::Combat => 90,
+        NpcTaskKind::ChaseTarget => 80,
+        NpcTaskKind::Flee => 75,
+        NpcTaskKind::FollowTarget => 65,
+        NpcTaskKind::Investigate => 55,
+        NpcTaskKind::UseScenarioPoint => 35,
+        NpcTaskKind::DriveRoute | NpcTaskKind::FlyRoute | NpcTaskKind::SwimRoute => 30,
+        NpcTaskKind::PatrolRoute => 24,
+        NpcTaskKind::WanderZone | NpcTaskKind::Ambient => 16,
+        NpcTaskKind::Idle => 0,
+    }
+}
+
+fn brain_kind_priority(kind: crate::npc_brain::NpcBrainKind) -> i32 {
+    match kind {
+        crate::npc_brain::NpcBrainKind::Human => 8,
+        crate::npc_brain::NpcBrainKind::Vehicle => 7,
+        crate::npc_brain::NpcBrainKind::Animal => 5,
+        crate::npc_brain::NpcBrainKind::Bird => 3,
+        crate::npc_brain::NpcBrainKind::Fish => 2,
+    }
+}
+
+fn npc_lod_priority_score(
+    brain_registry: &NpcBrainRegistry,
+    scenario_runtime: Option<&NpcScenarioRuntimeState>,
+    brain_state: Option<&NpcBrainState>,
+    brain: &ReplicatedNpcBrain,
+) -> i32 {
+    let brain_id = brain_state
+        .map(|state| state.brain_id.as_str())
+        .unwrap_or(brain.brain_id.as_str());
+    let def = brain_registry.resolve_or_fallback(brain_id);
+    let scenario_bonus = scenario_runtime
+        .map(|runtime| runtime.lod_priority as i32 * 20)
+        .unwrap_or(0);
+    let occupancy_bonus = scenario_runtime
+        .map(|runtime| if runtime.occupancy_granted { 8 } else { -12 })
+        .unwrap_or(0);
+
+    scenario_bonus + occupancy_bonus + task_priority(brain.task) + brain_kind_priority(def.kind)
+}
+
+pub fn sync_npc_scenario_runtime(
+    scenario_time: Res<NpcScenarioTime>,
+    scenario_registry: Res<NpcScenarioRegistry>,
+    mut commands: Commands,
+    npcs: Query<(Entity, &ReplicatedNpcBrain, &Transform)>,
+) {
+    let mut occupants_by_scenario: HashMap<String, Vec<(Entity, f32)>> = HashMap::new();
+
+    for (entity, brain, transform) in &npcs {
+        let Some(scenario_id) = brain.scenario_id.as_deref() else {
+            continue;
+        };
+        let Some(scenario) = scenario_registry.get(scenario_id) else {
+            continue;
+        };
+        if let Some(max_occupants) = scenario.max_occupants {
+            if max_occupants > 0 {
+                let distance = scenario
+                    .target_pos
+                    .map(|target| target.distance(transform.translation))
+                    .unwrap_or(0.0);
+                occupants_by_scenario
+                    .entry(scenario_id.to_string())
+                    .or_default()
+                    .push((entity, distance));
+            }
+        }
+    }
+
+    let mut occupancy_by_entity: HashMap<Entity, (bool, Option<usize>)> = HashMap::new();
+    for (scenario_id, occupants) in &mut occupants_by_scenario {
+        let Some(scenario) = scenario_registry.get(scenario_id) else {
+            continue;
+        };
+        let Some(max_occupants) = scenario.max_occupants else {
+            continue;
+        };
+        occupants.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (idx, (entity, _)) in occupants.iter().enumerate() {
+            occupancy_by_entity.insert(*entity, (idx < max_occupants, (idx < max_occupants).then_some(idx)));
+        }
+    }
+
+    for (entity, brain, _) in &npcs {
+        let mut runtime = NpcScenarioRuntimeState::default();
+        if let Some(scenario_id) = brain.scenario_id.as_deref() {
+            if let Some(scenario) = scenario_registry.get(scenario_id) {
+                runtime.active = scenario_is_active(scenario, scenario_time.hour_of_day);
+                runtime.lod_priority = scenario.lod_priority;
+                if scenario.max_occupants.unwrap_or(0) > 0 {
+                    let (granted, slot) = occupancy_by_entity
+                        .get(&entity)
+                        .copied()
+                        .unwrap_or((false, None));
+                    runtime.occupancy_granted = granted;
+                    runtime.occupancy_slot = slot;
+                }
+            }
+        }
+        commands.entity(entity).insert(runtime);
+    }
+}
+
+pub fn advance_npc_scenario_time(
+    time: Res<Time>,
+    side: Res<ResourcesSide>,
+    clock: Res<NpcScenarioClockConfig>,
+    mut scenario_time: ResMut<NpcScenarioTime>,
+) {
+    if !matches!(side.0, Side::Server) || !clock.auto_advance {
+        return;
+    }
+    let delta_hours = time.delta_secs() * (24.0 / clock.day_length_seconds.max(1.0));
+    scenario_time.hour_of_day = (scenario_time.hour_of_day + delta_hours).rem_euclid(24.0);
+}
+
+pub fn run_npc_population_director(
+    side: Res<ResourcesSide>,
+    scenario_time: Res<NpcScenarioTime>,
+    director_config: Res<NpcPopulationDirectorConfig>,
+    scenario_registry: Res<NpcScenarioRegistry>,
+    brain_registry: Res<NpcBrainRegistry>,
+    mut commands: Commands,
+    mut npcs: Query<(
+        Entity,
+        &Transform,
+        &mut ReplicatedNpcBrain,
+        Option<&NpcBrainState>,
+        Option<&NpcPopulationAssignment>,
+    )>,
+) {
+    if !matches!(side.0, Side::Server) {
+        return;
+    }
+
+    let mut occupant_counts: HashMap<String, usize> = HashMap::new();
+    for (_, _, brain, _, _) in &npcs {
+        if let Some(scenario_id) = brain.scenario_id.as_ref() {
+            *occupant_counts.entry(scenario_id.clone()).or_default() += 1;
+        }
+    }
+
+    for (entity, transform, mut brain, brain_state, assignment) in &mut npcs {
+        let Some(assignment) = assignment else {
+            continue;
+        };
+        let should_release = match scenario_registry.get(&assignment.scenario_id) {
+            Some(scenario) => {
+                let active = scenario_is_active(scenario, scenario_time.hour_of_day);
+                let in_range = scenario.target_pos.map(|target| {
+                    let release_distance = scenario
+                        .release_distance
+                        .or(scenario.assignment_radius.map(|radius| radius * director_config.release_distance_multiplier))
+                        .unwrap_or(director_config.default_release_distance);
+                    target.distance(transform.translation) <= release_distance
+                }).unwrap_or(true);
+                !active || !in_range || !npc_supports_scenario(&brain_registry, brain_state, &brain, scenario)
+            }
+            None => true,
+        };
+
+        if should_release {
+            if let Some(count) = occupant_counts.get_mut(&assignment.scenario_id) {
+                *count = count.saturating_sub(1);
+            }
+            release_population_assignment(&brain_registry, brain_state, &mut brain);
+            commands.entity(entity).remove::<NpcPopulationAssignment>();
+        }
+    }
+
+    let mut scenarios_to_fill: Vec<&NpcScenarioDef> = scenario_registry
+        .defs
+        .values()
+        .filter(|scenario| {
+            scenario.auto_assign
+                && scenario.target_pos.is_some()
+                && scenario_is_active(scenario, scenario_time.hour_of_day)
+                && occupant_counts.get(&scenario.id).copied().unwrap_or(0)
+                    < scenario.max_occupants.unwrap_or(1)
+        })
+        .collect();
+    scenarios_to_fill.sort_by(|a, b| b.lod_priority.cmp(&a.lod_priority));
+
+    for scenario in scenarios_to_fill {
+        let target = scenario.target_pos.unwrap_or(Vec3::ZERO);
+        let max_occupants = scenario.max_occupants.unwrap_or(1);
+
+        while occupant_counts.get(&scenario.id).copied().unwrap_or(0) < max_occupants {
+            let mut best_candidate: Option<(Entity, f32)> = None;
+
+            for (entity, transform, brain, brain_state, assignment) in &npcs {
+                if assignment.is_some() || brain.scenario_id.is_some() {
+                    continue;
+                }
+                if !matches!(brain.task, NpcTaskKind::Idle | NpcTaskKind::Ambient) {
+                    continue;
+                }
+                if !npc_supports_scenario(&brain_registry, brain_state, brain, scenario) {
+                    continue;
+                }
+                let distance = target.distance(transform.translation);
+                let assignment_radius = scenario
+                    .assignment_radius
+                    .unwrap_or(director_config.default_assignment_radius);
+                if distance > assignment_radius {
+                    continue;
+                }
+                match best_candidate {
+                    Some((_, best_distance)) if distance >= best_distance => {}
+                    _ => best_candidate = Some((entity, distance)),
+                }
+            }
+
+            let Some((entity, _)) = best_candidate else {
+                break;
+            };
+
+            if let Ok((_, _, mut brain, _, _)) = npcs.get_mut(entity) {
+                brain.task = NpcTaskKind::UseScenarioPoint;
+                brain.scenario_id = Some(scenario.id.clone());
+                brain.target = NpcBrainTarget::None;
+                brain.params = default_json_object();
+                commands.entity(entity).insert(NpcPopulationAssignment {
+                    scenario_id: scenario.id.clone(),
+                });
+                *occupant_counts.entry(scenario.id.clone()).or_default() += 1;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn brain_to_goal(brain: &ReplicatedNpcBrain) -> NpcMoveGoal {
     let stop_distance = brain
         .params
@@ -895,14 +1434,16 @@ fn brain_to_goal(brain: &ReplicatedNpcBrain) -> NpcMoveGoal {
 
 pub fn apply_replicated_npc_brain(
     brain_registry: &NpcBrainRegistry,
+    scenario_registry: &NpcScenarioRegistry,
     brain: &ReplicatedNpcBrain,
     state: &mut NpcBrainState,
     agent: &mut NpcAgent,
 ) {
     let canonical_brain_id = brain_registry.canonical_brain_id(&brain.brain_id);
     let def = brain_registry.resolve_or_fallback(&canonical_brain_id);
-    let effective_task = if def.allowed_tasks.contains(&brain.task) {
-        brain.task
+    let mut effective_brain = apply_scenario_to_brain(scenario_registry, brain);
+    let effective_task = if def.allowed_tasks.contains(&effective_brain.task) {
+        effective_brain.task
     } else {
         def.default_task
     };
@@ -912,7 +1453,6 @@ pub fn apply_replicated_npc_brain(
     agent.turn_speed = def.motion.turn_speed.max(0.0);
     agent.arrive_distance = def.motion.brake_distance.max(0.01);
 
-    let mut effective_brain = brain.clone();
     effective_brain.brain_id = canonical_brain_id;
     effective_brain.task = effective_task;
     let desired_goal = brain_to_goal(&effective_brain);
@@ -936,6 +1476,8 @@ pub fn snapshot_npc_steering(agent: &NpcAgent) -> ReplicatedNpcSteering {
         entity_target_position: agent.entity_target_position,
         entity_target_velocity: agent.entity_target_velocity,
         formation_offset: agent.formation_offset,
+        avoidance_offset: agent.avoidance_offset,
+        avoidance_timer: agent.avoidance_timer,
     }
 }
 
@@ -952,6 +1494,16 @@ pub fn apply_replicated_npc_steering(agent: &mut NpcAgent, steering: &Replicated
     agent.entity_target_position = steering.entity_target_position;
     agent.entity_target_velocity = steering.entity_target_velocity;
     agent.formation_offset = steering.formation_offset;
+    agent.avoidance_offset = steering.avoidance_offset;
+    agent.avoidance_timer = steering.avoidance_timer;
+}
+
+fn npc_zone_key(position: Vec3, zone_size: f32) -> (i32, i32) {
+    let size = zone_size.max(1.0);
+    (
+        (position.x / size).floor() as i32,
+        (position.z / size).floor() as i32,
+    )
 }
 
 fn lod_allows_tick(
@@ -976,10 +1528,18 @@ fn lod_allows_tick(
 
 pub fn sync_npc_brains_to_agents(
     brain_registry: Res<NpcBrainRegistry>,
-    mut npcs: Query<(&ReplicatedNpcBrain, &mut NpcBrainState, &mut NpcAgent)>,
+    scenario_registry: Res<NpcScenarioRegistry>,
+    mut npcs: Query<(&ReplicatedNpcBrain, Option<&NpcScenarioRuntimeState>, &mut NpcBrainState, &mut NpcAgent)>,
 ) {
-    for (brain, mut state, mut agent) in &mut npcs {
-        apply_replicated_npc_brain(&brain_registry, brain, &mut state, &mut agent);
+    for (brain, runtime, mut state, mut agent) in &mut npcs {
+        let mut effective_brain = brain.clone();
+        if let Some(runtime) = runtime {
+            if !runtime.active || !runtime.occupancy_granted {
+                effective_brain.task = NpcTaskKind::Idle;
+                effective_brain.target = NpcBrainTarget::None;
+            }
+        }
+        apply_replicated_npc_brain(&brain_registry, &scenario_registry, &effective_brain, &mut state, &mut agent);
     }
 }
 
@@ -1042,7 +1602,17 @@ pub fn assign_npc_owners(
     time: Res<Time>,
     lod_config: Res<NpcAiLodConfig>,
     mut timer: Local<f32>,
-    mut npcs: Query<(Entity, &Transform, &mut NpcOwner, &mut NpcOwnershipLease, &mut NpcAiLodState), With<NpcAgent>>,
+    brain_registry: Res<NpcBrainRegistry>,
+    mut npcs: Query<(
+        Entity,
+        &Transform,
+        &ReplicatedNpcBrain,
+        Option<&NpcScenarioRuntimeState>,
+        Option<&NpcBrainState>,
+        &mut NpcOwner,
+        &mut NpcOwnershipLease,
+        &mut NpcAiLodState,
+    ), With<NpcAgent>>,
     players: Query<(&Transform, &PlayerMarker)>,
 ) {
     *timer += time.delta_secs();
@@ -1059,14 +1629,16 @@ pub fn assign_npc_owners(
 
     let mut desired_lod_by_entity: HashMap<Entity, NpcAiLodLevel> = HashMap::new();
     let mut controlling_player_by_entity: HashMap<Entity, u64> = HashMap::new();
-    let mut full_candidates: HashMap<u64, Vec<(Entity, f32)>> = HashMap::new();
-    let mut active_candidates: HashMap<u64, Vec<(Entity, f32)>> = HashMap::new();
+    let mut full_candidates: HashMap<u64, Vec<(Entity, f32, i32)>> = HashMap::new();
+    let mut active_candidates: HashMap<u64, Vec<(Entity, f32, i32)>> = HashMap::new();
+    let mut zone_candidates: HashMap<(i32, i32), Vec<(Entity, f32, i32)>> = HashMap::new();
 
-    for (entity, npc_tf, _owner, _lease, _lod_state) in &mut npcs {
+    for (entity, npc_tf, brain, scenario_runtime, brain_state, _owner, _lease, _lod_state) in &mut npcs {
         let nearest_player = player_entries
             .iter()
             .map(|(client_id, pos)| (*client_id, pos.distance(npc_tf.translation)))
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let priority = npc_lod_priority_score(&brain_registry, scenario_runtime, brain_state, brain);
 
         let base_lod = match nearest_player {
             Some((_, distance)) if distance <= lod_config.full_radius => NpcAiLodLevel::Full,
@@ -1078,17 +1650,21 @@ pub fn assign_npc_owners(
         if let Some((client_id, distance)) = nearest_player {
             if !matches!(base_lod, NpcAiLodLevel::Background) {
                 controlling_player_by_entity.insert(entity, client_id);
-                active_candidates.entry(client_id).or_default().push((entity, distance));
+                active_candidates.entry(client_id).or_default().push((entity, distance, priority));
+                zone_candidates
+                    .entry(npc_zone_key(npc_tf.translation, lod_config.zone_size))
+                    .or_default()
+                    .push((entity, distance, priority));
                 if matches!(base_lod, NpcAiLodLevel::Full) {
-                    full_candidates.entry(client_id).or_default().push((entity, distance));
+                    full_candidates.entry(client_id).or_default().push((entity, distance, priority));
                 }
             }
         }
     }
 
     for candidates in full_candidates.values_mut() {
-        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        for (idx, (entity, _)) in candidates.iter().enumerate() {
+        candidates.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
+        for (idx, (entity, _, _)) in candidates.iter().enumerate() {
             if idx >= lod_config.full_budget_per_player {
                 desired_lod_by_entity.insert(*entity, NpcAiLodLevel::Reduced);
             }
@@ -1099,15 +1675,31 @@ pub fn assign_npc_owners(
         .full_budget_per_player
         .saturating_add(lod_config.reduced_budget_per_player);
     for candidates in active_candidates.values_mut() {
-        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        for (idx, (entity, _)) in candidates.iter().enumerate() {
+        candidates.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
+        for (idx, (entity, _, _)) in candidates.iter().enumerate() {
             if idx >= total_active_budget {
                 desired_lod_by_entity.insert(*entity, NpcAiLodLevel::Background);
             }
         }
     }
 
-    for (entity, npc_tf, mut owner, mut lease, mut lod_state) in &mut npcs {
+    let total_zone_budget = lod_config
+        .full_budget_per_zone
+        .saturating_add(lod_config.reduced_budget_per_zone);
+    for candidates in zone_candidates.values_mut() {
+        candidates.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
+        for (idx, (entity, _, _)) in candidates.iter().enumerate() {
+            if idx >= total_zone_budget {
+                desired_lod_by_entity.insert(*entity, NpcAiLodLevel::Background);
+            } else if idx >= lod_config.full_budget_per_zone {
+                if matches!(desired_lod_by_entity.get(entity), Some(NpcAiLodLevel::Full)) {
+                    desired_lod_by_entity.insert(*entity, NpcAiLodLevel::Reduced);
+                }
+            }
+        }
+    }
+
+    for (entity, npc_tf, _brain, _scenario_runtime, _brain_state, mut owner, mut lease, mut lod_state) in &mut npcs {
         lod_state.level = desired_lod_by_entity
             .get(&entity)
             .copied()
@@ -1348,7 +1940,7 @@ impl LocalPlayerStats {
 pub fn process_lua_commands(
     cmd_queue: Res<CommandQueue>,
     mut world_state: ResMut<LuaWorldState>,
-    mut npc_brains: ResMut<NpcBrainRegistry>,
+    mut npc_registries: NpcRuntimeRegistries,
     player_map: Res<PlayerEntityMap>,
     npc_brain_states: Query<&NpcBrainState>,
     npc_replicated_brains: Query<&ReplicatedNpcBrain>,
@@ -1834,14 +2426,14 @@ pub fn process_lua_commands(
                         agent.wander_timer = 0.0;
                         agent.reset_navigation_state();
                         commands.entity(entity).insert(brain_from_goal(
-                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_registries.npc_brains),
                             &agent.goal,
                         ));
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = std::mem::replace(&mut goal, NpcMoveGoal::Idle);
                         let brain = brain_from_goal(
-                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_registries.npc_brains),
                             &agent.goal,
                         );
                         commands.entity(entity).insert((agent, brain, NpcBrainState::default()));
@@ -1872,14 +2464,14 @@ pub fn process_lua_commands(
                         agent.goal = goal;
                         agent.reset_navigation_state();
                         commands.entity(entity).insert(brain_from_goal(
-                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_registries.npc_brains),
                             &agent.goal,
                         ));
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = goal;
                         let brain = brain_from_goal(
-                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_registries.npc_brains),
                             &agent.goal,
                         );
                         commands.entity(entity).insert((agent, brain, NpcBrainState::default()));
@@ -1910,14 +2502,14 @@ pub fn process_lua_commands(
                         agent.goal = goal;
                         agent.reset_navigation_state();
                         commands.entity(entity).insert(brain_from_goal(
-                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_registries.npc_brains),
                             &agent.goal,
                         ));
                     } else {
                         let mut agent = NpcAgent::new(handle, home);
                         agent.goal = goal;
                         let brain = brain_from_goal(
-                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_brains),
+                            active_brain_id_for_entity(entity, &npc_brain_states, &npc_registries.npc_brains),
                             &agent.goal,
                         );
                         commands.entity(entity).insert((agent, brain, NpcBrainState::default()));
@@ -1943,13 +2535,13 @@ pub fn process_lua_commands(
                 if def.id.trim().is_empty() {
                     def.id = brain_id.clone();
                 }
-                npc_brains.upsert(def);
+                npc_registries.npc_brains.upsert(def);
                 info!("[npc_brain] registered/upserted '{}'", brain_id);
             }
 
             LuaCommand::SetNpcBrain { handle, brain_id } => {
                 if let Some(entity) = world_state.entity_for(handle) {
-                    let resolved = npc_brains.canonical_brain_id(&brain_id);
+                    let resolved = npc_registries.npc_brains.canonical_brain_id(&brain_id);
                     if resolved != brain_id {
                         warn!(
                             "[npc_brain] unknown brain '{}' for handle {} — falling back to '{}'",
@@ -1970,6 +2562,67 @@ pub fn process_lua_commands(
                 }
             }
 
+            LuaCommand::RegisterNpcScenario { scenario_id, mut def } => {
+                if def.id.trim().is_empty() {
+                    def.id = scenario_id.clone();
+                }
+                npc_registries.npc_scenarios.upsert(def);
+            }
+
+            LuaCommand::ConfigureNpcScenarioClock { config } => {
+                if let Some(auto_advance) = config.auto_advance {
+                    npc_registries.npc_scenario_clock.auto_advance = auto_advance;
+                }
+                if let Some(day_length_seconds) = config.day_length_seconds {
+                    npc_registries.npc_scenario_clock.day_length_seconds = day_length_seconds.max(1.0);
+                }
+            }
+
+            LuaCommand::ConfigureNpcAiLod { config } => {
+                if let Some(value) = config.full_radius {
+                    npc_registries.npc_ai_lod.full_radius = value.max(1.0);
+                }
+                if let Some(value) = config.reduced_radius {
+                    npc_registries.npc_ai_lod.reduced_radius = value.max(1.0);
+                }
+                if let Some(value) = config.reduced_tick_interval {
+                    npc_registries.npc_ai_lod.reduced_tick_interval = value.max(0.01);
+                }
+                if let Some(value) = config.full_budget_per_player {
+                    npc_registries.npc_ai_lod.full_budget_per_player = value;
+                }
+                if let Some(value) = config.reduced_budget_per_player {
+                    npc_registries.npc_ai_lod.reduced_budget_per_player = value;
+                }
+                if let Some(value) = config.zone_size {
+                    npc_registries.npc_ai_lod.zone_size = value.max(1.0);
+                }
+                if let Some(value) = config.full_budget_per_zone {
+                    npc_registries.npc_ai_lod.full_budget_per_zone = value;
+                }
+                if let Some(value) = config.reduced_budget_per_zone {
+                    npc_registries.npc_ai_lod.reduced_budget_per_zone = value;
+                }
+            }
+
+            LuaCommand::ConfigureNpcPopulationDirector { config } => {
+                if let Some(value) = config.default_assignment_radius {
+                    npc_registries.npc_population_director.default_assignment_radius = value.max(1.0);
+                }
+                if let Some(value) = config.release_distance_multiplier {
+                    npc_registries.npc_population_director.release_distance_multiplier = value.max(1.0);
+                }
+                if let Some(value) = config.default_release_distance {
+                    npc_registries.npc_population_director.default_release_distance = value.max(1.0);
+                }
+            }
+
+            LuaCommand::SetNpcScenarioTime { hour_of_day } => {
+                commands.insert_resource(NpcScenarioTime {
+                    hour_of_day: hour_of_day.rem_euclid(24.0),
+                });
+            }
+
             LuaCommand::SetNpcTask {
                 handle,
                 task,
@@ -1981,8 +2634,8 @@ pub fn process_lua_commands(
                 if let Some(entity) = world_state.entity_for(handle) {
                     let brain_id = npc_brain_states
                         .get(entity)
-                        .map(|state| npc_brains.canonical_brain_id(&state.brain_id))
-                        .unwrap_or_else(|_| npc_brains.canonical_brain_id("core/human"));
+                        .map(|state| npc_registries.npc_brains.canonical_brain_id(&state.brain_id))
+                        .unwrap_or_else(|_| npc_registries.npc_brains.canonical_brain_id("core/human"));
                     let target = match (target_handle, target_pos) {
                         (Some(target_handle), _) => NpcBrainTarget::Entity(target_handle),
                         (_, Some(target_pos)) => NpcBrainTarget::Position(Vec3::new(target_pos[0], target_pos[1], target_pos[2])),
@@ -2269,8 +2922,15 @@ pub fn tick_npc_agents(
         let mut complete_goal = false;
         let mut advance_waypoint = false;
 
+        if agent.avoidance_timer > 0.0 {
+            agent.avoidance_timer = (agent.avoidance_timer - dt).max(0.0);
+            if agent.avoidance_timer <= 0.0 {
+                agent.avoidance_offset = Vec3::ZERO;
+            }
+        }
+
         let goal_snapshot = agent.goal.clone();
-        let target_pos = if let Some(waypoint) = agent.current_path.get(agent.waypoint_index) {
+        let mut target_pos = if let Some(waypoint) = agent.current_path.get(agent.waypoint_index) {
             stop_distance = stop_distance.max(0.1);
             waypoint.target
         } else {
@@ -2406,6 +3066,10 @@ pub fn tick_npc_agents(
                 }
             }
         }};
+
+        if agent.avoidance_timer > 0.0 {
+            target_pos += agent.avoidance_offset;
+        }
 
         let to_target = Vec2::new(
             target_pos.x - transform.translation.x,

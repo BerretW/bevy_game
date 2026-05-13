@@ -26,12 +26,15 @@ pub use cmd_queue::{
     AdsSocketMap, AnimationState, AttachedAnimSets, BlendSpaceState, CollisionEnabled, CommandQueue, EntityHandle, EntitySnapshot,
     ColliderObjectMarker, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind, StairsCollider,
     EntityStateCache, IkEnabledComponent, Inventory, LocalObjectMarker, LuaCommand, LuaMaterialOverride,
-    NpcAgent, NpcAiLodConfig, NpcAiLodLevel, NpcAiLodState, NpcLastClientUpdate, NpcMoveGoal,
-    NpcOwner, NpcPathWaypoint, NpcWanderKind, PedProfileOverride,
+    NpcAgent, NpcAiLodConfig, NpcAiLodConfigPatch, NpcAiLodLevel, NpcAiLodState, NpcLastClientUpdate, NpcMoveGoal,
+    NpcOwner, NpcPathWaypoint, NpcScenarioDef, NpcScenarioRegistry, NpcScenarioRuntimeState,
+    NpcPopulationDirectorConfig, NpcPopulationDirectorConfigPatch, NpcScenarioClockConfig,
+    NpcScenarioClockConfigPatch, NpcScenarioTime, NpcPopulationAssignment, NpcWanderKind, PedProfileOverride,
     ReplicatedNpcSteering, apply_replicated_npc_steering, snapshot_npc_steering,
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, NpcPedMarker, PendingDamageEvent,
     PlayerEntityMap, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
-    apply_replicated_npc_brain, assign_npc_owners, process_lua_commands, sync_entity_state_cache,
+    advance_npc_scenario_time, apply_replicated_npc_brain, assign_npc_owners, process_lua_commands,
+    run_npc_population_director, sync_entity_state_cache, sync_npc_scenario_runtime,
 };
 pub use npc_brain::{
     CORE_ANIMAL_BRAIN_ID, CORE_BIRD_BRAIN_ID, CORE_FISH_BRAIN_ID, CORE_HUMAN_BRAIN_ID,

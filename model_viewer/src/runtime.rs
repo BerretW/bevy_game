@@ -17,7 +17,7 @@ use core_drawable::{
 };
 use core_resources::{
     NpcAgent, NpcBrainRegistry, NpcBrainState, NpcBrainTarget, NpcMoveGoal, NpcTaskKind,
-    NpcWanderKind, ReplicatedNpcBrain, ReplicatedNpcSteering, apply_replicated_npc_brain,
+    NpcScenarioRegistry, NpcWanderKind, ReplicatedNpcBrain, ReplicatedNpcSteering, apply_replicated_npc_brain,
     snapshot_npc_steering,
 };
 
@@ -117,6 +117,7 @@ pub(crate) fn handle_npc_brain_keyboard(
 pub(crate) fn sync_npc_brain_debug(
     active_root: Res<ActiveViewerModelRoot>,
     registry: Res<NpcBrainRegistry>,
+    scenario_registry: Res<NpcScenarioRegistry>,
     mut debug: ResMut<NpcBrainDebugState>,
     transforms: Query<&Transform>,
     mut commands: Commands,
@@ -156,7 +157,7 @@ pub(crate) fn sync_npc_brain_debug(
     let brain = build_viewer_brain(brain_id.clone(), debug.task_preset, home, &debug);
     let mut brain_state = NpcBrainState::new(brain_id);
     let mut agent = NpcAgent::new(root.to_bits(), home);
-    apply_replicated_npc_brain(&registry, &brain, &mut brain_state, &mut agent);
+    apply_replicated_npc_brain(&registry, &scenario_registry, &brain, &mut brain_state, &mut agent);
     let steering = snapshot_npc_steering(&agent);
 
     commands.entity(root).insert((brain_state, brain, agent, steering));

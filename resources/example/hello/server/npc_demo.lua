@@ -44,6 +44,40 @@ local function register_custom_brains()
     })
 end
 
+local function register_scenarios()
+    World.NpcRegisterScenario('hello/watch_post', {
+        label = 'Town Guard Watch Post',
+        task = 'investigate',
+        target_pos = { -3.0, 0.0, -3.0 },
+        active_from_hour = 6.0,
+        active_until_hour = 22.0,
+        max_occupants = 1,
+        lod_priority = 4,
+        auto_assign = true,
+        assignment_radius = 32.0,
+        required_tags = { 'human' },
+        preferred_brain_kind = 'human',
+        params = {
+            stop_distance = 0.25,
+            idle_clip = 'clip:0',
+            facing_yaw = 90.0,
+        },
+    })
+
+    World.NpcRegisterScenario('hello/zombie_perimeter', {
+        label = 'Zombie Perimeter',
+        task = 'wander_zone',
+        target_pos = { -2.5, 0.0, 2.5 },
+        max_occupants = 4,
+        lod_priority = 1,
+        params = {
+            radius = 6.0,
+            retarget_sec = 1.4,
+            wander_kind = 'random',
+        },
+    })
+end
+
 local function spawn_npc(model, pos, ped_profile)
     local handle
     if ped_profile then
@@ -61,7 +95,30 @@ local function ensure_setup()
         return
     end
 
+    World.NpcConfigureScenarioClock({
+        auto_advance = true,
+        day_length_seconds = 900.0,
+    })
+
+    World.NpcConfigurePopulationDirector({
+        default_assignment_radius = 48.0,
+        release_distance_multiplier = 1.75,
+        default_release_distance = 96.0,
+    })
+
+    World.NpcConfigureAiLod({
+        full_radius = 115.0,
+        reduced_radius = 225.0,
+        reduced_tick_interval = 0.3,
+        full_budget_per_player = 24,
+        reduced_budget_per_player = 56,
+        zone_size = 160.0,
+        full_budget_per_zone = 32,
+        reduced_budget_per_zone = 80,
+    })
+
     register_custom_brains()
+    register_scenarios()
 
     lure_anchor = World.SpawnNetworkedDummy(
         'sphere',
@@ -107,12 +164,6 @@ local function ensure_setup()
         arrive_distance = 0.2,
         turn_speed = 9.0,
     })
-    World.NpcSetScenario(town_guard, 'hello/watch_post', {
-        target_pos = { x = -3.0, y = 0.0, z = -3.0 },
-        stop_distance = 0.25,
-        idle_clip = 'clip:0',
-        facing_yaw = 90.0,
-    })
 
     CreateThread(function()
         local t = 0.0
@@ -135,7 +186,7 @@ local function ensure_setup()
             if zombie_scout and World.IsValid(zombie_scout) then
                 World.NpcSetTask(zombie_scout, 'investigate', {
                     scenario_id = 'hello/noise_probe',
-                    target_pos = { x = 2.0, y = 0.0, z = 4.0 },
+                    target_pos = { 2.0, 0.0, 4.0 },
                     stop_distance = 0.5,
                     investigate_hold_sec = 2.0,
                 })

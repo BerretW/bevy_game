@@ -53,6 +53,8 @@ Tohle je důležité pro škálování:
 - avoidance cache a další jemná obstacle steering metadata zatím stále nejsou součástí handoff snapshotu
 - AI LOD foundation je nově v runtime přes `NpcAiLodState` + distance thresholds (`full`, `reduced`, `background`), ale zatím bez density budgetů per tile/zone a bez scheduler napojení
 - ownership runtime teď navíc používá první per-player density budgety (`full_budget_per_player`, `reduced_budget_per_player`): přebytek v `Full` se demotuje do `Reduced` a přebytek nad celkový aktivní budget padá do `Background`
+- budgety už nejsou čistě per-player: `assign_npc_owners` teď navíc aplikuje i coarse zone budget (`zone_size`, `full_budget_per_zone`, `reduced_budget_per_zone`), takže přetížené zóny padají do `Reduced/Background` i když je nejbližší hráč stále v dosahu
+- owned klient teď drží i lehkou obstacle avoidance cache (`avoidance_offset`, `avoidance_timer`) z forward raycastu; cache se snapshotuje přes `ReplicatedNpcSteering` / `NpcTransformUpdate`, takže handoff nemusí po obstacle kontaktu restartovat z čisté corridor follow trajektorie
 - obstacle avoidance a kvalitnější slope/terrain locomotion pro owned NPC
 
 ---
@@ -196,6 +198,21 @@ Owner klient pak z těchto tasků vyrábí konkrétní lokální pohyb:
 
 Tohle je pružnější než replikovat celý behavior tree nebo interní steering stav.
 
+Aktuální stav:
+
+- `scenario_id` už není jen metadata v `ReplicatedNpcBrain`
+- `NpcScenarioRegistry` drží runtime scénářové definice registrované z Lua resources přes `World.NpcRegisterScenario(id, def)`
+- `apply_replicated_npc_brain()` mergeuje scenario default params do aktuálního brain kontraktu a při `UseScenarioPoint` převádí scénář na efektivní task/target ještě před překladem do `NpcMoveGoal`
+- `NpcScenarioDef` teď umí i `active_from_hour`, `active_until_hour`, `max_occupants` a `lod_priority`
+- `NpcScenarioTime` + Lua API `World.NpcSetScenarioTime(hour)` dávají jednoduchý testovací scheduler clock
+- `sync_npc_scenario_runtime()` počítá runtime stav scénáře per NPC: `active`, `occupancy_granted`, `occupancy_slot`, `lod_priority`
+- `sync_npc_brains_to_agents()` fallbackne na `Idle`, pokud je scénář neaktivní nebo přeobsazený
+- `assign_npc_owners()` používá scenario priority + task type + brain archetype při trimování `Full/Reduced/Background` budgetů
+- `NpcScenarioClockConfig` + `advance_npc_scenario_time()` posouvají serverovou denní dobu automaticky bez ručního Lua bootstrapu
+- `run_npc_population_director()` umí auto-assignnout volná NPC do scénářů s `auto_assign=true`, `required_tags`, `preferred_brain_kind` a `assignment_radius`
+- auto-assigned NPC drží `NpcPopulationAssignment`; při neaktivním scénáři nebo odchodu mimo release radius se scénář zase uvolní
+- globální chování už není zadrátované jen v Rust defaults: Lua může runtime ladit přes `World.NpcConfigureScenarioClock(opts)`, `World.NpcConfigurePopulationDirector(opts)` a `World.NpcConfigureAiLod(opts)`
+
 ---
 
 ### 4.2. AI LOD pro stovky NPC
@@ -273,6 +290,139 @@ if let Some(hit) = spatial.cast_ray(pos + Vec3::Y * 0.5, Dir3::NEG_Y, 2.0, ...) 
 - Replikovaný high-level brain goal musí být `Serialize + Deserialize`
 - Lokální `NpcAgent` nemusí být plně replikovaný
 - lightyear channel pro Client→Server unreliable messages
+
+---
+
+## Delivery plán do cíle: populace pro města i divočinu
+
+**Cíl:** NPC AI systém schopný dlouhodobě obsluhovat hustou populaci ve městech i rozptýlenou populaci v divočině bez toho, aby Rust core držel herně specifické chování natvrdo.
+
+### Co už máme jako základ
+
+- runtime brain registry + fallback `core/human`
+- high-level replikační kontrakt `ReplicatedNpcBrain`
+- ownership handoff s hysteresis, cooldownem a fallbackem po tichu ownera
+- client-owned locomotion loop + server fallback
+- coarse steering continuity snapshot
+- lehký obstacle avoidance cache snapshot
+- AI LOD foundation (`Full` / `Reduced` / `Background`) + per-player a coarse per-zone budgety
+- model viewer NPC brain debug režim
+
+To už stačí jako základ lokomotion/ownership vrstvy. Do cílového stavu ale ještě chybí nadstavba pro populaci, obsah a provozní škálování.
+
+### Fáze A — Dokončit lokomotion core
+
+Smysl: stabilní low-level pohyb, který neunaví klienta ani server a neshazuje chase/escort při handoffu.
+
+- dotáhnout obstacle avoidance z lehkého sidestep impulse na robustnější steering vrstvu s krátkodobou pamětí hitů
+- oddělit `Full` a `Reduced` locomotion profile: reduced bez jemných bočních korekcí, delší repath interval, méně časté target refresh
+- doplnit terrain/slope heuristiky pro NPC mimo schody: měkký ground snap, jednoduché slope limity, prevence jitteru na hranách colliderů
+- sjednotit pohybový krok mezi client runtime a model viewer debug helperem, aby viewer nelhal o chování
+
+Exit kritéria:
+
+- chase/follow/escort handoff nepůsobí reset corridoru ani po obstacle kontaktu
+- reduced NPC zůstávají pohybově stabilní bez jemného avoidance
+- viewer a in-game debug dávají podobné chování pro stejné brain/task vstupy
+
+### Fáze B — Přesunout LOD z coarse gridu na skutečnou relevanci světa
+
+Smysl: hustá města a rozlehlá wilderness nebudou škálovat dobře jen podle nejbližšího hráče a hrubého world-gridu.
+
+- napojit `NpcAiLodConfig` a ownership na skutečné tile/zone relevance z map streaming vrstvy
+- zavést budgety per tile/zone a ne jen per hráč / coarse grid bucket
+- odlišit LOD budgety pro typy populace: městská civilní populace, guards, fauna, ambient critters, vehicles
+- přidat pravidla priorit: quest/scenario/combat NPC mají přednost před ambient populací
+
+Exit kritéria:
+
+- přetížené centrum města degraduje ambient populaci dřív než důležité scenario/combat NPC
+- wilderness tile poblíž hráče drží lokálně relevantní zvířata/NPC bez zbytečného oživování vzdálených zón
+- server umí vysvětlit proč NPC spadlo do `Reduced` nebo `Background`
+
+### Fáze C — Scenario/Task vrstva pro obsah
+
+Smysl: bez scenario vrstvy budou NPC jen lokálně pobíhat, ale nebudou tvořit věrohodný svět.
+
+- rozšířit `NpcTask` / `NpcScenarioId` kontrakt o skutečné scénářové šablony: guard post, vendor counter, tavern idle, street patrol, camp idle, herd graze, predator stalk, flee to cover
+- definovat occupancy body a route data v resources, ne v Rust core
+- doplnit jednoduchý scheduler: den/noc, počasí, alarm/combat override, occupancy release/acquire
+- přidat scenario interpreter nad současný brain kontrakt místo toho, aby každé resource ručně skládalo pouze low-level go-to příkazy
+
+Exit kritéria:
+
+- město jde postavit jako sada scenario points + schedules bez hardcoded Rust logiky
+- wilderness fauna používá stejný systém, jen jiné brain/task/scenario kombinace
+- při hot-reload resources lze měnit scénáře bez rebuildu Rustu
+
+### Fáze D — Population director pro spawn/despawn a budgety
+
+Smysl: samotný brain systém nestačí; potřebujeme vrstvu, která rozhoduje kdo vůbec ve světě existuje.
+
+- zavést server-side population director nad tile/zone indexem
+- director bude držet cílové budgety per zone: town civilian density, guards, traffic, wildlife, predators, camp NPC, random events
+- spawn bude driven scénářem a relevancí, ne jen trvalým seznamem všech NPC ve světě
+- background NPC přejdou do lightweight representation: scenario/schedule stav bez plné ECS fyziky a bez detailní lokomotion simulace
+
+Exit kritéria:
+
+- server neudržuje plně aktivní stovky až tisíce NPC najednou; detailní ECS dostanou jen relevantní jednotky
+- městská zóna i wilderness zóna mají samostatné budgety a spawn pravidla
+- při návratu hráče do zóny se populace obnoví z deterministického scenario/schedule stavu, ne náhodně bez continuity
+
+### Fáze E — Reakční AI a combat vrstva
+
+Smysl: populace musí umět reagovat na hráče, hrozby a ruch světa.
+
+- doplnit perception bridge: sight/hearing/alert propagation, minimálně jako server-side high-level eventy
+- přidat task přechody `investigate`, `flee`, `combat`, `return_to_scenario`, `call_for_help`
+- guards a hostile NPC musí umět přecházet mezi scenario a combat režimem bez rozpadu ownership/LOD modelu
+- fauna potřebuje základní predator/prey loop a panic propagation pro herd/chase situace
+
+Exit kritéria:
+
+- guard populace ve městě reaguje na incident a po odeznění se vrací do scenario layer
+- wilderness fauna umí flee / regroup / stalk podle typu brainu
+- combat/investigate NPC mají prioritu v LOD a director je nedemotuje příliš agresivně
+
+### Fáze F — Debug, telemetrie, authoring workflow
+
+Smysl: bez nástrojů nepůjde systém ladit ani authorovat ve větším měřítku.
+
+- viewer overlay a in-game debug panel pro `NpcAiLodState`, ownera, scenario id, current task, avoidance cache, budget reason
+- log nebo event tracing pro handoff, LOD změny, scenario transitions a population director decisions
+- authoring workflow pro zone/scenario body/route body v resources nebo map datech
+- profilovací režim: počet full/reduced/background NPC per zone, per player a per archetype
+
+Exit kritéria:
+
+- z debug panelu je vidět proč konkrétní NPC existuje, kdo ho simuluje a proč je v daném LOD
+- content autor umí přidat městskou i wilderness populaci bez změn Rust core
+
+### Fáze G — Zátěžové ověření a produkční hranice
+
+Smysl: cílový systém musí mít ověřené limity, ne jen architektonický záměr.
+
+- připravit benchmark mapy: malé město, velké město, lesní zóna, mixed frontier oblast
+- ověřit minimálně tři profily: 1 hráč / 4 hráči / 16 hráčů v jedné oblasti
+- měřit: počet full/reduced/background NPC, fixed tick cost, handoff churn, nav/repath cost, network traffic na `NpcTransformUpdate`
+- podle výsledků doladit LOD prahy, budgety a throttling cadence
+
+Exit kritéria:
+
+- máme známé provozní budgety pro města i divočinu
+- víme, kde je limit client-owned modelu a kdy je nutné agresivněji přepínat na background representation
+
+## Praktické pořadí implementace odteď
+
+1. Dotáhnout locomotion core a avoidance tak, aby chase/follow/escort byly stabilní i v reduced režimu.
+2. Přepnout LOD budgety z coarse gridu na map/tile/zone relevance a přidat prioritizaci archetypů.
+3. Založit scenario/schedule vrstvu nad současným brain kontraktem.
+4. Postavit population director pro spawn/despawn a lightweight background representation.
+5. Dodat reaction/combat AI přechody nad scenario vrstvu.
+6. Přidat debug/telemetrii a benchmark scénáře.
+
+Pokud se budeme držet tohoto pořadí, dostaneme se od dnešního „ownership + locomotion foundation“ k systému, který skutečně obslouží města i divočinu bez rozbití škálování nebo authoringu.
 
 ---
 

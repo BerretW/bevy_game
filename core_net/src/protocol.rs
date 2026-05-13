@@ -151,6 +151,8 @@ pub struct NpcTransformUpdate {
     pub entity_target_position: Option<[f32; 3]>,
     pub entity_target_velocity: [f32; 3],
     pub formation_offset: [f32; 3],
+    pub avoidance_offset: [f32; 3],
+    pub avoidance_timer: f32,
 }
 
 /// Konstanty pro `PlayerInput::actions` bitfield. Phase 3+ scripty

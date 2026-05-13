@@ -25,7 +25,7 @@ use bevy::math::{EulerRot, Quat};
 use crate::ace::AceRegistry;
 use crate::cmd_queue::{
     CommandQueue, DummyColliderDef, DummyColliderShape, DummyObjectMarker, DummyPrimitiveKind,
-    EntityStateCache, LocalPlayerStats, LuaCommand, NpcWanderKind, PlayerStatsCache,
+    EntityStateCache, LocalPlayerStats, LuaCommand, NpcScenarioDef, NpcWanderKind, PlayerStatsCache,
 };
 use crate::db_bridge::{DbBridge, DbQueryResult};
 use crate::manifest::Manifest;
@@ -1957,6 +1957,88 @@ fn install_runtime_api_inner(
             }
 
             cq.push(LuaCommand::RegisterNpcBrain { brain_id, def });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcRegisterScenario(scenario_id, def)
+    let cq = cmd_queue.clone();
+    world.set("NpcRegisterScenario", lua.create_function(
+        move |_, (scenario_id, def_v): (String, mlua::Value)| {
+            let mlua::Value::Table(def_t) = def_v else {
+                return Err(mlua::Error::RuntimeError(
+                    "NpcRegisterScenario expects a definition table".into(),
+                ));
+            };
+
+            let json = lua_table_to_json(def_t);
+            let mut def: NpcScenarioDef = serde_json::from_value(json)
+                .map_err(|e| mlua::Error::RuntimeError(format!("NpcRegisterScenario: {e}")))?;
+            if def.id.trim().is_empty() {
+                def.id = scenario_id.clone();
+            }
+
+            cq.push(LuaCommand::RegisterNpcScenario { scenario_id, def });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcConfigureScenarioClock(opts)
+    let cq = cmd_queue.clone();
+    world.set("NpcConfigureScenarioClock", lua.create_function(
+        move |_, opts_v: mlua::Value| {
+            let mlua::Value::Table(opts_t) = opts_v else {
+                return Err(mlua::Error::RuntimeError(
+                    "NpcConfigureScenarioClock expects a config table".into(),
+                ));
+            };
+            let json = lua_table_to_json(opts_t);
+            let config = serde_json::from_value(json)
+                .map_err(|e| mlua::Error::RuntimeError(format!("NpcConfigureScenarioClock: {e}")))?;
+            cq.push(LuaCommand::ConfigureNpcScenarioClock { config });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcConfigurePopulationDirector(opts)
+    let cq = cmd_queue.clone();
+    world.set("NpcConfigurePopulationDirector", lua.create_function(
+        move |_, opts_v: mlua::Value| {
+            let mlua::Value::Table(opts_t) = opts_v else {
+                return Err(mlua::Error::RuntimeError(
+                    "NpcConfigurePopulationDirector expects a config table".into(),
+                ));
+            };
+            let json = lua_table_to_json(opts_t);
+            let config = serde_json::from_value(json)
+                .map_err(|e| mlua::Error::RuntimeError(format!("NpcConfigurePopulationDirector: {e}")))?;
+            cq.push(LuaCommand::ConfigureNpcPopulationDirector { config });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcConfigureAiLod(opts)
+    let cq = cmd_queue.clone();
+    world.set("NpcConfigureAiLod", lua.create_function(
+        move |_, opts_v: mlua::Value| {
+            let mlua::Value::Table(opts_t) = opts_v else {
+                return Err(mlua::Error::RuntimeError(
+                    "NpcConfigureAiLod expects a config table".into(),
+                ));
+            };
+            let json = lua_table_to_json(opts_t);
+            let config = serde_json::from_value(json)
+                .map_err(|e| mlua::Error::RuntimeError(format!("NpcConfigureAiLod: {e}")))?;
+            cq.push(LuaCommand::ConfigureNpcAiLod { config });
+            Ok(())
+        },
+    )?)?;
+
+    // World.NpcSetScenarioTime(hour_of_day)
+    let cq = cmd_queue.clone();
+    world.set("NpcSetScenarioTime", lua.create_function(
+        move |_, hour_of_day: f32| {
+            cq.push(LuaCommand::SetNpcScenarioTime { hour_of_day });
             Ok(())
         },
     )?)?;

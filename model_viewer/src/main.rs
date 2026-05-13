@@ -27,7 +27,7 @@ use bevy::window::WindowResolution;
 use core_drawable::{
     DrawablePlugin,
 };
-use core_resources::{ModelRegistry, NpcBrainRegistry};
+use core_resources::{ModelRegistry, NpcBrainRegistry, NpcScenarioRegistry};
 
 mod camera;
 mod state;
@@ -73,6 +73,7 @@ fn main() {
         .init_resource::<WeatherState>()
         .init_resource::<LodViewerState>()
         .init_resource::<NpcBrainRegistry>()
+        .init_resource::<NpcScenarioRegistry>()
         .init_resource::<NpcBrainDebugState>()
         .init_resource::<ActiveViewerModelRoot>()
         .add_plugins(
