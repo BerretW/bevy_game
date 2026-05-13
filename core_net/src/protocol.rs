@@ -148,6 +148,9 @@ pub struct NpcTransformUpdate {
     pub waypoint_index: usize,
     pub map_id: String,
     pub last_nav_target: Option<[f32; 3]>,
+    pub entity_target_position: Option<[f32; 3]>,
+    pub entity_target_velocity: [f32; 3],
+    pub formation_offset: [f32; 3],
 }
 
 /// Konstanty pro `PlayerInput::actions` bitfield. Phase 3+ scripty

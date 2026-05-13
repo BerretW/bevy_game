@@ -45,12 +45,14 @@ Tohle je důležité pro škálování:
 - owning klient má základní terrain snap pro NPC přes raycast dolů, takže client-owned NPC drží terénní Y místo čistého plovoucího transformu
 - nový owner bootstrapuje lokální `NpcAgent` přímo z aktuálního `ReplicatedNpcBrain`, takže handoff nezačíná mezikrokem v `Idle`
 - coarse steering continuity je teď přenášená přes `ReplicatedNpcSteering` / rozšířený `NpcTransformUpdate` (`home`, `wander_target`, `wander_timer`, `orbit_angle`, `patrol_to_target`, `current_path`, `waypoint_index`, `map_id`, `last_nav_target`)
+- chase/follow continuity je nově rozšířená i o lehkou entity-target steering cache (`entity_target_position`, `entity_target_velocity`, `formation_offset`), takže handoff lépe drží pursuit lead a escort/follow offset bez replikace plného avoidance runtime
 
 ### Ještě chybí
 
 - snapshot / resume sync při skutečném client-side handoffu
-- avoidance cache a další čistě lokální steering metadata zatím stále nejsou součástí handoff snapshotu
-- vazba ownershipu na AI LOD budgety a relevanci per tile/zone
+- avoidance cache a další jemná obstacle steering metadata zatím stále nejsou součástí handoff snapshotu
+- AI LOD foundation je nově v runtime přes `NpcAiLodState` + distance thresholds (`full`, `reduced`, `background`), ale zatím bez density budgetů per tile/zone a bez scheduler napojení
+- ownership runtime teď navíc používá první per-player density budgety (`full_budget_per_player`, `reduced_budget_per_player`): přebytek v `Full` se demotuje do `Reduced` a přebytek nad celkový aktivní budget padá do `Background`
 - obstacle avoidance a kvalitnější slope/terrain locomotion pro owned NPC
 
 ---

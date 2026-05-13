@@ -8,7 +8,7 @@ use bevy::prelude::*;
 
 use crate::cmd_queue::{
     assign_npc_owners, process_lua_commands, sync_entity_state_cache, CommandQueue, EntityStateCache,
-    sync_npc_brains_to_agents, tick_npc_agents,
+    sync_npc_brains_to_agents, tick_npc_agents, NpcAiLodConfig,
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
@@ -103,6 +103,7 @@ impl Plugin for ResourcesPlugin {
         app.init_resource::<CommandQueue>();
         app.init_resource::<LuaWorldState>();
         app.init_resource::<NpcBrainRegistry>();
+        app.init_resource::<NpcAiLodConfig>();
         app.add_message::<PendingDamageEvent>();
         app.add_systems(PostUpdate, process_lua_commands);
         app.add_systems(FixedUpdate, (sync_npc_brains_to_agents, tick_npc_agents).chain());

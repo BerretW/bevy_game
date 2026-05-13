@@ -628,6 +628,9 @@ pub struct ReplicatedNpcSteering {
     pub waypoint_index: usize,
     pub map_id: String,
     pub last_nav_target: Option<Vec3>,
+    pub entity_target_position: Option<Vec3>,
+    pub entity_target_velocity: Vec3,
+    pub formation_offset: Vec3,
 }
 
 impl Default for ReplicatedNpcSteering {
@@ -642,6 +645,51 @@ impl Default for ReplicatedNpcSteering {
             waypoint_index: 0,
             map_id: String::new(),
             last_nav_target: None,
+            entity_target_position: None,
+            entity_target_velocity: Vec3::ZERO,
+            formation_offset: Vec3::ZERO,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NpcAiLodLevel {
+    Full,
+    Reduced,
+    Background,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NpcAiLodState {
+    pub level: NpcAiLodLevel,
+}
+
+impl Default for NpcAiLodState {
+    fn default() -> Self {
+        Self {
+            level: NpcAiLodLevel::Full,
+        }
+    }
+}
+
+#[derive(Resource, Debug, Clone)]
+pub struct NpcAiLodConfig {
+    pub full_radius: f32,
+    pub reduced_radius: f32,
+    pub reduced_tick_interval: f32,
+    pub full_budget_per_player: usize,
+    pub reduced_budget_per_player: usize,
+}
+
+impl Default for NpcAiLodConfig {
+    fn default() -> Self {
+        Self {
+            full_radius: 110.0,
+            reduced_radius: NPC_OWNERSHIP_RELEASE_RADIUS,
+            reduced_tick_interval: 0.25,
+            full_budget_per_player: 24,
+            reduced_budget_per_player: 48,
         }
     }
 }
@@ -663,6 +711,9 @@ pub struct NpcAgent {
     pub map_id: String,
     pub last_nav_target: Option<Vec3>,
     pub nav_repath_timer: f32,
+    pub entity_target_position: Option<Vec3>,
+    pub entity_target_velocity: Vec3,
+    pub formation_offset: Vec3,
 }
 
 impl NpcAgent {
@@ -686,6 +737,9 @@ impl NpcAgent {
             map_id: String::new(),
             last_nav_target: None,
             nav_repath_timer: 0.0,
+            entity_target_position: None,
+            entity_target_velocity: Vec3::ZERO,
+            formation_offset: Vec3::ZERO,
         }
     }
 
@@ -695,6 +749,9 @@ impl NpcAgent {
         self.map_id.clear();
         self.last_nav_target = None;
         self.nav_repath_timer = 0.0;
+        self.entity_target_position = None;
+        self.entity_target_velocity = Vec3::ZERO;
+        self.formation_offset = Vec3::ZERO;
     }
 
     fn next_rand01(&mut self) -> f32 {
@@ -876,6 +933,9 @@ pub fn snapshot_npc_steering(agent: &NpcAgent) -> ReplicatedNpcSteering {
         waypoint_index: agent.waypoint_index,
         map_id: agent.map_id.clone(),
         last_nav_target: agent.last_nav_target,
+        entity_target_position: agent.entity_target_position,
+        entity_target_velocity: agent.entity_target_velocity,
+        formation_offset: agent.formation_offset,
     }
 }
 
@@ -889,6 +949,29 @@ pub fn apply_replicated_npc_steering(agent: &mut NpcAgent, steering: &Replicated
     agent.waypoint_index = steering.waypoint_index.min(agent.current_path.len());
     agent.map_id = steering.map_id.clone();
     agent.last_nav_target = steering.last_nav_target;
+    agent.entity_target_position = steering.entity_target_position;
+    agent.entity_target_velocity = steering.entity_target_velocity;
+    agent.formation_offset = steering.formation_offset;
+}
+
+fn lod_allows_tick(
+    handle: u64,
+    level: NpcAiLodLevel,
+    config: &NpcAiLodConfig,
+    elapsed_secs: f32,
+    fixed_dt: f32,
+) -> bool {
+    match level {
+        NpcAiLodLevel::Full => true,
+        NpcAiLodLevel::Background => false,
+        NpcAiLodLevel::Reduced => {
+            let interval_ticks = (config.reduced_tick_interval / fixed_dt)
+                .round()
+                .max(1.0) as u64;
+            let tick = (elapsed_secs / fixed_dt).round().max(0.0) as u64;
+            tick % interval_ticks == handle % interval_ticks
+        }
+    }
 }
 
 pub fn sync_npc_brains_to_agents(
@@ -957,8 +1040,9 @@ pub const NPC_CLIENT_UPDATE_TIMEOUT_SECS: f32 = 5.0;
 ///   → hledáme nejbližšího hráče; pokud nikdo není, NPC zůstane/bude zmrazeno.
 pub fn assign_npc_owners(
     time: Res<Time>,
+    lod_config: Res<NpcAiLodConfig>,
     mut timer: Local<f32>,
-    mut npcs: Query<(&Transform, &mut NpcOwner, &mut NpcOwnershipLease), With<NpcAgent>>,
+    mut npcs: Query<(Entity, &Transform, &mut NpcOwner, &mut NpcOwnershipLease, &mut NpcAiLodState), With<NpcAgent>>,
     players: Query<(&Transform, &PlayerMarker)>,
 ) {
     *timer += time.delta_secs();
@@ -968,30 +1052,97 @@ pub fn assign_npc_owners(
     *timer = 0.0;
 
     let now = time.elapsed_secs();
+    let player_entries: Vec<(u64, Vec3)> = players
+        .iter()
+        .map(|(tf, marker)| (marker.client_id, tf.translation))
+        .collect();
 
-    for (npc_tf, mut owner, mut lease) in &mut npcs {
+    let mut desired_lod_by_entity: HashMap<Entity, NpcAiLodLevel> = HashMap::new();
+    let mut controlling_player_by_entity: HashMap<Entity, u64> = HashMap::new();
+    let mut full_candidates: HashMap<u64, Vec<(Entity, f32)>> = HashMap::new();
+    let mut active_candidates: HashMap<u64, Vec<(Entity, f32)>> = HashMap::new();
+
+    for (entity, npc_tf, _owner, _lease, _lod_state) in &mut npcs {
+        let nearest_player = player_entries
+            .iter()
+            .map(|(client_id, pos)| (*client_id, pos.distance(npc_tf.translation)))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let base_lod = match nearest_player {
+            Some((_, distance)) if distance <= lod_config.full_radius => NpcAiLodLevel::Full,
+            Some((_, distance)) if distance <= lod_config.reduced_radius => NpcAiLodLevel::Reduced,
+            _ => NpcAiLodLevel::Background,
+        };
+        desired_lod_by_entity.insert(entity, base_lod);
+
+        if let Some((client_id, distance)) = nearest_player {
+            if !matches!(base_lod, NpcAiLodLevel::Background) {
+                controlling_player_by_entity.insert(entity, client_id);
+                active_candidates.entry(client_id).or_default().push((entity, distance));
+                if matches!(base_lod, NpcAiLodLevel::Full) {
+                    full_candidates.entry(client_id).or_default().push((entity, distance));
+                }
+            }
+        }
+    }
+
+    for candidates in full_candidates.values_mut() {
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (idx, (entity, _)) in candidates.iter().enumerate() {
+            if idx >= lod_config.full_budget_per_player {
+                desired_lod_by_entity.insert(*entity, NpcAiLodLevel::Reduced);
+            }
+        }
+    }
+
+    let total_active_budget = lod_config
+        .full_budget_per_player
+        .saturating_add(lod_config.reduced_budget_per_player);
+    for candidates in active_candidates.values_mut() {
+        candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (idx, (entity, _)) in candidates.iter().enumerate() {
+            if idx >= total_active_budget {
+                desired_lod_by_entity.insert(*entity, NpcAiLodLevel::Background);
+            }
+        }
+    }
+
+    for (entity, npc_tf, mut owner, mut lease, mut lod_state) in &mut npcs {
+        lod_state.level = desired_lod_by_entity
+            .get(&entity)
+            .copied()
+            .unwrap_or(NpcAiLodLevel::Background);
+
+        if matches!(lod_state.level, NpcAiLodLevel::Background) {
+            owner.0 = None;
+            continue;
+        }
+
+        let assigned_player = controlling_player_by_entity.get(&entity).copied();
         let current_owner_distance = owner.0.and_then(|owner_id| {
-            players.iter()
-                .find_map(|(ptf, pm)| {
-                    if pm.client_id == owner_id {
-                        Some(ptf.translation.distance(npc_tf.translation))
+            player_entries.iter()
+                .find_map(|(client_id, pos)| {
+                    if *client_id == owner_id {
+                        Some(pos.distance(npc_tf.translation))
                     } else {
                         None
                     }
                 })
         });
 
-        let nearest = players
-            .iter()
-            .filter_map(|(ptf, pm)| {
-                let dist = ptf.translation.distance(npc_tf.translation);
+        let nearest = assigned_player.and_then(|client_id| {
+            player_entries.iter().find_map(|(candidate_id, pos)| {
+                if *candidate_id != client_id {
+                    return None;
+                }
+                let dist = pos.distance(npc_tf.translation);
                 if dist <= NPC_OWNERSHIP_RADIUS {
-                    Some((dist, pm.client_id))
+                    Some((dist, client_id))
                 } else {
                     None
                 }
             })
-            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        });
 
         let owner_still_valid = current_owner_distance
             .map(|distance| distance <= NPC_OWNERSHIP_RELEASE_RADIUS)
@@ -1382,6 +1533,7 @@ pub fn process_lua_commands(
                     EntityHandle(handle),
                     NpcOwner::default(),
                     NpcOwnershipLease::default(),
+                    NpcAiLodState::default(),
                     NpcLastClientUpdate::default(),
                     NpcBrainState::default(),
                     ReplicatedNpcBrain::default(),
@@ -2055,6 +2207,7 @@ pub fn process_lua_commands(
 
 pub fn tick_npc_agents(
     time: Res<Time<Fixed>>,
+    lod_config: Res<NpcAiLodConfig>,
     side: Res<ResourcesSide>,
     world_state: Res<LuaWorldState>,
     mut npcs: Query<(
@@ -2065,6 +2218,7 @@ pub fn tick_npc_agents(
         Option<&mut ReplicatedNpcSteering>,
         Option<&NpcOwner>,
         Option<&NpcLastClientUpdate>,
+        Option<&NpcAiLodState>,
     )>,
     globals: Query<&GlobalTransform>,
 ) {
@@ -2075,11 +2229,21 @@ pub fn tick_npc_agents(
 
     let now = time.elapsed_secs();
 
-    for (_handle, mut transform, net_tf_opt, mut agent, steering_opt, owner, last_client_update) in &mut npcs {
+    for (handle, mut transform, net_tf_opt, mut agent, steering_opt, owner, last_client_update, lod_state) in &mut npcs {
+        let lod_level = lod_state.map(|lod| lod.level).unwrap_or(NpcAiLodLevel::Full);
+        if !lod_allows_tick(handle.0, lod_level, &lod_config, now, dt) {
+            if let Some(mut steering) = steering_opt {
+                *steering = snapshot_npc_steering(&agent);
+            }
+            continue;
+        }
+
         // Frozen: žádný hráč v okolí, nesimulujeme pohyb.
         if let Some(o) = owner {
             if o.0.is_none() {
-                continue;
+                if matches!(lod_level, NpcAiLodLevel::Background) {
+                    continue;
+                }
             }
             if matches!(side.0, Side::Server) {
                 let client_owned_is_fresh = match (o.0, last_client_update) {
@@ -2122,8 +2286,47 @@ pub fn tick_npc_agents(
             } => {
                 if let Some(target_entity) = world_state.entity_for(target_handle) {
                     if let Ok(t) = globals.get(target_entity) {
+                        let target_translation = t.translation();
+                        if let Some(previous) = agent.entity_target_position.replace(target_translation) {
+                            let observed_velocity = Vec3::new(
+                                (target_translation.x - previous.x) / dt,
+                                0.0,
+                                (target_translation.z - previous.z) / dt,
+                            );
+                            if observed_velocity.is_finite() {
+                                agent.entity_target_velocity = agent.entity_target_velocity.lerp(observed_velocity, 0.35);
+                            }
+                        }
+
                         stop_distance = stop.max(agent.arrive_distance).max(0.01);
-                        t.translation()
+                        if stop_distance >= 1.35 {
+                            let max_offset = stop_distance.min(4.0).max(0.75);
+                            if agent.formation_offset.length_squared() <= 0.0001 {
+                                let relative = Vec3::new(
+                                    transform.translation.x - target_translation.x,
+                                    0.0,
+                                    transform.translation.z - target_translation.z,
+                                );
+                                if relative.length_squared() > 0.01 {
+                                    agent.formation_offset = relative.clamp_length_max(max_offset);
+                                } else {
+                                    agent.formation_offset = Vec3::new(max_offset * 0.6, 0.0, 0.0);
+                                }
+                            } else {
+                                agent.formation_offset = agent.formation_offset.clamp_length_max(max_offset);
+                            }
+                            target_translation + agent.formation_offset
+                        } else {
+                            agent.formation_offset = Vec3::ZERO;
+                            let pursuit_lead = Vec3::new(
+                                agent.entity_target_velocity.x,
+                                0.0,
+                                agent.entity_target_velocity.z,
+                            )
+                            .clamp_length_max(stop_distance.max(1.0) * 1.5)
+                                * 0.25;
+                            target_translation + pursuit_lead
+                        }
                     } else {
                         continue;
                     }

@@ -1257,6 +1257,17 @@ fn send_owned_npc_transforms(
             waypoint_index: agent.waypoint_index,
             map_id: agent.map_id.clone(),
             last_nav_target: agent.last_nav_target.map(|target| [target.x, target.y, target.z]),
+            entity_target_position: agent.entity_target_position.map(|target| [target.x, target.y, target.z]),
+            entity_target_velocity: [
+                agent.entity_target_velocity.x,
+                agent.entity_target_velocity.y,
+                agent.entity_target_velocity.z,
+            ],
+            formation_offset: [
+                agent.formation_offset.x,
+                agent.formation_offset.y,
+                agent.formation_offset.z,
+            ],
         };
         for mut sender in &mut senders {
             let _ = sender.send::<NpcTransformChannel>(msg.clone());

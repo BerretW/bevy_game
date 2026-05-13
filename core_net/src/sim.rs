@@ -520,6 +520,17 @@ pub fn receive_npc_transform_updates(
                 waypoint_index: update.waypoint_index,
                 map_id: update.map_id.clone(),
                 last_nav_target: update.last_nav_target.map(|p| Vec3::new(p[0], p[1], p[2])),
+                entity_target_position: update.entity_target_position.map(|p| Vec3::new(p[0], p[1], p[2])),
+                entity_target_velocity: Vec3::new(
+                    update.entity_target_velocity[0],
+                    update.entity_target_velocity[1],
+                    update.entity_target_velocity[2],
+                ),
+                formation_offset: Vec3::new(
+                    update.formation_offset[0],
+                    update.formation_offset[1],
+                    update.formation_offset[2],
+                ),
             };
             transform.translation = translation;
             transform.rotation = rotation;

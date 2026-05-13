@@ -210,6 +210,7 @@ impl Plugin for ProtocolPlugin {
         app.register_component::<core_resources::ModelName>();
         app.register_component::<core_resources::NpcPedMarker>();
         app.register_component::<core_resources::NpcOwner>();
+        app.register_component::<core_resources::NpcAiLodState>();
         app.register_component::<core_resources::ReplicatedNpcBrain>();
         app.register_component::<core_resources::ReplicatedNpcSteering>();
         app.register_component::<core_resources::PedProfileOverride>();
