@@ -213,6 +213,11 @@ struct MovementGroundState {
     last_grounded_time: f32,
 }
 
+#[derive(Resource, Default)]
+struct VolumetricFogDebugState {
+    last_emit_secs: f32,
+}
+
 /// Grace period after losing ground contact before the movement system treats
 /// the player as airborne. Prevents single-frame contact gaps from turning off
 /// velocity projection and the bounce damping.
@@ -249,6 +254,7 @@ impl Plugin for ClientGameplayPlugin {
         app.init_resource::<ModelAnimationDiscoveryCache>();
         app.init_resource::<AdaptiveIkSampleCache>();
         app.init_resource::<MovementGroundState>();
+        app.init_resource::<VolumetricFogDebugState>();
         // Scéna a kamera se nastavují až při vstupu do InGame, ne na Startup
         app.add_systems(OnEnter(AppState::InGame), (setup_scene_and_camera, reset_engine_state));
         app.add_systems(OnExit(AppState::InGame), reset_connection_bridge);
@@ -282,6 +288,7 @@ impl Plugin for ClientGameplayPlugin {
                 update_local_player_visibility,
                 publish_input_state_to_lua,
                 publish_stairs_state_to_lua,
+                publish_volumetric_fog_state_to_lua,
                 attach_mesh_to_local_objects,
                 attach_mesh_to_dummy_objects,
                 update_player_state_driven_animations,
@@ -1818,8 +1825,8 @@ fn collect_and_send_input(
     let mut move_y = 0.0_f32;
     if keys.pressed(bindings.move_forward) { move_y += 1.0; }
     if keys.pressed(bindings.move_backward) { move_y -= 1.0; }
-    if keys.pressed(bindings.move_right) { move_x -= 1.0; }
-    if keys.pressed(bindings.move_left) { move_x += 1.0; }
+    if keys.pressed(bindings.move_right) { move_x += 1.0; }
+    if keys.pressed(bindings.move_left) { move_x -= 1.0; }
 
     let mag2 = move_x * move_x + move_y * move_y;
     if mag2 > 1.0 {
@@ -2062,6 +2069,46 @@ fn publish_stairs_state_to_lua(
     .unwrap_or_default();
 
     local_bus.push("stairs:state".to_string(), payload);
+}
+
+fn publish_volumetric_fog_state_to_lua(
+    time: Res<Time>,
+    local_bus: Res<LocalEventBus>,
+    mut debug_state: ResMut<VolumetricFogDebugState>,
+    config: Res<EnvironmentLightConfig>,
+    camera_q: Query<Option<&VolumetricFog>, With<MainGameplayCamera>>,
+    env_light_q: Query<Option<&VolumetricLight>, With<EnvironmentLightMarker>>,
+    fog_volumes: Query<(), With<FogVolume>>,
+) {
+    let now = time.elapsed_secs();
+    if now - debug_state.last_emit_secs < 0.5 {
+        return;
+    }
+    debug_state.last_emit_secs = now;
+
+    let camera_has_volumetric_fog = camera_q
+        .single()
+        .ok()
+        .flatten()
+        .is_some();
+    let environment_light_count = env_light_q.iter().count();
+    let environment_light_with_volumetric = env_light_q.iter().filter(|light| light.is_some()).count();
+    let fog_volume_count = fog_volumes.iter().count();
+
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "camera_has_volumetric_fog": camera_has_volumetric_fog,
+        "environment_light_count": environment_light_count,
+        "environment_light_with_volumetric": environment_light_with_volumetric,
+        "fog_volume_count": fog_volume_count,
+        "config_volumetric_enabled": config.volumetric_fog_enabled,
+        "config_shadows_enabled": config.shadows_enabled,
+        "config_hour": config.hour_of_day,
+        "config_ambient_intensity": config.volumetric_fog_ambient_intensity,
+        "config_step_count": config.volumetric_fog_step_count,
+    }))
+    .unwrap_or_default();
+
+    local_bus.push("debug:volumetric_fog_state".to_string(), payload);
 }
 
 fn apply_local_stairs_foot_ik(
@@ -2509,37 +2556,29 @@ fn attach_mesh_to_dummy_objects(
         }
 
         if let Some(fog) = marker.fog_volume {
-            let volume_scale = fog_volume_scale_from_dummy(marker);
-            entity_cmd.with_children(|p| {
-                p.spawn((
-                    FogVolume {
-                        fog_color: Color::srgba(
-                            fog.color[0].clamp(0.0, 1.0),
-                            fog.color[1].clamp(0.0, 1.0),
-                            fog.color[2].clamp(0.0, 1.0),
-                            fog.color[3].clamp(0.0, 1.0),
-                        ),
-                        density_factor: fog.density_factor.max(0.0),
-                        absorption: fog.absorption.max(0.0),
-                        scattering: fog.scattering.max(0.0),
-                        scattering_asymmetry: fog.scattering_asymmetry.clamp(-0.99, 0.99),
-                        light_tint: Color::srgba(
-                            fog.light_tint[0].clamp(0.0, 1.0),
-                            fog.light_tint[1].clamp(0.0, 1.0),
-                            fog.light_tint[2].clamp(0.0, 1.0),
-                            fog.light_tint[3].clamp(0.0, 1.0),
-                        ),
-                        light_intensity: fog.light_intensity.max(0.0),
-                        ..default()
-                    },
-                    Transform::from_scale(volume_scale),
-                    GlobalTransform::default(),
-                    Visibility::Visible,
-                    InheritedVisibility::default(),
-                    ViewVisibility::default(),
-                    DummyFogVolumeAttached,
-                ));
-            });
+            entity_cmd.insert((
+                FogVolume {
+                    fog_color: Color::srgba(
+                        fog.color[0].clamp(0.0, 1.0),
+                        fog.color[1].clamp(0.0, 1.0),
+                        fog.color[2].clamp(0.0, 1.0),
+                        fog.color[3].clamp(0.0, 1.0),
+                    ),
+                    density_factor: fog.density_factor.max(0.0),
+                    absorption: fog.absorption.max(0.0),
+                    scattering: fog.scattering.max(0.0),
+                    scattering_asymmetry: fog.scattering_asymmetry.clamp(-0.99, 0.99),
+                    light_tint: Color::srgba(
+                        fog.light_tint[0].clamp(0.0, 1.0),
+                        fog.light_tint[1].clamp(0.0, 1.0),
+                        fog.light_tint[2].clamp(0.0, 1.0),
+                        fog.light_tint[3].clamp(0.0, 1.0),
+                    ),
+                    light_intensity: fog.light_intensity.max(0.0),
+                    ..default()
+                },
+                DummyFogVolumeAttached,
+            ));
         }
 
         let base_material = materials.add(StandardMaterial {

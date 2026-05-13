@@ -21,6 +21,13 @@ local function apply_environment(hour)
         ambient_enabled = blended.ambient_enabled,
         ambient_color = blended.ambient_color,
         ambient_brightness = blended.ambient_brightness,
+        fog_enabled = blended.fog.enabled,
+        fog_follow_streaming_boundary = blended.fog.follow_streaming_boundary,
+        volumetric_fog_enabled = blended.fog.volumetric_enabled,
+        volumetric_fog_ambient_color = blended.fog.ambient_color,
+        volumetric_fog_ambient_intensity = blended.fog.ambient_intensity,
+        volumetric_fog_jitter = blended.fog.jitter,
+        volumetric_fog_step_count = blended.fog.step_count,
         fog = blended.fog,
     })
 end

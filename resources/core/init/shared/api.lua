@@ -134,6 +134,23 @@ function Core.lerp_color(a, b, t)
     }
 end
 
+function Core.boolish(value, default)
+    if value == nil then
+        return default == true
+    end
+    if type(value) == 'boolean' then
+        return value
+    end
+    if type(value) == 'number' then
+        return value ~= 0
+    end
+    if type(value) == 'string' then
+        local normalized = string.lower(value)
+        return normalized == 'true' or normalized == '1' or normalized == 'yes' or normalized == 'on'
+    end
+    return default == true
+end
+
 function Core.blend_environment(config, hour)
     local env = config or Core.default_environment
     local h = Core.remap_hour(hour)
@@ -189,9 +206,9 @@ function Core.blend_environment(config, hour)
     local fog_to = fog_phases[to_key] or fog_from
 
     return {
-        enabled = env.enabled,
-        shadows = env.shadows,
-        ambient_enabled = env.ambient_enabled,
+        enabled = Core.boolish(env.enabled, true),
+        shadows = Core.boolish(env.shadows, true),
+        ambient_enabled = Core.boolish(env.ambient_enabled, true),
         azimuth_deg = env.azimuth_deg,
         max_elevation_deg = env.max_elevation_deg,
         hour_of_day = h,
@@ -200,16 +217,16 @@ function Core.blend_environment(config, hour)
         ambient_color = Core.lerp_color(ambient_from.color, ambient_to.color, t),
         ambient_brightness = Core.lerp(ambient_from.brightness, ambient_to.brightness, t),
         fog = {
-            enabled = fog.enabled == true,
+            enabled = Core.boolish(fog.enabled, true),
             color = Core.lerp_color(fog_from.color, fog_to.color, t),
             directional_color = Core.lerp_color(fog_from.directional_color, fog_to.directional_color, t),
-            follow_streaming_boundary = fog.follow_streaming_boundary == true,
+            follow_streaming_boundary = Core.boolish(fog.follow_streaming_boundary, true),
             boundary_inner_distance = tonumber(fog.boundary_inner_distance) or 180.0,
             boundary_outer_distance = tonumber(fog.boundary_outer_distance) or 36.0,
             directional_exponent = tonumber(fog.directional_exponent) or 22.0,
             start = Core.lerp(tonumber(fog_from.start) or 180.0, tonumber(fog_to.start) or 180.0, t),
             ['end'] = Core.lerp(tonumber(fog_from['end']) or 320.0, tonumber(fog_to['end']) or 320.0, t),
-            volumetric_enabled = fog.volumetric_enabled == true,
+            volumetric_enabled = Core.boolish(fog.volumetric_enabled, true),
             ambient_color = Core.lerp_color(fog_from.ambient_color, fog_to.ambient_color, t),
             ambient_intensity = Core.lerp(tonumber(fog_from.ambient_intensity) or 0.06, tonumber(fog_to.ambient_intensity) or 0.06, t),
             jitter = tonumber(fog.jitter) or 0.02,
