@@ -3,10 +3,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
+use lightyear::prelude::*;
 use serde::Deserialize;
 
-use core_drawable::{MapManifest, NavmeshRegistry, TileGraph, TilePathDef};
-use core_resources::{EntityHandle, LocalObjectMarker, LuaWorldState};
+use core_drawable::{HLODTile, HLODState, MapManifest, NavmeshRegistry, TileGraph, TilePathDef};
+use core_net::TileStreamingCommand;
+use core_resources::{
+    EntityHandle, LocalObjectMarker, LuaWorldState, NpcAgent, NpcMoveGoal, NpcOwner,
+    NpcPathWaypoint,
+};
 use core_shared::PlayerMarker;
 
 use crate::gameplay::LocalClientId;
@@ -22,12 +27,15 @@ impl Plugin for ClientMapPlugin {
         app.init_resource::<LoadedMapFiles>()
             .init_resource::<NavmeshRegistry>()
             .init_resource::<WorldTileIndex>()
+            .init_resource::<ServerTileStreamingState>()
             .add_systems(OnEnter(AppState::InGame), load_maps_on_enter)
             .add_systems(OnExit(AppState::InGame), cleanup_maps_on_exit)
             .add_systems(
                 Update,
                 (
+                    receive_tile_streaming_commands.run_if(in_state(AppState::InGame)),
                     stream_world_tiles.run_if(in_state(AppState::InGame)),
+                    update_npc_nav_paths.run_if(in_state(AppState::InGame)),
                     enforce_navmesh_only_hidden.run_if(in_state(AppState::InGame)),
                 ),
             );
@@ -53,6 +61,13 @@ struct WorldTileIndex {
     active: bool,
 }
 
+#[derive(Resource, Debug, Default)]
+struct ServerTileStreamingState {
+    authoritative_tiles: HashSet<String>,
+    last_update_secs: f64,
+    has_server_override: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct WorldTileIndexManifest {
     #[serde(default)]
@@ -71,6 +86,16 @@ struct WorldTileDef {
     load_radius: f32,
     #[serde(default)]
     always_loaded: bool,
+}
+
+impl WorldTileDef {
+    fn runtime_id(&self) -> String {
+        if self.id.trim().is_empty() {
+            self.map.clone()
+        } else {
+            self.id.clone()
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -114,10 +139,11 @@ fn load_maps_on_enter(
         // Build tile graph from index
         tile_graph.tiles.clear();
         for tile_def in &index.tiles {
+            let tile_id = tile_def.runtime_id();
             tile_graph.tiles.insert(
-                tile_def.id.clone(),
+                tile_id.clone(),
                 TilePathDef {
-                    id: tile_def.id.clone(),
+                    id: tile_id,
                     center: Vec3::new(tile_def.center[0], tile_def.center[1], tile_def.center[2]),
                     load_radius: tile_def.load_radius,
                     traversal_cost: 1.0, // Default cost; can be parameterized per tile
@@ -170,6 +196,7 @@ fn stream_world_tiles(
     mut world_state: ResMut<LuaWorldState>,
     mut navmesh_registry: ResMut<NavmeshRegistry>,
     tile_index: Res<WorldTileIndex>,
+    server_streaming: Res<ServerTileStreamingState>,
 ) {
     if !tile_index.active {
         return;
@@ -184,11 +211,21 @@ fn stream_world_tiles(
     let focus = resolve_stream_focus(local_client_id.as_deref(), &players);
 
     let mut wanted: HashSet<PathBuf> = HashSet::new();
+
+    let use_server_override = server_streaming.has_server_override
+        && (time.elapsed_secs_f64() - server_streaming.last_update_secs) <= 5.0;
+
     for tile in &tile_index.tiles {
-        let center = Vec3::new(tile.center[0], tile.center[1], tile.center[2]);
-        let radius = tile.load_radius.max(1.0);
-        if tile.always_loaded || focus.distance(center) <= radius {
-            wanted.insert(tile_index.maps_root.join(&tile.map));
+        if use_server_override {
+            if server_streaming.authoritative_tiles.contains(&tile.runtime_id()) {
+                wanted.insert(tile_index.maps_root.join(&tile.map));
+            }
+        } else {
+            let center = Vec3::new(tile.center[0], tile.center[1], tile.center[2]);
+            let radius = tile.load_radius.max(1.0);
+            if tile.always_loaded || focus.distance(center) <= radius {
+                wanted.insert(tile_index.maps_root.join(&tile.map));
+            }
         }
     }
 
@@ -218,6 +255,36 @@ fn stream_world_tiles(
             &mut navmesh_registry,
             &path,
         );
+    }
+}
+
+fn receive_tile_streaming_commands(
+    time: Res<Time>,
+    mut receivers: Query<&mut MessageReceiver<TileStreamingCommand>>,
+    mut server_streaming: ResMut<ServerTileStreamingState>,
+) {
+    let mut saw_message = false;
+
+    for mut rx in &mut receivers {
+        for msg in rx.receive() {
+            saw_message = true;
+            match msg.action.as_str() {
+                "load" => {
+                    server_streaming.authoritative_tiles.insert(msg.tile_id);
+                }
+                "unload" => {
+                    server_streaming.authoritative_tiles.remove(&msg.tile_id);
+                }
+                other => {
+                    warn!("[map_loader] unknown TileStreamingCommand action '{}'", other);
+                }
+            }
+        }
+    }
+
+    if saw_message {
+        server_streaming.last_update_secs = time.elapsed_secs_f64();
+        server_streaming.has_server_override = true;
     }
 }
 
@@ -296,6 +363,8 @@ fn load_single_map_file(
         let mut entity_cmds = commands.spawn((
             Name::new(format!("map:{}", id)),
             transform,
+            HLODState::default(),
+            HLODTile::new(map_key.clone()),
             LocalObjectMarker {
                 model: entry.model.clone(),
             },
@@ -463,6 +532,7 @@ fn cleanup_maps_on_exit(
     mut world_state: ResMut<LuaWorldState>,
     mut navmesh_registry: ResMut<NavmeshRegistry>,
     mut tile_index: ResMut<WorldTileIndex>,
+    mut server_streaming: ResMut<ServerTileStreamingState>,
 ) {
     let paths: Vec<PathBuf> = loaded_maps.loaded.keys().cloned().collect();
     for path in paths {
@@ -478,6 +548,9 @@ fn cleanup_maps_on_exit(
     tile_index.active = false;
     tile_index.tiles.clear();
     tile_index.maps_root = PathBuf::new();
+    server_streaming.authoritative_tiles.clear();
+    server_streaming.has_server_override = false;
+    server_streaming.last_update_secs = 0.0;
     info!("[map_loader] cleaned map instances and reset tile streaming state");
 }
 
@@ -487,4 +560,92 @@ fn enforce_navmesh_only_hidden(mut query: Query<(&MapObjectInstance, &mut Visibi
             *visibility = Visibility::Hidden;
         }
     }
+}
+
+fn update_npc_nav_paths(
+    local_client_id: Option<Res<LocalClientId>>,
+    world_state: Res<LuaWorldState>,
+    tile_index: Res<WorldTileIndex>,
+    tile_graph: Res<TileGraph>,
+    navmesh_registry: Res<NavmeshRegistry>,
+    globals: Query<&GlobalTransform>,
+    mut npcs: Query<(&Transform, &mut NpcAgent, Option<&NpcOwner>)>,
+) {
+    if !tile_index.active || tile_graph.tiles.is_empty() {
+        return;
+    }
+
+    let local_client_id = local_client_id.as_ref().map(|v| v.0);
+
+    for (transform, mut agent, owner) in &mut npcs {
+        if let (Some(local_id), Some(owner)) = (local_client_id, owner) {
+            if owner.0 != Some(local_id) {
+                continue;
+            }
+        }
+
+        if !agent.current_path.is_empty() && agent.waypoint_index < agent.current_path.len() {
+            continue;
+        }
+
+        let target = match &agent.goal {
+            NpcMoveGoal::GoToCoord { target, .. } => Some(*target),
+            NpcMoveGoal::GoToEntity { target_handle, .. } => {
+                world_state
+                    .entity_for(*target_handle)
+                    .and_then(|entity| globals.get(entity).ok())
+                    .map(|tf| tf.translation())
+            }
+            _ => None,
+        };
+
+        let Some(target) = target else {
+            continue;
+        };
+
+        let Some(start_tile_id) = tile_id_for_position(&tile_index, transform.translation) else {
+            continue;
+        };
+        let Some(goal_tile_id) = tile_id_for_position(&tile_index, target) else {
+            continue;
+        };
+
+        let Some(path) = navmesh_registry.find_hierarchical_path(
+            &tile_graph,
+            &start_tile_id,
+            &goal_tile_id,
+            transform.translation,
+            target,
+            0.35,
+        ) else {
+            continue;
+        };
+
+        agent.map_id = start_tile_id;
+        agent.current_path = path
+            .into_iter()
+            .map(|segment| NpcPathWaypoint { target: segment.target })
+            .collect();
+        agent.waypoint_index = 0;
+    }
+}
+
+fn tile_id_for_position(tile_index: &WorldTileIndex, position: Vec3) -> Option<String> {
+    let mut best: Option<(f32, String)> = None;
+
+    for tile in &tile_index.tiles {
+        let center = Vec3::new(tile.center[0], tile.center[1], tile.center[2]);
+        let radius = tile.load_radius.max(1.0);
+        let distance = center.distance(position);
+        if distance > radius {
+            continue;
+        }
+
+        match &best {
+            Some((best_distance, _)) if *best_distance <= distance => {}
+            _ => best = Some((distance, tile.runtime_id())),
+        }
+    }
+
+    best.map(|(_, tile_id)| tile_id)
 }

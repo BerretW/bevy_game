@@ -145,8 +145,7 @@ impl HLODTile {
 /// System to update HLOD visibility based on camera distance
 pub fn update_hlod_visibility(
     camera_q: Query<&GlobalTransform, With<Camera3d>>,
-    mut hlod_q: Query<(&GlobalTransform, &mut HLODState)>,
-    mut visibility_q: Query<&mut Visibility>,
+    mut hlod_q: Query<(&GlobalTransform, &HLODTile, &mut HLODState, &mut Visibility)>,
 ) {
     let Ok(cam_tf) = camera_q.single() else {
         return;
@@ -154,18 +153,18 @@ pub fn update_hlod_visibility(
 
     let cam_pos = cam_tf.translation();
 
-    for (obj_tf, mut hlod_state) in hlod_q.iter_mut() {
+    for (obj_tf, hlod_tile, mut hlod_state, mut visibility) in hlod_q.iter_mut() {
         let obj_pos = obj_tf.translation();
         let distance = cam_pos.distance(obj_pos);
         hlod_state.camera_distance = distance;
 
-        // Update visibility based on distance
-        // This is a simple gate — actual layer rendering happens in material/shader
-        // Note: In real implementation, would track entity separately or use different pattern
-        if distance > 5000.0 {
-            for mut vis in visibility_q.iter_mut() {
-                *vis = Visibility::Hidden;
+        if let Some(layer_index) = hlod_tile.layer_at_distance(distance) {
+            hlod_state.active_layer = layer_index;
+            if hlod_state.apply_visibility_gating {
+                *visibility = Visibility::Visible;
             }
+        } else if hlod_state.apply_visibility_gating {
+            *visibility = Visibility::Hidden;
         }
     }
 }
@@ -199,7 +198,7 @@ pub fn should_simplify_mesh(distance: f32, max_distance: f32, simplification_fac
 
 /// Create simplified mesh by reducing vertex count
 /// (Placeholder — real implementation would use mesh decimation algorithm)
-pub fn simplify_mesh(mesh: &Mesh, factor: f32) -> Mesh {
+pub fn simplify_mesh(mesh: &Mesh, _factor: f32) -> Mesh {
     // For now, return mesh as-is
     // Production would implement Lloyd relaxation, edge collapse, or other decimation
     mesh.clone()

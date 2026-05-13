@@ -11,6 +11,7 @@
 mod config;
 mod http_server;
 mod log_filter;
+mod streaming;
 
 use std::path::PathBuf;
 
@@ -31,6 +32,7 @@ use crate::config::{
     resolve_default_config_path, resolve_path_relative_to_exe, ConfigError, ServerConfig,
 };
 use crate::http_server::{HttpFileServerPlugin, HttpServerConfig};
+use crate::streaming::ServerTileStreamingPlugin;
 
 fn main() {
     // 1. Konfigurační soubor — defaultně `<exe_dir>/server.toml` (s fallbackem
@@ -161,6 +163,7 @@ fn main() {
             // Phase 4 — sqlx DB backend. Connects pool from [database].url,
             // runs migrations, fills DatabaseBridgeResource used by Lua sandboxes.
             DatabasePlugin,
+            ServerTileStreamingPlugin,
             ServerCorePlugin,
         ))
         .run();

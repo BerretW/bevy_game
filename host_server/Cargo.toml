@@ -28,6 +28,7 @@ core_resources = { workspace = true }
 core_net = { workspace = true }
 core_db = { workspace = true }
 tokio = { workspace = true }
+lightyear = { workspace = true }
 
 # Server config (server.toml).
 serde = { workspace = true }

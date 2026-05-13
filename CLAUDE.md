@@ -3,6 +3,7 @@
 ## Vision
 
 Genre-agnostic multiplayer framework v Rustu (Bevy Engine), architektura napodobuje FiveM/CitizenFX:
+
 - **Rust Core** = "Host Shell" — ECS, networking, physics, rendering, DB pooly
 - **Lua Resources** = veškerá herní logika, obsah a UI (hot-reloadable)
 
@@ -13,15 +14,15 @@ Podporuje libovolný žánr pouhým swapem Lua resources — bez rekompilace Rus
 
 ## Tech Stack
 
-| Oblast | Technologie |
-|--------|-------------|
-| Engine | Bevy Engine 0.18, headless-first pro server |
-| Networking | `lightyear` 0.26 — UDP netcode, channels, replication |
-| File sync | `axum` HTTP server + `reqwest::blocking` downloader |
-| Scripting | `mlua` via `bevy_mod_scripting` |
-| Database | `sqlx` — PostgreSQL (prod) / SQLite (dev) |
-| Shadery | WGSL, hot-reload přes Bevy AssetServer |
-| WebUI / NUI | Dioxus / `bevy_egui`; Axum (admin API) |
+| Oblast      | Technologie                                              |
+| ----------- | -------------------------------------------------------- |
+| Engine      | Bevy Engine 0.18, headless-first pro server              |
+| Networking  | `lightyear` 0.26 — UDP netcode, channels, replication |
+| File sync   | `axum` HTTP server + `reqwest::blocking` downloader  |
+| Scripting   | `mlua` via `bevy_mod_scripting`                      |
+| Database    | `sqlx` — PostgreSQL (prod) / SQLite (dev)             |
+| Shadery     | WGSL, hot-reload přes Bevy AssetServer                  |
+| WebUI / NUI | Dioxus /`bevy_egui`; Axum (admin API)                  |
 
 ---
 
@@ -48,16 +49,19 @@ files { 'assets/ui_icons.png' }
 ### KRITICKÉ: Kolize — Drawable Manifest je JEDINOU pravdou
 
 **Kolize MOHOU existovat POUZE jako explicitní `COLLISION` entity v `.drawable` manifestu. Žádný fallback.**
+
 - ADM pipeline, GLTF pipeline i physics zpracovávají POUZE `DrawableCollision` komponenty
 - Entita bez `DrawableCollision` = žádná fyzika, bez výjimek; absence v manifestu = GLTF loguje warning
 - Blender workflow: `COL_*` uzly → Apparatus Drawable Toolkit → Export → `.drawable` TOML s `[[entities]]` typ="COLLISION"
 
 ### Rust / Lua Boundary
+
 - Entity IDs: Lua komunikuje výhradně přes Bevy Entity ID (u64 handle)
 - Data Access: žádné raw Rust pointery; safe bridge `SetComponent(entity, "Hunger", 50)`
 - Events: globální Event Bus — `TriggerEvent("onPlayerJoin", player_id)`
 
 ### Ostatní pravidla
+
 - **DB:** NIKDY neblokuj ECS loop SQL dotazem — používej `IoTaskPool`
 - **Stats:** `FinalMaxHealth = (BaseHealth + Sum(Buffs)) * Multiplier(Auras)`
 - **Autoritativnost:** Server je jediná pravda — pozice, inventory, stats; klient predikuje pohyb
@@ -68,34 +72,39 @@ files { 'assets/ui_icons.png' }
 
 ### Recent Fixes
 
-- [x] **2026-05-13 (Latest)**: Phase 5 Hierarchical Pathfinding + Server Authority Foundation — Implementován `TileGraph` pro cross-tile routing s adjacency detekcem, dva-úrovňový A* (global přes tile graph + local v navmesh), hierarchický pathfinding v `NavmeshRegistry::find_hierarchical_path()`. `TileGraph::build_adjacency()` automaticky detekuje sousedící tile-y. Přidán `TileStreamingCommand` message type v protocol.rs (server→klient) pro server-side autoritu. Vytvořena HLOD infrastruktura (`HLODLayer`, `HLODState`, `HLODTile`) se třemi distančními vrstvami (0-300m full detail, 300-1000m simplified instanced, 1000m+ culled), distance-based visibility gating. Všechny systémy integrovány do DrawablePlugin a map_loader.
-- [x] **2026-05-13**: Large-world tile streaming foundation — `host_client` map loader podporuje volitelný index `assets/maps/world.index.toml` (nebo `map.index.toml`) s tile záznamy (`map`, `center`, `load_radius`, `always_loaded`). Přidán stream-in/stream-out map souborů podle vzdálenosti lokálního hráče, unload ECS entit + `LuaWorldState` handle mapy mimo radius, a unload navmesh přes nové `NavmeshRegistry::unload_navmesh`. Přidán ukázkový index `host_client/assets/maps/world.index.toml`.
-- [x] **2026-05-12**: NPC Framework + základní AI pohyb — Přidán `NpcAgent` systém v `core_resources` (`tick_npc_agents` ve `FixedUpdate`) s módy `wander` (`random`/`patrol`/`orbit`), `go to entity` a `go to coord`. Rozšířeno Lua API o `World.NpcConfigure/NpcWander/NpcGoToEntity/NpcGoToCoord/NpcStop`. Přidán demo resource `resources/example/npc_test/`.
-- [x] **2026-05-12**: Model Viewer texture browser/export tool — Registrace chybějících systémů `init_texture_browser`, `handle_texture_keys`, `rebuild_panel`, `show_extract_status` do `Update` scheduling. Nástroj na zobrazení a export textur (T pro toggle, E pro export) znovu plně funkční.
-- [x] **2026-05-12 (oprava)**: Export textur — Oprava cest: ADM cesty byly relativní. Přidán `ModelSourcePaths` Resource, který si pamatuje absolutní cestu na disk pro každý načtený model. Export teď používá absolutní cesty namísto relativních bevy paths.
-- [x] **2026-05-12**: Kinematic pohybový refaktor — IK/Terrain Snap/Root Motion — Přidány `OnStairs` + `IkEnabledComponent` do player spawnu; nový systém `terrain_snap_kinematic` v FixedUpdate po `apply_player_movement` (snappuje Y velocitu hráče k terén height z raycastu); root motion plně implementováno: `RootMotionState` komponent, `extract_root_motion` systém, Lua API `World.EnableRootMotion/DisableRootMotion`.
+- [X] **2026-05-13 (Plugin)**: Opraveno linkování i scope nově vytvářených Blender objektů do kolekcí. `Create Drawable`, `Create Collision Proxy` a `Generate Navmesh` už nevkládají root/proxy/NAV_AUTO objekty slepě do `context.collection` nebo Scene rootu, ale do rodičovské kolekce aktivního objektu. `Generate Navmesh` a `Cleanup` navíc zpracovávají jen `COL_*` a `NAV_AUTO_*` z aktivní tile kolekce místo celé scény, takže více tile v jednom `.blend` se navzájem nemíchá.
+- [X] **2026-05-13 (Plugin)**: Blender Apparatus Toolkit export upraven pro tile streaming a runtime navmesh formát. `Export Navmesh` teď zapisuje `surface_type`, per-surface `walkable_height/walkable_radius/climb_height` a převádí vertexy ze souřadnic Blenderu do Bevy world-space. Přidán nový `world.index.toml` export s tile metadaty (`tile_id`, `map`, `center`, `load_radius`, `always_loaded`), nový tile authoring workflow nad Blender kolekcemi (`Export Active Tile To Maps`, `Export All Tile Collections`) a import sousedství (`Import Target + Neighbors`) pro načtení cílového tile a jeho sousedů z `world.index.toml` do samostatných kolekcí v Blenderu. Tile workflow teď umí i one-click single-asset bundle export do `assets/models` + `assets/maps`, takže jedna kolekce může reprezentovat celý tile jako jeden `.adm/.drawable` model a odpovídající `map/navmesh/index` záznam.
+- [X] **2026-05-13 (Tooling)**: Přidán nový standalone nástroj `map_viewer` pro vizuální inspekci `map.toml` a `world.index.toml`. Viewer používá stejný `host_client/assets` root jako runtime, načítá map instance, registruje `.adm/.drawable` a `.glb` modely z `assets/models`, a přes gizma overlay umí přepínat zobrazení map meshů, colliderů a navmesh surface wireframe.
+- [X] **2026-05-13 (Latest)**: Phase 5 Hierarchical Pathfinding + Server Authority Foundation — Implementován `TileGraph` pro cross-tile routing s adjacency detekcem, dva-úrovňový A* (global přes tile graph + local v navmesh), hierarchický pathfinding v `NavmeshRegistry::find_hierarchical_path()`. `TileGraph::build_adjacency()` automaticky detekuje sousedící tile-y. Přidán `TileStreamingCommand` message type v protocol.rs (server→klient) pro server-side autoritu. Vytvořena HLOD infrastruktura (`HLODLayer`, `HLODState`, `HLODTile`) se třemi distančními vrstvami (0-300m full detail, 300-1000m simplified instanced, 1000m+ culled), distance-based visibility gating. Všechny systémy integrovány do DrawablePlugin a map_loader.
+- [X] **2026-05-13**: Large-world tile streaming foundation — `host_client` map loader podporuje volitelný index `assets/maps/world.index.toml` (nebo `map.index.toml`) s tile záznamy (`map`, `center`, `load_radius`, `always_loaded`). Přidán stream-in/stream-out map souborů podle vzdálenosti lokálního hráče, unload ECS entit + `LuaWorldState` handle mapy mimo radius, a unload navmesh přes nové `NavmeshRegistry::unload_navmesh`. Přidán ukázkový index `host_client/assets/maps/world.index.toml`.
+- [X] **2026-05-12**: NPC Framework + základní AI pohyb — Přidán `NpcAgent` systém v `core_resources` (`tick_npc_agents` ve `FixedUpdate`) s módy `wander` (`random`/`patrol`/`orbit`), `go to entity` a `go to coord`. Rozšířeno Lua API o `World.NpcConfigure/NpcWander/NpcGoToEntity/NpcGoToCoord/NpcStop`. Přidán demo resource `resources/example/npc_test/`.
+- [X] **2026-05-12**: Model Viewer texture browser/export tool — Registrace chybějících systémů `init_texture_browser`, `handle_texture_keys`, `rebuild_panel`, `show_extract_status` do `Update` scheduling. Nástroj na zobrazení a export textur (T pro toggle, E pro export) znovu plně funkční.
+- [X] **2026-05-12 (oprava)**: Export textur — Oprava cest: ADM cesty byly relativní. Přidán `ModelSourcePaths` Resource, který si pamatuje absolutní cestu na disk pro každý načtený model. Export teď používá absolutní cesty namísto relativních bevy paths.
+- [X] **2026-05-12**: Kinematic pohybový refaktor — IK/Terrain Snap/Root Motion — Přidány `OnStairs` + `IkEnabledComponent` do player spawnu; nový systém `terrain_snap_kinematic` v FixedUpdate po `apply_player_movement` (snappuje Y velocitu hráče k terén height z raycastu); root motion plně implementováno: `RootMotionState` komponent, `extract_root_motion` systém, Lua API `World.EnableRootMotion/DisableRootMotion`.
 
 ### Fáze 1–4 ✅ Dokončeno
 
-| Fáze | Výsledky |
-|------|---------|
-| **Phase 1** — Shell & VFS | Cargo workspace, VFS scanner, manifest.lua DSL parser, dependency resolver (Kahn), per-resource Lua sandbox |
-| **Phase 2** — Network Handshake | `core_net`, lightyear UDP, Axum HTTP file server, blake3 digest handshake, Lua RPC bridge |
-| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`) jako autoritativní selector (`clip:*`/`dict:*`), startup preload + index ADS animačních setů z `player.ped.toml` (`[animation_sets].ads_anim`) a auto-attach `AttachedAnimSets` na player ADM root, **počáteční idle animace nastavená hned při spawnu** (řeší t-pose na připojení) |
-| **Phase 3.2** — Lua Bridge | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate) |
-| **Phase 3.3** — Combat | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped` |
-| **Phase 3.4** — Model Registry | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`), ADM v5 animation dictionary metadata cache (`Engine.GetAnimDictNames/GetAnimDictClips`) |
-| **Phase 3.5** — World Objects | `SpawnNetworkedObject`, `NetworkedObjectMarker`, lightyear replication observer |
-| **Phase 3.7** — Raycast API | `RaycastBridge`, `Raycast.GetGroundPosition()`, yaw v `PlayerInput.look[0]` |
-| **Phase 3.8** — Event Bus | `LocalEventBus`, `TriggerEvent`, JSON payloads, `input:state` bridge, `sq:ready` init pattern, Lua-safe string player IDs |
-| **Phase 3.9** — Entity State API | `EntityHandle`, `ModelName`, `AnimationState`, `EntityStateCache`, `World.Get*/Set*` API |
-| **Phase 4** — ADS + GUI | Apparatus Drawable System (`.drawable` TOML, materiály WGSL, LOD systém, kolize), Blender toolkit (`bevy_toolkit.py`), immediate-mode GUI (`Gui.*`), `CreateThread`/`Wait`, `UI.Window`, ADS socket metadata (`AdsSocketMap` + `AdsSocket`), `World.Attach/Detach/GetSocketTransform`, prefix semantika `DEF_/IK_/SOC_/MEC_`, LOD2+ skeletal pruning, ADM v3 animační klipy + runtime playback, ADM skinning export + `SkinnedMesh` binding, track flags pro body-part blending, Mixamo auto-rename/import/export tooling, model_viewer animation browser, ADM importer: rekonstrukce armatury+weights+NLA, pose klíče převáděné rest-relative (bez double-transform deformací), bevy_masks2 fallback import, bone head/tail rekonstrukce z node hierarchy (bez point-bones), COL_ armature skinning parity + ochrana proti bone-parent/weights double-transform |
+| Fáze                                       | Výsledky                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Phase 1** — Shell & VFS            | Cargo workspace, VFS scanner, manifest.lua DSL parser, dependency resolver (Kahn), per-resource Lua sandbox                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Phase 2** — Network Handshake      | `core_net`, lightyear UDP, Axum HTTP file server, blake3 digest handshake, Lua RPC bridge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Phase 3.1** — Gameplay Foundations | `PlayerInput`, `NetTransform`, player spawn/render, 1st/3rd person kamera (F6 toggle / `Camera.SetMode`), client-trusted movement (Avian), yaw sync, movement smoothing, dynamic player model resolve z `player.ped.toml` (`identity.model`) místo hardcoded `models/player.adm`, state-driven player animations z `player.ped.toml` (`[animations]`) jako autoritativní selector (`clip:*`/`dict:*`), startup preload + index ADS animačních setů z `player.ped.toml` (`[animation_sets].ads_anim`) a auto-attach `AttachedAnimSets` na player ADM root, **počáteční idle animace nastavená hned při spawnu** (řeší t-pose na připojení)                                                                                                                                                                                                         |
+| **Phase 3.2** — Lua Bridge           | `LuaCommand` enum, `CommandQueue`, `LuaWorldState`, `process_lua_commands` (PostUpdate)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Phase 3.3** — Combat               | `WeaponConfig`, `Health`, `process_combat`, `PRIMARY_FIRE` bitflag, ACE authority, `onPlayerHit`/`onPlayerDeath`/`playerConnecting`/`playerDropped`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Phase 3.4** — Model Registry       | `ModelRegistry`, `scan_stream_models()`, async GPU load, `Engine.RequestModel/HasModelLoaded`, runtime clip metadata cache (`Engine.GetModelClipCount/GetModelClipNames`), ADM v5 animation dictionary metadata cache (`Engine.GetAnimDictNames/GetAnimDictClips`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Phase 3.5** — World Objects        | `SpawnNetworkedObject`, `NetworkedObjectMarker`, lightyear replication observer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Phase 3.7** — Raycast API          | `RaycastBridge`, `Raycast.GetGroundPosition()`, yaw v `PlayerInput.look[0]`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Phase 3.8** — Event Bus            | `LocalEventBus`, `TriggerEvent`, JSON payloads, `input:state` bridge, `sq:ready` init pattern, Lua-safe string player IDs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Phase 3.9** — Entity State API     | `EntityHandle`, `ModelName`, `AnimationState`, `EntityStateCache`, `World.Get*/Set*` API                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Phase 4** — ADS + GUI              | Apparatus Drawable System (`.drawable` TOML, materiály WGSL, LOD systém, kolize), Blender toolkit (`bevy_toolkit.py`), immediate-mode GUI (`Gui.*`), `CreateThread`/`Wait`, `UI.Window`, ADS socket metadata (`AdsSocketMap` + `AdsSocket`), `World.Attach/Detach/GetSocketTransform`, prefix semantika `DEF_/IK_/SOC_/MEC_`, LOD2+ skeletal pruning, ADM v3 animační klipy + runtime playback, ADM skinning export + `SkinnedMesh` binding, track flags pro body-part blending, Mixamo auto-rename/import/export tooling, model_viewer animation browser, ADM importer: rekonstrukce armatury+weights+NLA, pose klíče převáděné rest-relative (bez double-transform deformací), bevy_masks2 fallback import, bone head/tail rekonstrukce z node hierarchy (bez point-bones), COL_ armature skinning parity + ochrana proti bone-parent/weights double-transform |
 
 **Phase 3.6 — YMAP Streaming** (částečně):
+
 - [X] `World.SpawnNetworkedObject` základ
 - [ ] YMAP JSON loader, Mapper tool (Lua in-game editor), AABB streaming, GPU Instancing, server culling
 
 **Phase 4 zbývá:**
+
 - [X] ADM runtime crossfade: `apply_adm_animations` respektuje `AnimationState.blend_time` a plynule blenduje předchozí/aktuální klip (`lerp` pozice/scale, `slerp` rotace)
 - [X] ADM v4 animation notifies: loader/export/import podporuje `notify_count`, runtime emituje `onAnimNotify { handle, clip_name, notify_name }` přes `LocalEventBus`
 - [X] ADM v5 animation dictionaries: export/import/loader podporují sekci dictionary (`dict_name -> clip indices`), runtime podporuje selector `dict:<dict_name>:<clip_name>` a Lua API `Engine.RequestAnimDict/HasAnimDictLoaded/GetAnimDictNames/GetAnimDictClips`
@@ -110,6 +119,7 @@ files { 'assets/ui_icons.png' }
 - [ ] Vlastní WGSL shadery z Lua resources
 
 **ADM v6 migration policy:**
+
 - V5 kompatibilita se dál neudržuje jako cíl.
 - Nový formát je `*.adm` pro geometrii a `*.ads_anim` pro animace.
 - Runtime má preferovat late binding přes připojené anim-sety, ne embedded klipy v modelu.
@@ -129,7 +139,8 @@ Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, 
 
 **Veškerá implementace dokončena a ověřena kompilací!**
 
-Implementováno: 
+Implementováno:
+
 - `OnStairs` marker komponent pro detekci schodů
 - `IkChain` komponenta s definicí IK řetězce (parent bone, IK target, effector bone)
 - `IkSolverState` komponenta pro uložení meziresultátů
@@ -146,6 +157,7 @@ Implementováno:
 - Blender IK authoring workflow (`blender_plugin/appartus_drawable_toolkit`): Scene-level `IK Chains` UI, Add/Remove/Autofill/Validate operátory, a sidecar export `*.ik.toml` při `Export ADS` / `Export ADM` / `Export Animation Set`
 
 **Architektura:**
+
 - `core_resources::IkEnabledComponent` — single source of truth pro IK enable/disable state
 - `core_drawable::IkEnabled` — type alias pro `IkEnabledComponent` (kompatibilita, bez cyklu)
 - `host_client::raycast_stairs_under_player()` — PopulatesOnStairs heights každý frame
@@ -159,6 +171,7 @@ Implementováno:
 ### Phase 4.3 — Root Motion (Infrastruktura) [✅ HOTOVO]
 
 Implementováno:
+
 - `RootMotionState` komponent v `core_resources/src/cmd_queue.rs` (root_bone_name, prev_root_world_pos, accumulated_delta, lock_y)
 - `extract_root_motion` systém v `core_drawable/src/adm.rs` — extrahuje XZ-deltu z root bonu po animačním framu, aplikuje na parent entitu, resetuje bone na origin
 - Lua API: `World.EnableRootMotion(handle, opts?)` / `World.DisableRootMotion(handle)`, kde opts = `{ root_bone = "DEF_hips", lock_y = true }`
@@ -167,6 +180,7 @@ Implementováno:
 - Test resource: `resources/example/root_motion_test/`
 
 **Architektura:**
+
 - `RootMotionState` na `AdmSceneRoot` entitě; `extract_root_motion` v `core_drawable` Update
 - Systém porovnává `GlobalTransform` root bonu mezi framy → delta → přesune ChildOf parent
 - `lock_y=true` (výchozí) → pouze XZ delta, Y řídí fyzika/gravitace
@@ -188,6 +202,7 @@ Implementováno: `AdmBlendSpace`, `AdmBlendSpaceClip` struktury v ADM formátu, 
 ### Phase 5.0 — Hierarchical Pathfinding & Tile Graph [✅ HOTOVO]
 
 Implementováno:
+
 - `TileGraph` Resource: Adjacency graph tilek, dva-úrovňový A*
 - `TilePathDef`: Tile definition s traversal cost (těžkost terénního typu)
 - `TilePortal`: Crossing point mezi sousedními tiley
@@ -198,6 +213,7 @@ Implementováno:
 - Wszystkie struktury budovány s `Serialize`/`Deserialize` pro persistence
 
 **Zbývá:**
+
 - [ ] Integrace do `tick_npc_agents` — NPC by měli používat `find_hierarchical_path` místo přímého target
 - [ ] Server-side tile path validation (replay protection)
 - [ ] Portal locking/dynamic portals (při destruction objektů)
@@ -205,11 +221,13 @@ Implementováno:
 ### Phase 5.1 — Server-Side Streaming Authority [🟡 FOUNDATION READY]
 
 Implementováno:
+
 - `TileStreamingCommand` message type v `core_net::protocol` (tile_id, action: "load"/"unload")
 - `TileStreamingChannel` v lightyear — SequencedUnreliable server→klient
 - Message registration v `net_plugin.rs`
 
 **Zbývá:**
+
 - [ ] `ServerTileStreamingPlugin` — track player positions, validate visible tiles, send commands
 - [ ] Client-side command receiver — apply server directives, ignore client-local streaming
 - [ ] Anti-cheat: Detect and reject klient-authoritative tile loads (LOD distance abuse)
@@ -217,6 +235,7 @@ Implementováno:
 ### Phase 5.2 — HLOD/Instancing Infrastructure [✅ FOUNDATION READY]
 
 Implementováno:
+
 - `HLODLayer`: Distance tier s simplification factor a GPU instancing flags
 - `HLODState` Component: Active layer, instance storage, camera distance tracking
 - `HLODTile` Marker: Per-tile HLOD configuration (3-tier: 0-300m full, 300-1000m simplified instanced, 1000m+ culled)
@@ -225,6 +244,7 @@ Implementováno:
 - `HLODInstanceData`: GPU instance struktura (position_scale, rotation, tint)
 
 **Zbývá:**
+
 - [ ] GPU instancing buffer creation/update v render graph
 - [ ] Mesh simplification pipeline (Lloyd relaxation či edge-collapse decimation)
 - [ ] Billboard rendering pro far-tier (small quads s instanced texturou)
@@ -247,11 +267,13 @@ Implementováno: `DrawableCollision` → Avian `Collider` pipeline, axis-lock fl
 #### 5.1 — Weapon & Ammo Registry [ ]
 
 **Rust side:**
+
 - [ ] `WeaponDef`, `AmmoDef`, `AttachmentDef`, `MaterialDef` structs
 - [ ] `WeaponRegistry`, `AmmoRegistry`, `AttachmentRegistry`, `MaterialRegistry` Bevy Resources
 - [ ] Lua API: `Weapon.Register(id,def)`, `Weapon.Get(id)`, `Ammo.Register`, `Attachment.Register`, `Material.Register`
 
 **WeaponDef schéma:**
+
 ```lua
 Weapon.Register('ak47', {
     display_name='AK-47', category='rifle',  -- pistol|smg|rifle|shotgun|lmg|sniper|launcher|melee
@@ -274,6 +296,7 @@ Weapon.Register('ak47', {
 ```
 
 **AmmoDef schéma:**
+
 ```lua
 Ammo.Register('7.62x39_fmj', {
     display_name='7.62×39mm FMJ', caliber='7.62x39',
@@ -303,6 +326,7 @@ Ammo.Register('7.62x39_fmj', {
 ---
 
 #### 5.2 — Balistický engine [ ]
+
 - [ ] `BallisticsPlugin`, `BulletProjectile` (`pos`, `vel`, `energy_j`, `ammo_id`, `source_entity`, `spawn_tick`)
 - [ ] `ProjectileSimulator` (drag G1/G7, gravity `v.y -= 9.81*dt`), `MuzzleVelocityCalc`, `PenetrationResolver`, `RicochetResolver`
 - [ ] Hitscan: `v > 700 m/s` → raycast + lag comp; `≤700` nebo `explosive=true` → `BulletProjectile` entity
@@ -311,6 +335,7 @@ Ammo.Register('7.62x39_fmj', {
 ---
 
 #### 5.3 — Hitbox & Hit Detection [ ]
+
 - [ ] `HitboxDef`, `HitboxRegistry`, `PlayerHitbox`, `PositionHistory` (ring buffer pro lag comp)
 - [ ] `LagCompensator` (rewind pozic na spawn_tick), `HitResolver` (kapsle test → `DamageEvent` s hitzone)
 - [ ] `Hitbox.Register(model_id, def)` Lua API
@@ -335,6 +360,7 @@ Hitbox.Register('player_default', {
 ---
 
 #### 5.4 — Weapon State [ ]
+
 - [ ] `WeaponSlots` (4 sloty), `EquippedWeapon {weapon_id, ammo_in_mag, ammo_type_id, attachments}`, `AmmoReserve`, `ActiveSlot`
 - [ ] `ReloadState` FSM (`Idle|Reloading{elapsed,duration,type}`), `FireState` (`Ready|Firing|Cooling`), `WeaponSwapState`
 - [ ] `reload_system`, `fire_system` (FixedUpdate)
@@ -344,6 +370,7 @@ Hitbox.Register('player_default', {
 ---
 
 #### 5.5 — Armor & Damage Pipeline [ ]
+
 - [ ] `ArmorComponent {helmet, vest: Option<ArmorPiece{class, durability, max_durability}>`
 - [ ] `ArmorClass` (NIJ I/II/IIIa/III/IV), `absorption_table[class][pen_class]`, `ArmorDurabilitySystem`
 - [ ] Damage pipeline: energy_j → armor check → `armor_absorption` / `after_penetration_mult` → hitzone mult → `wound_mult` → `health.current -= final`
@@ -354,6 +381,7 @@ Hitbox.Register('player_default', {
 ---
 
 #### 5.6 — Rozšířená fyzika hráče [ ]
+
 - [ ] `PlayerStance` (Standing/Crouching/Prone/Vaulting), `LeanState`, `StaminaComponent {current,max}`, `AdsState`, `VaultState`
 - [ ] `stance_system`, `lean_system`, `stamina_system`, `ads_system`, `vault_system` (FixedUpdate)
 - [ ] Nové input bity: `LEAN_LEFT` (8), `LEAN_RIGHT` (9), `PRONE` (10), `VAULT` (11)
@@ -363,6 +391,7 @@ Hitbox.Register('player_default', {
 ---
 
 #### 5.7 — Recoil, Spread & ADS [ ]
+
 - [ ] `RecoilAccumulator {offset: Vec2, shot_index}`, `recoil_system`, `spread_calculator` (stance+ADS+pohyb+stamina)
 - [ ] `onRecoilUpdate` event → klient animuje vizuální zpětný ráz (odděleno od autoritativního)
 - [ ] Shotgun pellet fan: `pellet_count > 1` → N hitscanů v choke kuželi
@@ -370,6 +399,7 @@ Hitbox.Register('player_default', {
 ---
 
 #### 5.8 — Audio Events Bridge [ ]
+
 - [ ] `onGunfire {shooter, pos, dir, weapon, ammo, suppressed, muzzle_velocity_mps, crack_range_m, thump_range_m}`
 - [ ] `onFootstep {entity, pos, surface, stance, speed}`, `onExplosion`, `onReload {player, weapon, type}`
 - [ ] `FootstepDetector` systém (emituje každých N metrů pohybu)
@@ -378,6 +408,7 @@ Hitbox.Register('player_default', {
 ---
 
 #### 5.9 — Kill Feed & Hit Confirmation [ ]
+
 - [ ] `onHitConfirm` unicast: `{victim, hitzone, damage, kill, headshot}`
 - [ ] `onPlayerKill` broadcast: `{killer, victim, weapon, ammo, headshot, distance_m, through_wall}`
 - [ ] `KillStreak {current_streak, best_streak}`, `kill_streak_system`, `onKillStreak {player, streak}`
@@ -385,12 +416,14 @@ Hitbox.Register('player_default', {
 ---
 
 #### 5.10 — Spawn System [ ]
+
 - [ ] `SpawnPoint {team, active}`, `RespawnTimer`, `onRespawnReady {player}` event
 - [ ] Lua: `Spawn.Register/GetFree(team?)/SetActive/GetAll`
 
 ---
 
 #### 5.11 — Round State & Game Mode [ ]
+
 - [ ] `RoundState {WarmUp, Active{elapsed_sec}, PostRound{winner_team}}`, `round_timer_system`
 - [ ] `TeamAssignment {team: u8}`, `ScoreBoard HashMap<u64, PlayerScore{kills,deaths,assists,score}>`
 - [ ] Lua: `Round.GetState/SetTimeLimit/End`, `Player.GetTeam/SetTeam`, `Score.Add/Get/GetAll`
@@ -400,24 +433,24 @@ Hitbox.Register('player_default', {
 
 #### Phase 5 — Nová Lua API (přehled)
 
-| Funkce | Strana | Popis |
-|--------|--------|-------|
-| `Weapon.Register/Get` | server/both | WeaponDef registry |
-| `Weapon.GetEquipped/SetEquipped` | server | Equipment hráče |
-| `Weapon.GetAmmoReserve/SetAmmoReserve/ForceReload` | server | Munice |
-| `Ammo/Attachment/Material.Register` | server | Definice registrace |
-| `Hitbox.Register(model,def)` | server | Hitbox definition |
-| `Player.GetArmor/SetArmor` | server | Brnění |
-| `Player.GetTeam/SetTeam` | both/server | Team assignment |
-| `Player.GetStamina/GetStance` | server | Fyzický stav |
-| `Spawn.Register/GetFree/SetActive/GetAll` | server | Spawn body |
-| `Round.GetState/SetTimeLimit/End` | both/server | Stav kola |
-| `Score.Add/Get/GetAll` | server/both | Scoreboard |
-| `Camera.Create/Delete` | client | Vytvoř / smaž pojmenovanou kameru |
-| `Camera.SetActive/GetActive` | client | Přepni aktivní kameru (nil = player kamera) |
-| `Camera.AttachToEntity/AttachToBone/AttachToPosition` | client | Připoj kameru na entitu, kost nebo pozici |
-| `Camera.SetFOV` | client | Nastav FOV aktivní kamery (stupně) |
-| `Camera.SetMode/GetMode` | client | `first_person` / `third_person` / custom_id |
+| Funkce                                                  | Strana      | Popis                                           |
+| ------------------------------------------------------- | ----------- | ----------------------------------------------- |
+| `Weapon.Register/Get`                                 | server/both | WeaponDef registry                              |
+| `Weapon.GetEquipped/SetEquipped`                      | server      | Equipment hráče                               |
+| `Weapon.GetAmmoReserve/SetAmmoReserve/ForceReload`    | server      | Munice                                          |
+| `Ammo/Attachment/Material.Register`                   | server      | Definice registrace                             |
+| `Hitbox.Register(model,def)`                          | server      | Hitbox definition                               |
+| `Player.GetArmor/SetArmor`                            | server      | Brnění                                        |
+| `Player.GetTeam/SetTeam`                              | both/server | Team assignment                                 |
+| `Player.GetStamina/GetStance`                         | server      | Fyzický stav                                   |
+| `Spawn.Register/GetFree/SetActive/GetAll`             | server      | Spawn body                                      |
+| `Round.GetState/SetTimeLimit/End`                     | both/server | Stav kola                                       |
+| `Score.Add/Get/GetAll`                                | server/both | Scoreboard                                      |
+| `Camera.Create/Delete`                                | client      | Vytvoř / smaž pojmenovanou kameru             |
+| `Camera.SetActive/GetActive`                          | client      | Přepni aktivní kameru (nil = player kamera)   |
+| `Camera.AttachToEntity/AttachToBone/AttachToPosition` | client      | Připoj kameru na entitu, kost nebo pozici      |
+| `Camera.SetFOV`                                       | client      | Nastav FOV aktivní kamery (stupně)            |
+| `Camera.SetMode/GetMode`                              | client      | `first_person` / `third_person` / custom_id |
 
 ---
 
@@ -471,6 +504,11 @@ Hitbox.Register('player_default', {
 /model_viewer/src/
   main.rs                        ADS model viewer (CLI args), grid gizmos, ADM dict browser + clip overlay
   camera.rs                      OrbitCamera (orbit/pan/zoom)
+/map_viewer/
+  Cargo.toml                     Standalone mapa/collider/navmesh viewer
+  src/
+    main.rs                      Načítá `map.toml` nebo `world.index.toml`, spawnuje map instance a kreslí collider/navmesh overlay
+    camera.rs                    Orbit kamera pro inspekci mapy
 /host_client/src/
   main.rs                        DefaultPlugins + client plugins
   config.rs                      ClientConfig (client.toml)
@@ -499,32 +537,32 @@ Každý resource = vlastní izolovaná `mlua::Lua` instance. **Sandbox isolation
 
 **Stdlib povolen:** `string`, `table`, `math`, `utf8`, `coroutine`. **Zakázán:** `io`, `os`, `package`, `require`, `debug`, `load*`.
 
-| Symbol | Strana | Popis |
-|--------|--------|-------|
-| `RESOURCE_ID`, `SIDE`, `IS_SERVER`, `IS_CLIENT` | both | Identita resource |
-| `print(...)`, `log_debug/info/warn(s)` | both | Logování |
-| `RegisterEvent(name, fn)` | both | Callback; handler dostane `(payload, sender_id?)` |
-| `TriggerServerEvent(name, payload?)` | client | Pošle event serveru |
-| `TriggerClientEvent(name, target, payload?)` | server | Unicast (u64/string) nebo broadcast (nil/false) |
-| `TriggerEvent(name, payload?)` | both | Cross-sandbox bus (in-process) |
-| `World.SpawnLocalObject(model, pos, rot)` | both | Lokální entita → handle (u64) |
-| `World.SpawnNetworkedObject(model, pos, rot)` | server | Replikovaná entita → handle |
-| `World.SpawnNetworkedNpc(model, pos, rot, ped_profile?)` | server | Replikované NPC (NPC marker + klientský capsule collider setup, volitelně s explicitním ped profilem, např. "player" nebo "monster") |
-| `World.SpawnLocalDummy(shape, params, pos, rot)` | both | Parametrický dummy objekt (cuboid/sphere/cube/stairs/arch) |
-| `World.SpawnNetworkedDummy(shape, params, pos, rot)` | server | Replikovaný parametrický dummy objekt |
-| `World.SpawnLocalCollider(params, pos, rot)` | both | Samostatný collider bez render meshe (`shape/size/radius/height/is_static/is_trigger/stairs/stairs_slope_invert/stairs_clearance_y`) |
-| `World.SpawnNetworkedCollider(params, pos, rot)` | server | Replikovaný samostatný collider bez render meshe |
-| `World.DeleteObject(handle)` | both | Despawn |
-| `World.SetTransform/SetPosition/SetRotation/SetScale/SetModel` | both | Transformace |
-| `World.PlayAnimation(h, name, blend?)` nebo `World.PlayAnimation(h, name, loop?, speed?, blend?)` / `StopAnimation` | both | Animace (`name` podporuje `clip:N`/`anim:N`/`N`; GLTF = clip index, ADM = clip index nebo clip name; ADM v5 navíc `dict:<dict_name>:<clip_name>`) |
-| `World.Attach(child, child_socket, parent, parent_socket)` / `World.Detach(child)` | both | Socket-to-socket attachment |
-| `World.AttachWithOffset(child, parent, offset, rot)` | both | Parent attachment přes lokální offset od pivotu parent entity |
-| `World.GetSocketTransform(handle, socket)` | both | World-space socket transform |
-| `World.IsValid/IsAlive/GetHealth/GetModel` | both | State dotazy |
-| `World.GetPosition/Rotation/Quaternion/Scale/Transform/Animation/AnimationSpeed` | both | Gettery |
-| `World.NpcConfigure(handle, opts)` | both/server | Nastaví NPC parametry (`move_speed`, `arrive_distance`, `turn_speed`) |
-| `World.NpcWander(handle, kind, opts)` | both/server | Wander módy: `random`, `patrol`, `orbit` |
-| `World.NpcGoToEntity(handle, target, stop?)` / `World.NpcGoToCoord(handle, pos, stop?)` / `World.NpcStop(handle)` | both/server | Přímé AI movement příkazy |
+| Symbol                                                                                                                    | Strana      | Popis                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RESOURCE_ID`, `SIDE`, `IS_SERVER`, `IS_CLIENT`                                                                   | both        | Identita resource                                                                                                                                            |
+| `print(...)`, `log_debug/info/warn(s)`                                                                                | both        | Logování                                                                                                                                                   |
+| `RegisterEvent(name, fn)`                                                                                               | both        | Callback; handler dostane `(payload, sender_id?)`                                                                                                          |
+| `TriggerServerEvent(name, payload?)`                                                                                    | client      | Pošle event serveru                                                                                                                                         |
+| `TriggerClientEvent(name, target, payload?)`                                                                            | server      | Unicast (u64/string) nebo broadcast (nil/false)                                                                                                              |
+| `TriggerEvent(name, payload?)`                                                                                          | both        | Cross-sandbox bus (in-process)                                                                                                                               |
+| `World.SpawnLocalObject(model, pos, rot)`                                                                               | both        | Lokální entita → handle (u64)                                                                                                                             |
+| `World.SpawnNetworkedObject(model, pos, rot)`                                                                           | server      | Replikovaná entita → handle                                                                                                                                |
+| `World.SpawnNetworkedNpc(model, pos, rot, ped_profile?)`                                                                | server      | Replikované NPC (NPC marker + klientský capsule collider setup, volitelně s explicitním ped profilem, např. "player" nebo "monster")                    |
+| `World.SpawnLocalDummy(shape, params, pos, rot)`                                                                        | both        | Parametrický dummy objekt (cuboid/sphere/cube/stairs/arch)                                                                                                  |
+| `World.SpawnNetworkedDummy(shape, params, pos, rot)`                                                                    | server      | Replikovaný parametrický dummy objekt                                                                                                                      |
+| `World.SpawnLocalCollider(params, pos, rot)`                                                                            | both        | Samostatný collider bez render meshe (`shape/size/radius/height/is_static/is_trigger/stairs/stairs_slope_invert/stairs_clearance_y`)                      |
+| `World.SpawnNetworkedCollider(params, pos, rot)`                                                                        | server      | Replikovaný samostatný collider bez render meshe                                                                                                           |
+| `World.DeleteObject(handle)`                                                                                            | both        | Despawn                                                                                                                                                      |
+| `World.SetTransform/SetPosition/SetRotation/SetScale/SetModel`                                                          | both        | Transformace                                                                                                                                                 |
+| `World.PlayAnimation(h, name, blend?)` nebo `World.PlayAnimation(h, name, loop?, speed?, blend?)` / `StopAnimation` | both        | Animace (`name` podporuje `clip:N`/`anim:N`/`N`; GLTF = clip index, ADM = clip index nebo clip name; ADM v5 navíc `dict:<dict_name>:<clip_name>`) |
+| `World.Attach(child, child_socket, parent, parent_socket)` / `World.Detach(child)`                                    | both        | Socket-to-socket attachment                                                                                                                                  |
+| `World.AttachWithOffset(child, parent, offset, rot)`                                                                    | both        | Parent attachment přes lokální offset od pivotu parent entity                                                                                             |
+| `World.GetSocketTransform(handle, socket)`                                                                              | both        | World-space socket transform                                                                                                                                 |
+| `World.IsValid/IsAlive/GetHealth/GetModel`                                                                              | both        | State dotazy                                                                                                                                                 |
+| `World.GetPosition/Rotation/Quaternion/Scale/Transform/Animation/AnimationSpeed`                                        | both        | Gettery                                                                                                                                                      |
+| `World.NpcConfigure(handle, opts)`                                                                                      | both/server | Nastaví NPC parametry (`move_speed`, `arrive_distance`, `turn_speed`)                                                                                 |
+| `World.NpcWander(handle, kind, opts)`                                                                                   | both/server | Wander módy:`random`, `patrol`, `orbit`                                                                                                               |
+| `World.NpcGoToEntity(handle, target, stop?)` / `World.NpcGoToCoord(handle, pos, stop?)` / `World.NpcStop(handle)`   | both/server | Přímé AI movement příkazy                                                                                                                               |
 
 Poznámka: Pro AI postavy používej `World.SpawnNetworkedNpc(...)` místo `World.SpawnNetworkedObject(...)`, aby klientská vrstva vytvořila správný capsule collider pro NPC. Pokud potřebuješ specifický fyzikální profil (např. pro létající monstrum), zadej čtvrtý parametr `ped_profile` (název bez přípony, např. "monster").
 | `World.ApplyDamage(target, amount, source?)` | server | Damage intent |
@@ -560,30 +598,30 @@ Poznámka: Pro AI postavy používej `World.SpawnNetworkedNpc(...)` místo `Worl
 
 Generovaný při prvním spuštění: Win `%APPDATA%\bevy_game\client.toml`, Linux `~/.config/bevy_game/client.toml`.
 
-| Sekce | Co řídí |
-|-------|---------|
-| `[player]` | name, saved_client_id, avatar |
-| `[network]` | server, bind, download_concurrency, timeouty |
-| `[graphics]` / `[graphics.quality]` | backend (auto/vulkan/dx12/...), resolution, vsync, shadow/AA/LOD/SSAO/SSR |
-| `[audio]` | master + 5 kanálů, spatial audio, mute on focus lost |
-| `[ui]` | jazyk, HUD opacity, crosshair, FPS/ping/minimap |
-| `[input]` / `[input.keys]` / `[input.mouse]` | sensitivity, invert Y, raw input, 39 keybindings |
-| `[paths]` | cache/screenshot/savegame/log dir overridy |
-| `[advanced]` | log level, GPU validation, dev console, preload toggle |
+| Sekce                                              | Co řídí                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------- |
+| `[player]`                                       | name, saved_client_id, avatar                                             |
+| `[network]`                                      | server, bind, download_concurrency, timeouty                              |
+| `[graphics]` / `[graphics.quality]`            | backend (auto/vulkan/dx12/...), resolution, vsync, shadow/AA/LOD/SSAO/SSR |
+| `[audio]`                                        | master + 5 kanálů, spatial audio, mute on focus lost                    |
+| `[ui]`                                           | jazyk, HUD opacity, crosshair, FPS/ping/minimap                           |
+| `[input]` / `[input.keys]` / `[input.mouse]` | sensitivity, invert Y, raw input, 39 keybindings                          |
+| `[paths]`                                        | cache/screenshot/savegame/log dir overridy                                |
+| `[advanced]`                                     | log level, GPU validation, dev console, preload toggle                    |
 
 ## Server Config — `server.toml`
 
 Hledán: CLI arg → `<exe_dir>/server.toml` → `<cwd>/server.toml`. Relativní cesty: nejdřív vedle `.exe`, pak CWD.
 
-| Sekce | Co řídí |
-|-------|---------|
-| `[server]` | display name, MOTD, tagy |
-| `[gameplay]` | max_players, gamemode, idle_kick_sec |
-| `[net]` | UDP/HTTP bind, tickrate, protocol_id, klíč |
-| `[resources]` | VFS root, hot_reload, debounce |
-| `[auth]` | `mode = "open"/"token"/"whitelist"` |
-| `[database]` | sqlx connection string, pool size (Phase 4) |
-| `[dev]` | auto_acknowledge_clients, print_digest_on_startup |
+| Sekce           | Co řídí                                        |
+| --------------- | ------------------------------------------------- |
+| `[server]`    | display name, MOTD, tagy                          |
+| `[gameplay]`  | max_players, gamemode, idle_kick_sec              |
+| `[net]`       | UDP/HTTP bind, tickrate, protocol_id, klíč      |
+| `[resources]` | VFS root, hot_reload, debounce                    |
+| `[auth]`      | `mode = "open"/"token"/"whitelist"`             |
+| `[database]`  | sqlx connection string, pool size (Phase 4)       |
+| `[dev]`       | auto_acknowledge_clients, print_digest_on_startup |
 
 `deny_unknown_fields` — překlepy pukají při startu.
 
@@ -600,6 +638,7 @@ cargo run -p host_server --release
 cargo run -p host_client --release
 cargo check --workspace
 cargo run -p model_viewer -- path/to/model.glb        # ADS model viewer
+cargo run -p map_viewer -- host_client\assets\maps\world.index.toml --features dynamic_linking
 ```
 
 **Porty:** UDP 5000 (lightyear), TCP 8081 (Axum HTTP). Default server: `127.0.0.1:5000` / `http://127.0.0.1:8081`.

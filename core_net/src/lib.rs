@@ -43,5 +43,6 @@ pub use net_plugin::{
     FIXED_TIMESTEP_HZ, NETCODE_PROTOCOL_ID,
 };
 pub use protocol::{
-    player_action, ClientReady, LuaEventMessage, PlayerInput, ServerHello, PROTOCOL_VERSION,
+    player_action, ClientReady, LuaEventMessage, PlayerInput, ServerHello,
+    TileStreamingCommand, PROTOCOL_VERSION,
 };

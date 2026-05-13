@@ -1643,11 +1643,23 @@ pub fn tick_npc_agents(
                 continue;
             }
         }
+
+        if matches!(agent.goal, NpcMoveGoal::Idle) {
+            agent.current_path.clear();
+            agent.waypoint_index = 0;
+            continue;
+        }
+
         let mut stop_distance = agent.arrive_distance.max(0.01);
         let mut complete_goal = false;
+        let mut advance_waypoint = false;
 
         let goal_snapshot = agent.goal.clone();
-        let target_pos = match goal_snapshot {
+        let target_pos = if let Some(waypoint) = agent.current_path.get(agent.waypoint_index) {
+            stop_distance = stop_distance.max(0.1);
+            waypoint.target
+        } else {
+            match goal_snapshot {
             NpcMoveGoal::Idle => continue,
             NpcMoveGoal::GoToCoord { target, stop_distance: stop } => {
                 stop_distance = stop.max(agent.arrive_distance).max(0.01);
@@ -1737,7 +1749,7 @@ pub fn tick_npc_agents(
                     }
                 }
             }
-        };
+        }};
 
         let to_target = Vec2::new(
             target_pos.x - transform.translation.x,
@@ -1746,7 +1758,9 @@ pub fn tick_npc_agents(
         let dist = to_target.length();
 
         if dist <= stop_distance {
-            if matches!(goal_snapshot, NpcMoveGoal::GoToCoord { .. } | NpcMoveGoal::GoToEntity { .. }) {
+            if agent.waypoint_index < agent.current_path.len() {
+                advance_waypoint = true;
+            } else if matches!(goal_snapshot, NpcMoveGoal::GoToCoord { .. } | NpcMoveGoal::GoToEntity { .. }) {
                 complete_goal = true;
             }
         } else {
@@ -1759,6 +1773,17 @@ pub fn tick_npc_agents(
             let desired_rot = Quat::from_rotation_y(desired_yaw);
             let t = (agent.turn_speed.max(0.0) * dt).clamp(0.0, 1.0);
             transform.rotation = transform.rotation.slerp(desired_rot, t);
+        }
+
+        if advance_waypoint {
+            agent.waypoint_index += 1;
+            if agent.waypoint_index >= agent.current_path.len() {
+                agent.current_path.clear();
+                agent.waypoint_index = 0;
+                if matches!(goal_snapshot, NpcMoveGoal::GoToCoord { .. } | NpcMoveGoal::GoToEntity { .. }) {
+                    complete_goal = true;
+                }
+            }
         }
 
         if complete_goal {

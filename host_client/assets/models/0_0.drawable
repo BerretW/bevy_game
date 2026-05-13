@@ -1,0 +1,8 @@
+asset_name = "0_0"
+version = "1.1"
+
+[materials]
+
+[entities]
+"land_0_0" = { type = "MESH", cast_shadows = true }
+"COL_land_0_0" = { type = "COLLISION", shape = "CONVEX", half_extents = [10.0, 0.703831, 10.0544], mass = 1.0, is_static = false, climbable = false, ladder = false, material = "CONCRETE", friction = 0.6, restitution = 0.2, tags = [], lock_translation = [false, false, false], lock_rotation = [false, false, false] }

@@ -213,6 +213,7 @@ class BevyExportProps(bpy.types.PropertyGroup):
     ui_show_import_export: bpy.props.BoolProperty(name="Show Import Export", default=False)
     ui_show_lod_distances: bpy.props.BoolProperty(name="Show LOD Distances", default=False)
     ui_show_map_tools: bpy.props.BoolProperty(name="Show Map Tools", default=False)
+    ui_show_tile_tools: bpy.props.BoolProperty(name="Show Tile Tools", default=False)
 
     # Animation dictionary workflow (ADM v5)
     animation_dictionaries: bpy.props.CollectionProperty(type=BevyAnimDictionary)
@@ -261,4 +262,67 @@ class BevyExportProps(bpy.types.PropertyGroup):
         name="Include Ceiling Surfaces",
         description="Generate inverted surfaces for flying/ceiling traversal",
         default=False,
+    )
+
+    # Tile streaming export parameters
+    tile_id: bpy.props.StringProperty(
+        name="Tile ID",
+        description="Stable tile identifier used by world.index.toml",
+        default="",
+    )
+    tile_map_file: bpy.props.StringProperty(
+        name="Map File",
+        description="Relative map TOML filename referenced by world.index.toml",
+        default="map.map.toml",
+    )
+    tile_load_radius: bpy.props.FloatProperty(
+        name="Load Radius",
+        description="Streaming radius for this tile in meters",
+        default=2500.0,
+        min=1.0,
+        unit='LENGTH',
+    )
+    tile_always_loaded: bpy.props.BoolProperty(
+        name="Always Loaded",
+        description="Keep this tile loaded regardless of player distance",
+        default=False,
+    )
+    maps_export_dir: bpy.props.StringProperty(
+        name="Maps Folder",
+        description="Target folder where tile map/navmesh/world.index files are exported",
+        subtype='DIR_PATH',
+        default="",
+    )
+    models_export_dir: bpy.props.StringProperty(
+        name="Models Folder",
+        description="Target folder where tile model assets (.adm/.drawable) are exported",
+        subtype='DIR_PATH',
+        default="",
+    )
+    tile_single_asset_bundle: bpy.props.BoolProperty(
+        name="Single Asset Per Tile",
+        description="Export each tile collection as one ADM+Drawable model and make map TOML reference that single tile asset",
+        default=True,
+    )
+    tile_target_id: bpy.props.StringProperty(
+        name="Target Tile",
+        description="Tile ID to import together with neighboring tiles",
+        default="0_0",
+    )
+    tile_neighbor_radius: bpy.props.IntProperty(
+        name="Neighbor Radius",
+        description="How many tile steps around the target tile should be imported",
+        default=1,
+        min=0,
+        max=8,
+    )
+    tile_import_diagonals: bpy.props.BoolProperty(
+        name="Include Diagonals",
+        description="Import diagonal neighbors in addition to direct north/south/east/west neighbors",
+        default=False,
+    )
+    tile_clear_existing: bpy.props.BoolProperty(
+        name="Replace Imported Context",
+        description="Delete previously imported tile context collections before reimport",
+        default=True,
     )

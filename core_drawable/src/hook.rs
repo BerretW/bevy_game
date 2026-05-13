@@ -447,23 +447,35 @@ fn process_mesh_node(
     texture_reg: &mut TextureRegistry,
     asset_server: &AssetServer,
 ) {
-    // Sanitizace vertex dat — zajistí, že shadery vždy dostanou platná data
+    // Sanitizace vertex dat — zajistí, že shadery vždy dostanou platná data.
+    // GLTF mesh assety mohou být sdílené a už vyextrahované do render world,
+    // proto je neopravujeme in-place. Vytvoříme patched klon jen pro tuto entitu.
     if let Ok((Some(mesh_h), _)) = node_query.get(entity) {
-        if let Some(mesh) = meshes.get_mut(mesh_h.id()) {
-            let n = mesh.count_vertices();
-            if !mesh.contains_attribute(Mesh::ATTRIBUTE_COLOR) {
-                // Neutrální: žádné efekty (R=0,G=0,B=0), default paleta (A=0)
-                mesh.insert_attribute(
-                    Mesh::ATTRIBUTE_COLOR,
-                    vec![[0.0f32, 0.0, 0.0, 0.0]; n],
-                );
-            }
-            if !mesh.contains_attribute(Mesh::ATTRIBUTE_UV_1) {
-                // Neutrální UV1 (bevy_masks2): AO=1.0 (žádný efekt), emissive=0.0
-                mesh.insert_attribute(
-                    Mesh::ATTRIBUTE_UV_1,
-                    vec![[1.0f32, 0.0]; n],
-                );
+        if let Some(source_mesh) = meshes.get(mesh_h.id()) {
+            let needs_color = !source_mesh.contains_attribute(Mesh::ATTRIBUTE_COLOR);
+            let needs_uv1 = !source_mesh.contains_attribute(Mesh::ATTRIBUTE_UV_1);
+
+            if needs_color || needs_uv1 {
+                let mut mesh = source_mesh.clone();
+                let n = mesh.count_vertices();
+
+                if needs_color {
+                    // Neutrální: žádné efekty (R=0,G=0,B=0), default paleta (A=0)
+                    mesh.insert_attribute(
+                        Mesh::ATTRIBUTE_COLOR,
+                        vec![[0.0f32, 0.0, 0.0, 0.0]; n],
+                    );
+                }
+                if needs_uv1 {
+                    // Neutrální UV1 (bevy_masks2): AO=1.0 (žádný efekt), emissive=0.0
+                    mesh.insert_attribute(
+                        Mesh::ATTRIBUTE_UV_1,
+                        vec![[1.0f32, 0.0]; n],
+                    );
+                }
+
+                let patched_mesh = meshes.add(mesh);
+                commands.entity(entity).insert(Mesh3d(patched_mesh));
             }
         }
     }

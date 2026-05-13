@@ -96,6 +96,442 @@ def _format_map_vec3(values):
     return "[" + ", ".join(_format_map_float(v) for v in values) + "]"
 
 
+def _resolve_tile_id(settings, filepath: str) -> str:
+    raw = (getattr(settings, "tile_id", "") or "").strip()
+    if raw:
+        return bpy.path.clean_name(raw)
+    base = os.path.splitext(os.path.basename(filepath))[0]
+    if base.endswith(".index"):
+        base = base[:-6]
+    return bpy.path.clean_name(base or "tile_0_0")
+
+
+def _tile_id_from_collection(collection_name: str) -> str:
+    return bpy.path.clean_name((collection_name or "tile_0_0").strip() or "tile_0_0")
+
+
+def _resolve_tile_map_file(settings) -> str:
+    raw = (getattr(settings, "tile_map_file", "") or "").strip()
+    if raw:
+        return raw.replace("\\", "/")
+    return "map.map.toml"
+
+
+def _compute_tile_center(objects):
+    if not objects:
+        return (0.0, 0.0, 0.0)
+    center = sum((obj.location for obj in objects), Vector((0.0, 0.0, 0.0))) / len(objects)
+    return _blender_pos_to_map(center)
+
+
+def _build_world_tile_index_lines(tile_id, map_file, center, load_radius, always_loaded):
+    lines = ['version = "1.0"', "", '[[tiles]]']
+    lines.append(f'id = "{tile_id}"')
+    lines.append(f'map = "{map_file}"')
+    lines.append(f'center = {_format_map_vec3(center)}')
+    lines.append(f'load_radius = {_format_map_float(load_radius)}')
+    if always_loaded:
+        lines.append('always_loaded = true')
+    return lines
+
+
+def _parse_tile_id_coords(tile_id):
+    raw = (tile_id or "").strip()
+    if not raw:
+        return None
+    match = re.search(r'(-?\d+)_(-?\d+)$', raw)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _default_maps_dir():
+    blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+    if blend_dir:
+        return os.path.join(blend_dir, "maps")
+    return "maps"
+
+
+def _resolve_maps_export_dir(settings) -> str:
+    raw = (getattr(settings, "maps_export_dir", "") or "").strip()
+    if raw:
+        return bpy.path.abspath(raw)
+    return _default_maps_dir()
+
+
+def _default_models_dir():
+    blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+    if blend_dir:
+        return os.path.join(blend_dir, "models")
+    return "models"
+
+
+def _resolve_models_export_dir(settings) -> str:
+    raw = (getattr(settings, "models_export_dir", "") or "").strip()
+    if raw:
+        return bpy.path.abspath(raw)
+
+    maps_dir = _resolve_maps_export_dir(settings)
+    assets_dir = os.path.dirname(maps_dir)
+    if assets_dir and os.path.basename(maps_dir).lower() == "maps":
+        return os.path.join(assets_dir, "models")
+    return _default_models_dir()
+
+
+def _default_tile_map_filename(tile_id: str) -> str:
+    return f"{tile_id}.map.toml"
+
+
+def _default_tile_navmesh_filename(tile_id: str) -> str:
+    return f"{tile_id}.navmesh.toml"
+
+
+def _resolve_tile_map_filename(settings, tile_id: str) -> str:
+    raw = (getattr(settings, "tile_map_file", "") or "").strip()
+    if not raw or raw == "map.map.toml":
+        return _default_tile_map_filename(tile_id)
+    return raw.replace("\\", "/")
+
+
+def _collection_mesh_objects(collection):
+    if collection is None:
+        return []
+    return [obj for obj in collection.all_objects if obj.type == 'MESH']
+
+
+def _resolve_target_collection(context, obj=None):
+    candidates = []
+    if obj is not None:
+        candidates.append(obj)
+    active_object = getattr(context, "active_object", None)
+    if active_object is not None and active_object not in candidates:
+        candidates.append(active_object)
+
+    for candidate in candidates:
+        user_collections = getattr(candidate, "users_collection", None) or ()
+        if user_collections:
+            return user_collections[0]
+
+    active_layer = getattr(getattr(context, "view_layer", None), "active_layer_collection", None)
+    if active_layer is not None and getattr(active_layer, "collection", None) is not None:
+        return active_layer.collection
+
+    if getattr(context, "collection", None) is not None:
+        return context.collection
+    return context.scene.collection
+
+
+def _build_map_instances(objects):
+    instances = []
+    for idx, obj in enumerate(objects):
+        props = getattr(obj, 'bevy_toolkit_obj', None)
+        export_name = props.export_name.strip() if props else ""
+        model = export_name or bpy.path.clean_name(obj.name)
+        position = _blender_pos_to_map(obj.location)
+        rot_deg = obj.rotation_euler.to_matrix().to_euler('XYZ')
+        rotation = _blender_rot_to_map_deg(Vector((
+            rot_deg.x * (180.0 / 3.141592653589793),
+            rot_deg.y * (180.0 / 3.141592653589793),
+            rot_deg.z * (180.0 / 3.141592653589793),
+        )))
+        scale = (float(obj.scale.x), float(obj.scale.z), float(obj.scale.y))
+        tags = parse_tags(props.tags_csv) if props else []
+        navmesh_only = bool(props and props.is_col and props.col_shape == 'NAVMESH')
+
+        instances.append({
+            "id": f"{model}_{idx}",
+            "model": model,
+            "position": position,
+            "rotation_deg": rotation,
+            "scale": scale,
+            "tags": tags,
+            "navmesh_only": navmesh_only,
+        })
+    return instances
+
+
+def _build_single_asset_map_instances(asset_name):
+    return [{
+        "id": asset_name,
+        "model": asset_name,
+        "position": (0.0, 0.0, 0.0),
+        "rotation_deg": (0.0, 0.0, 0.0),
+        "scale": (1.0, 1.0, 1.0),
+        "tags": [],
+        "navmesh_only": False,
+    }]
+
+
+def _build_navmesh_lines_from_objects(nav_objects, settings):
+    lines = [
+        'version = "1.0"',
+        '',
+    ]
+
+    surface_id = 0
+    for nav_obj in nav_objects:
+        surface_type = str(nav_obj.get('navmesh_type', '') or '').strip().lower()
+        if not surface_type:
+            parts = nav_obj.name.split('_')
+            surface_type = parts[-1].lower() if len(parts) > 2 else 'ground'
+
+        mesh = nav_obj.data
+        verts = []
+        for v in mesh.vertices:
+            world = nav_obj.matrix_world @ v.co
+            verts.append(list(_blender_pos_to_map(world)))
+        faces = [[int(v) for v in f.vertices[:3]] for f in mesh.polygons if len(f.vertices) >= 3]
+
+        lines.append('[[surfaces]]')
+        lines.append(f'id = "surface_{surface_id}"')
+        lines.append(f'surface_type = "{surface_type}"')
+        lines.append(f'walkable_height = {_format_map_float(settings.navmesh_walkable_height)}')
+        lines.append(f'walkable_radius = {_format_map_float(settings.navmesh_walkable_radius)}')
+        lines.append(f'climb_height = {_format_map_float(settings.navmesh_climb_height)}')
+        lines.append(f'vertices = {verts}')
+        lines.append(f'faces = {faces}')
+        lines.append('')
+        surface_id += 1
+
+    return lines
+
+
+def _export_adm_drawable_bundle(context, objects, settings, export_dir, asset_name):
+    from .adm_export import export_adm
+    os.makedirs(export_dir, exist_ok=True)
+
+    adm_path = os.path.join(export_dir, f"{asset_name}.adm")
+    drawable_path = os.path.join(export_dir, f"{asset_name}.drawable")
+
+    armature = _find_target_armature(context, objects)
+    meshes, nodes = export_adm(adm_path, objects=objects, export_textures=True, armature_object=armature)
+
+    used_materials = []
+    seen = set()
+    for obj in objects:
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat and mat.name not in seen:
+                used_materials.append(mat)
+                seen.add(mat.name)
+
+    lines = build_drawable_toml(asset_name, objects, used_materials)
+    with open(drawable_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+
+    try:
+        _write_ik_sidecar(export_dir, asset_name, armature, settings)
+    except Exception:
+        pass
+
+    return {
+        "adm_path": adm_path,
+        "drawable_path": drawable_path,
+        "meshes": meshes,
+        "nodes": nodes,
+    }
+
+
+def _load_world_index(path):
+    try:
+        import tomllib
+    except ImportError:
+        raise RuntimeError("tomllib není dostupné (vyžaduje Blender/Python 3.11+)")
+
+    if not os.path.isfile(path):
+        return {"version": "1.0", "tiles": []}
+
+    with open(path, 'rb') as fh:
+        data = tomllib.load(fh)
+
+    tiles = data.get('tiles', [])
+    if not isinstance(tiles, list):
+        tiles = []
+    return {
+        "version": str(data.get('version', '1.0')),
+        "tiles": tiles,
+    }
+
+
+def _write_world_index(path, manifest):
+    lines = [f'version = "{manifest.get("version", "1.0")}"', '']
+    for tile in manifest.get('tiles', []):
+        lines.append('[[tiles]]')
+        lines.append(f'id = "{tile["id"]}"')
+        lines.append(f'map = "{tile["map"]}"')
+        lines.append(f'center = {_format_map_vec3(tile["center"])}')
+        lines.append(f'load_radius = {_format_map_float(tile["load_radius"])}')
+        if tile.get('always_loaded', False):
+            lines.append('always_loaded = true')
+        lines.append('')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write("\n".join(lines).rstrip() + "\n")
+
+
+def _upsert_world_index_tile(path, tile_entry):
+    manifest = _load_world_index(path)
+    tiles = []
+    replaced = False
+    for tile in manifest.get('tiles', []):
+        if str(tile.get('id', '')).strip() == tile_entry['id']:
+            tiles.append(tile_entry)
+            replaced = True
+        else:
+            tiles.append(tile)
+    if not replaced:
+        tiles.append(tile_entry)
+    manifest['tiles'] = tiles
+    _write_world_index(path, manifest)
+
+
+def _ensure_collection(parent_collection, name):
+    coll = bpy.data.collections.get(name)
+    if coll is None:
+        coll = bpy.data.collections.new(name)
+    if parent_collection and coll.name not in parent_collection.children.keys():
+        parent_collection.children.link(coll)
+    return coll
+
+
+def _clear_collection_objects(collection):
+    for obj in list(collection.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def _import_instances_into_collection(context, instances, collection, tile_id=None):
+    imported = 0
+    for idx, entry in enumerate(instances):
+        model = str(entry.get('model', f'instance_{idx}')).strip() or f'instance_{idx}'
+        obj_name = str(entry.get('id', f'map_{model}_{idx}')).strip() or f'map_{model}_{idx}'
+
+        mesh = bpy.data.meshes.new(obj_name + "_mesh")
+        mesh.from_pydata(
+            [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)],
+            [],
+            [(0, 1, 2, 3)],
+        )
+        obj = bpy.data.objects.new(obj_name, mesh)
+        collection.objects.link(obj)
+
+        pos = entry.get('position', [0.0, 0.0, 0.0])
+        rot = entry.get('rotation_deg', [0.0, 0.0, 0.0])
+        scl = entry.get('scale', [1.0, 1.0, 1.0])
+
+        obj.location = _map_pos_to_blender(pos)
+        obj.rotation_mode = 'XYZ'
+        rot_blender_deg = _map_rot_deg_to_blender(rot)
+        obj.rotation_euler = Vector((
+            rot_blender_deg.x * (3.141592653589793 / 180.0),
+            rot_blender_deg.y * (3.141592653589793 / 180.0),
+            rot_blender_deg.z * (3.141592653589793 / 180.0),
+        ))
+        obj.scale = Vector((float(scl[0]), float(scl[2]), float(scl[1])))
+
+        props = obj.bevy_toolkit_obj
+        props.export_name = model
+        navmesh_only = bool(entry.get('navmesh_only', False))
+        if navmesh_only:
+            props.is_col = True
+            props.col_shape = 'NAVMESH'
+            obj.display_type = 'WIRE'
+            obj.hide_render = True
+
+        tags = entry.get('tags', [])
+        if isinstance(tags, list):
+            props.tags_csv = ",".join(str(t) for t in tags)
+
+        if tile_id:
+            obj["tile_id"] = tile_id
+            obj["imported_tile_context"] = True
+
+        imported += 1
+    return imported
+
+
+def _selected_tile_ids(index_tiles, target_tile_id, radius, include_diagonals):
+    selected = set()
+    target_coords = _parse_tile_id_coords(target_tile_id)
+
+    for tile in index_tiles:
+        tile_id = str(tile.get('id', '')).strip()
+        if not tile_id:
+            continue
+        if tile_id == target_tile_id:
+            selected.add(tile_id)
+            continue
+        if target_coords is None:
+            continue
+        coords = _parse_tile_id_coords(tile_id)
+        if coords is None:
+            continue
+        dx = abs(coords[0] - target_coords[0])
+        dy = abs(coords[1] - target_coords[1])
+        if include_diagonals:
+            if max(dx, dy) <= radius:
+                selected.add(tile_id)
+        else:
+            if dx + dy <= radius:
+                selected.add(tile_id)
+
+    return selected
+
+
+def _export_tile_bundle(context, collection, settings, maps_dir, tile_id, report_fn=None):
+    os.makedirs(maps_dir, exist_ok=True)
+
+    objects = _collection_mesh_objects(collection)
+    map_objects = [obj for obj in objects if not obj.name.startswith("NAV_")]
+    nav_objects = [obj for obj in objects if obj.name.startswith("NAV_")]
+    asset_export = None
+
+    if not map_objects:
+        raise RuntimeError(f"Tile collection '{collection.name}' neobsahuje žádné exportovatelné MESH objekty")
+
+    map_filename = _resolve_tile_map_filename(settings, tile_id)
+    navmesh_filename = _default_tile_navmesh_filename(tile_id)
+    map_path = os.path.join(maps_dir, map_filename)
+    navmesh_path = os.path.join(maps_dir, navmesh_filename)
+    world_index_path = os.path.join(maps_dir, "world.index.toml")
+
+    if bool(getattr(settings, "tile_single_asset_bundle", True)):
+        models_dir = _resolve_models_export_dir(settings)
+        asset_export = _export_adm_drawable_bundle(context, map_objects, settings, models_dir, tile_id)
+        instances = _build_single_asset_map_instances(tile_id)
+    else:
+        instances = _build_map_instances(map_objects)
+
+    with open(map_path, 'w', encoding='utf-8') as fh:
+        fh.write("\n".join(_build_map_manifest_lines(instances)) + "\n")
+
+    if nav_objects:
+        with open(navmesh_path, 'w', encoding='utf-8') as fh:
+            fh.write("\n".join(_build_navmesh_lines_from_objects(nav_objects, settings)) + "\n")
+
+    center = _compute_tile_center(map_objects or objects)
+    _upsert_world_index_tile(world_index_path, {
+        "id": tile_id,
+        "map": map_filename.replace("\\", "/"),
+        "center": center,
+        "load_radius": float(settings.tile_load_radius),
+        "always_loaded": bool(settings.tile_always_loaded),
+    })
+
+    if report_fn is not None:
+        if asset_export is not None:
+            report_fn({'INFO'}, f"Tile {tile_id}: asset {os.path.basename(asset_export['adm_path'])} + map bundle → {maps_dir}")
+        else:
+            report_fn({'INFO'}, f"Tile {tile_id}: map {'+' if nav_objects else ''}{' navmesh' if nav_objects else ''} → {maps_dir}")
+
+    return {
+        "tile_id": tile_id,
+        "map_path": map_path,
+        "navmesh_path": navmesh_path if nav_objects else None,
+        "world_index_path": world_index_path,
+        "instance_count": len(instances),
+        "asset_export": asset_export,
+    }
+
+
 def _build_map_manifest_lines(instances):
     lines = ['version = "1.0"', ""]
     for item in instances:
@@ -533,6 +969,7 @@ class BEVY_OT_GenerateCol(bpy.types.Operator):
         if not src or src.type != "MESH":
             self.report({"WARNING"}, "Active object must be a mesh")
             return {"CANCELLED"}
+        target_collection = _resolve_target_collection(context, src)
         new_obj = src.copy()
         new_obj.data = src.data.copy()
         new_obj.name = f"COL_{src.name}"
@@ -549,7 +986,7 @@ class BEVY_OT_GenerateCol(bpy.types.Operator):
         new_obj.bevy_toolkit_obj.lock_rz = False
         new_obj.display_type = "WIRE"
         new_obj.hide_render  = True
-        context.collection.objects.link(new_obj)
+        target_collection.objects.link(new_obj)
         self.report({"INFO"}, f"Collision proxy created: {new_obj.name}")
         return {"FINISHED"}
 
@@ -579,11 +1016,12 @@ class BEVY_OT_ConvertToDrawableModel(bpy.types.Operator):
             return {"CANCELLED"}
 
         active     = context.active_object if context.active_object in targets else targets[0]
+        target_collection = _resolve_target_collection(context, active)
         model_name = f"{active.name}.model"
         model_obj  = bpy.data.objects.get(model_name)
         if not model_obj:
             model_obj = bpy.data.objects.new(model_name, None)
-            context.collection.objects.link(model_obj)
+            target_collection.objects.link(model_obj)
 
         if settings.center_to_selection:
             center = sum((obj.location for obj in targets), Vector((0.0, 0.0, 0.0))) / len(targets)
@@ -627,7 +1065,7 @@ class BEVY_OT_ConvertToDrawable(bpy.types.Operator):
                 ensure_mask_attribute(obj.data)
                 ensure_masks2_attribute(obj.data)
                 if settings.auto_embed_collision:
-                    proxy_obj, created = duplicate_collision_proxy(obj, context.collection)
+                    proxy_obj, created = duplicate_collision_proxy(obj, _resolve_target_collection(context, obj))
                     created_col += 1 if created else 0
                     created_proxy_names.append(proxy_obj.name)
 
@@ -1861,6 +2299,111 @@ class BEVY_OT_ExportMapManifest(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class BEVY_OT_ExportWorldTileIndex(bpy.types.Operator):
+    bl_idname = "bevy.export_world_tile_index"
+    bl_label = "Export World Tile Index"
+    bl_description = "Export a world.index.toml entry for the current Blender tile"
+
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.toml", options={'HIDDEN'})
+    use_selection: bpy.props.BoolProperty(name="Pouze výběr", default=True)
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+            default = os.path.join(blend_dir, "world.index.toml") if blend_dir else "world.index.toml"
+            self.filepath = default
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if self.use_selection:
+            objects = [o for o in context.selected_objects if o.type == 'MESH']
+        else:
+            objects = [o for o in context.scene.objects if o.type == 'MESH']
+
+        tile_id = _resolve_tile_id(settings, self.filepath)
+        map_file = _resolve_tile_map_file(settings)
+        center = _compute_tile_center(objects)
+        lines = _build_world_tile_index_lines(
+            tile_id,
+            map_file,
+            center,
+            float(settings.tile_load_radius),
+            bool(settings.tile_always_loaded),
+        )
+
+        try:
+            with open(self.filepath, 'w', encoding='utf-8') as fh:
+                fh.write("\n".join(lines) + "\n")
+        except Exception as e:
+            self.report({'ERROR'}, f"Nelze zapsat world.index.toml: {e}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Tile index export: {tile_id} → {os.path.basename(self.filepath)}")
+        return {'FINISHED'}
+
+
+class BEVY_OT_ExportActiveTileBundle(bpy.types.Operator):
+    bl_idname = "bevy.export_active_tile_bundle"
+    bl_label = "Export Active Tile Bundle"
+    bl_description = "Export the active collection as one tile: map TOML, navmesh sidecar and updated world.index.toml"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        active_layer = context.view_layer.active_layer_collection
+        if active_layer is None or active_layer.collection is None:
+            self.report({'ERROR'}, "Není aktivní žádná kolekce")
+            return {'CANCELLED'}
+
+        collection = active_layer.collection
+        tile_id = (settings.tile_id or '').strip()
+        tile_id = bpy.path.clean_name(tile_id) if tile_id else _tile_id_from_collection(collection.name)
+        maps_dir = _resolve_maps_export_dir(settings)
+
+        try:
+            result = _export_tile_bundle(context, collection, settings, maps_dir, tile_id, self.report)
+        except Exception as e:
+            self.report({'ERROR'}, f"Export active tile selhal: {e}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Tile export: {result['tile_id']} ({result['instance_count']} instancí) → {maps_dir}")
+        return {'FINISHED'}
+
+
+class BEVY_OT_ExportAllTileBundles(bpy.types.Operator):
+    bl_idname = "bevy.export_all_tile_bundles"
+    bl_label = "Export All Tile Bundles"
+    bl_description = "Export all collections with tile-like names (e.g. 0_0, tile_1_0) into the maps folder"
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        maps_dir = _resolve_maps_export_dir(settings)
+        exported = 0
+
+        try:
+            for collection in bpy.data.collections:
+                tile_id = _tile_id_from_collection(collection.name)
+                if _parse_tile_id_coords(tile_id) is None:
+                    continue
+                objects = _collection_mesh_objects(collection)
+                if not objects:
+                    continue
+                _export_tile_bundle(context, collection, settings, maps_dir, tile_id)
+                exported += 1
+        except Exception as e:
+            self.report({'ERROR'}, f"Batch tile export selhal: {e}")
+            return {'CANCELLED'}
+
+        if exported == 0:
+            self.report({'WARNING'}, "Nebyly nalezeny žádné tile kolekce k exportu")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Exported {exported} tile collection(s) → {maps_dir}")
+        return {'FINISHED'}
+
+
 class BEVY_OT_ImportMapManifest(bpy.types.Operator):
     bl_idname = "bevy.import_map_manifest"
     bl_label = "Import Map TOML"
@@ -1896,50 +2439,104 @@ class BEVY_OT_ImportMapManifest(bpy.types.Operator):
             self.report({'WARNING'}, "Map TOML neobsahuje žádné [[instances]]")
             return {'CANCELLED'}
 
-        imported = 0
-        for idx, entry in enumerate(instances):
-            model = str(entry.get('model', f'instance_{idx}')).strip() or f'instance_{idx}'
-            obj_name = str(entry.get('id', f'map_{model}_{idx}')).strip() or f'map_{model}_{idx}'
-
-            mesh = bpy.data.meshes.new(obj_name + "_mesh")
-            mesh.from_pydata(
-                [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)],
-                [],
-                [(0, 1, 2, 3)],
-            )
-            obj = bpy.data.objects.new(obj_name, mesh)
-            context.collection.objects.link(obj)
-
-            pos = entry.get('position', [0.0, 0.0, 0.0])
-            rot = entry.get('rotation_deg', [0.0, 0.0, 0.0])
-            scl = entry.get('scale', [1.0, 1.0, 1.0])
-
-            obj.location = _map_pos_to_blender(pos)
-            obj.rotation_mode = 'XYZ'
-            rot_blender_deg = _map_rot_deg_to_blender(rot)
-            obj.rotation_euler = Vector((
-                rot_blender_deg.x * (3.141592653589793 / 180.0),
-                rot_blender_deg.y * (3.141592653589793 / 180.0),
-                rot_blender_deg.z * (3.141592653589793 / 180.0),
-            ))
-            obj.scale = Vector((float(scl[0]), float(scl[2]), float(scl[1])))
-
-            props = obj.bevy_toolkit_obj
-            props.export_name = model
-            navmesh_only = bool(entry.get('navmesh_only', False))
-            if navmesh_only:
-                props.is_col = True
-                props.col_shape = 'NAVMESH'
-                obj.display_type = 'WIRE'
-                obj.hide_render = True
-
-            tags = entry.get('tags', [])
-            if isinstance(tags, list):
-                props.tags_csv = ",".join(str(t) for t in tags)
-
-            imported += 1
+        imported = _import_instances_into_collection(context, instances, context.collection)
 
         self.report({'INFO'}, f"Map import: vytvořeno {imported} objektů")
+        return {'FINISHED'}
+
+
+class BEVY_OT_ImportTileNeighborhood(bpy.types.Operator):
+    bl_idname = "bevy.import_tile_neighborhood"
+    bl_label = "Import Tile Neighborhood"
+    bl_description = "Import target tile and neighboring tiles from world.index.toml into Blender collections"
+
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.toml", options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        settings = context.scene.bevy_toolkit_export
+        if not self.filepath:
+            self.filepath = os.path.join(_resolve_maps_export_dir(settings), "world.index.toml")
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        settings = context.scene.bevy_toolkit_export
+        if not os.path.isfile(self.filepath):
+            self.report({'ERROR'}, f"world.index.toml nenalezen: {self.filepath}")
+            return {'CANCELLED'}
+
+        try:
+            manifest = _load_world_index(self.filepath)
+        except Exception as e:
+            self.report({'ERROR'}, f"Nelze načíst world.index.toml: {e}")
+            return {'CANCELLED'}
+
+        tiles = manifest.get('tiles', [])
+        target_tile_id = (settings.tile_target_id or '').strip()
+        if not target_tile_id:
+            self.report({'ERROR'}, "Target Tile není nastaven")
+            return {'CANCELLED'}
+
+        wanted = _selected_tile_ids(
+            tiles,
+            target_tile_id,
+            int(settings.tile_neighbor_radius),
+            bool(settings.tile_import_diagonals),
+        )
+        if target_tile_id not in wanted:
+            wanted.add(target_tile_id)
+
+        tiles_by_id = {
+            str(tile.get('id', '')).strip(): tile
+            for tile in tiles
+            if str(tile.get('id', '')).strip()
+        }
+
+        root = _ensure_collection(context.scene.collection, "Imported Tile Context")
+        if settings.tile_clear_existing:
+            for child in list(root.children):
+                _clear_collection_objects(child)
+
+        maps_dir = os.path.dirname(self.filepath)
+        imported_tiles = 0
+        imported_objects = 0
+
+        for tile_id in sorted(wanted):
+            tile = tiles_by_id.get(tile_id)
+            if tile is None:
+                continue
+            map_rel = str(tile.get('map', '')).strip()
+            if not map_rel:
+                continue
+            map_path = os.path.join(maps_dir, map_rel)
+            if not os.path.isfile(map_path):
+                self.report({'WARNING'}, f"Map soubor chybí pro tile {tile_id}: {map_rel}")
+                continue
+
+            try:
+                import tomllib
+                with open(map_path, 'rb') as fh:
+                    data = tomllib.load(fh)
+            except Exception as e:
+                self.report({'WARNING'}, f"Nelze načíst {map_rel}: {e}")
+                continue
+
+            instances = data.get('instances', [])
+            if not isinstance(instances, list):
+                continue
+
+            coll = _ensure_collection(root, f"tile_{tile_id}")
+            if settings.tile_clear_existing:
+                _clear_collection_objects(coll)
+            imported_objects += _import_instances_into_collection(context, instances, coll, tile_id)
+            imported_tiles += 1
+
+        if imported_tiles == 0:
+            self.report({'WARNING'}, "Nebyly importovány žádné tile")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Imported {imported_tiles} tile(s), {imported_objects} object(s) into Blender context")
         return {'FINISHED'}
 
 
@@ -2118,7 +2715,7 @@ class BEVY_OT_NavmeshAutogen(bpy.types.Operator):
             self.report({'INFO'}, "Navmesh auto-generation completed!")
             return {'FINISHED'}
         else:
-            self.report({'ERROR'}, "Navmesh auto-generation failed — no COL_* objects found")
+            self.report({'ERROR'}, "Navmesh auto-generation failed — no COL_* objects found in the active tile collection")
             return {'CANCELLED'}
 
 
@@ -2170,32 +2767,28 @@ class BEVY_OT_ExportNavmesh(bpy.types.Operator):
         lines = [
             'version = "1.0"',
             '',
-            '[parameters]',
-            f'walkable_height = {settings.navmesh_walkable_height}',
-            f'walkable_radius = {settings.navmesh_walkable_radius}',
-            f'climb_height = {settings.navmesh_climb_height}',
-            '',
         ]
         
         surface_id = 0
         for nav_obj in nav_objects:
-            # Parse surface type from NAV_AUTO_* naming
-            parts = nav_obj.name.split('_')
-            surface_type = parts[-1] if len(parts) > 2 else 'ground'
-            
+            surface_type = str(nav_obj.get('navmesh_type', '') or '').strip().lower()
+            if not surface_type:
+                parts = nav_obj.name.split('_')
+                surface_type = parts[-1].lower() if len(parts) > 2 else 'ground'
+
             mesh = nav_obj.data
-            verts = [[float(v.co.x), float(v.co.y), float(v.co.z)] for v in mesh.vertices]
+            verts = []
+            for v in mesh.vertices:
+                world = nav_obj.matrix_world @ v.co
+                verts.append(list(_blender_pos_to_map(world)))
             faces = [[int(v) for v in f.vertices[:3]] for f in mesh.polygons if len(f.vertices) >= 3]
             
             lines.append('[[surfaces]]')
             lines.append(f'id = "surface_{surface_id}"')
-            lines.append(f'type = "{surface_type}"')
-            
-            if surface_type == 'water':
-                lines.append('water_depth = 2.0')
-                lines.append('walkable = true')
-            elif surface_type == 'climbable':
-                lines.append('climbable = true')
+            lines.append(f'surface_type = "{surface_type}"')
+            lines.append(f'walkable_height = {_format_map_float(settings.navmesh_walkable_height)}')
+            lines.append(f'walkable_radius = {_format_map_float(settings.navmesh_walkable_radius)}')
+            lines.append(f'climb_height = {_format_map_float(settings.navmesh_climb_height)}')
             
             lines.append(f'vertices = {verts}')
             lines.append(f'faces = {faces}')

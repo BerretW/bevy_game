@@ -128,6 +128,7 @@ impl Plugin for DrawablePlugin {
                     adm::extract_root_motion.after(adm::apply_adm_animations),
                     adm::forward_adm_anim_notifies_to_local_bus.after(adm::apply_adm_animations),
                     update_lod_visibility.after(hook_drawable_scenes),
+                    update_hlod_visibility.after(update_lod_visibility),
                     apply_skeletal_pruning.after(update_lod_visibility),
                     apply_material_overrides,
                     detect_stairs_on_collision,

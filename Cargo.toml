@@ -9,6 +9,7 @@ members = [
     "host_server",
     "host_client",
     "model_viewer",
+    "map_viewer",
 ]
 
 [workspace.package]
