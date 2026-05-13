@@ -223,13 +223,14 @@ fn spawn_player_on_connect(
         player, client_id
     );
 
-    // Phase 3.3 — FiveM-style Lua event: playerConnecting
+    // Keep both join aliases for resource compatibility.
     let payload = serde_json::to_vec(&serde_json::json!({
         "id": client_id.to_string(),
         "entity": format!("{:?}", player)
     }))
     .unwrap_or_default();
-    local_bus.push("playerConnecting".to_string(), payload);
+    local_bus.push("playerConnecting".to_string(), payload.clone());
+    local_bus.push("onPlayerJoin".to_string(), payload);
 }
 
 fn emit_player_disconnect(

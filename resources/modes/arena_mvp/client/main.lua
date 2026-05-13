@@ -13,6 +13,9 @@ local arena_state = {
     score_limit = ArenaConfig.score_limit,
     respawn_delay_ms = ArenaConfig.respawn_delay_ms,
     respawn_deadline = nil,
+    humans = 0,
+    zombies = 0,
+    slots = ArenaConfig.max_slots,
 }
 
 local function set_announcement(text, duration_ms)
@@ -77,6 +80,9 @@ RegisterEvent('arena:state', function(payload)
     arena_state.players = type(payload.players) == 'table' and payload.players or {}
     arena_state.score_limit = tonumber(payload.score_limit) or arena_state.score_limit
     arena_state.respawn_delay_ms = tonumber(payload.respawn_delay_ms) or arena_state.respawn_delay_ms
+    arena_state.humans = tonumber(payload.humans) or arena_state.humans
+    arena_state.zombies = tonumber(payload.zombies) or arena_state.zombies
+    arena_state.slots = tonumber(payload.slots) or arena_state.slots
 end)
 
 RegisterEvent('arena:respawn_timer', function(payload)
@@ -162,7 +168,7 @@ CreateThread(function()
         Gui.DrawRect(0.15, 0.07, 0.26, 0.085, 10, 12, 14, 170)
         Gui.DrawBorder(0.15, 0.07, 0.26, 0.085, 0.002, tr, tg, tb, 220)
         Gui.DrawText(string.format('%s  %d / %d', team_label, arena_state.scores.alpha, arena_state.scores.bravo), 0.035, 0.045, 0.42, 245, 245, 245, 245)
-        Gui.DrawText(string.format('Limit %d', arena_state.score_limit), 0.035, 0.074, 0.30, 185, 185, 185, 220)
+        Gui.DrawText(string.format('Limit %d   Humans %d   Zombies %d / %d', arena_state.score_limit, arena_state.humans, arena_state.zombies, arena_state.slots), 0.035, 0.074, 0.22, 185, 185, 185, 220)
 
         Gui.DrawRect(0.13, 0.94, 0.22, 0.032, 22, 22, 26, 210)
         Gui.DrawRect(0.13 - (0.22 * (1.0 - frac) / 2.0), 0.94, 0.22 * frac, 0.032, math.floor(255 * (1.0 - frac)), math.floor(200 * frac), 48, 230)
@@ -204,6 +210,7 @@ CreateThread(function()
         Gui.DrawText(string.format('Slot %d  %s', active_slot, weapon_name), 0.74, 0.895, 0.26, 245, 245, 245, 240)
         Gui.DrawText(string.format('Ammo %d / %d', ammo_in_mag, reserve), 0.74, 0.923, 0.24, 220, 220, 220, 230)
         Gui.DrawText('1 = rifle   2 = pistol', 0.74, 0.950, 0.20, 170, 170, 170, 220)
+        Gui.DrawText('Orange sphere = ammo cache', 0.74, 0.972, 0.18, 255, 176, 82, 235)
 
         if arena_state.respawn_deadline and arena_state.respawn_deadline > clock_ms then
             local remaining = math.ceil((arena_state.respawn_deadline - clock_ms) / 1000.0)
