@@ -13,6 +13,16 @@ local stairs_state = {
         sampled_this_frame = false,
         left_foot_y = 0.0,
         right_foot_y = 0.0,
+        runtime = {
+            left = {
+                smooth_target_y = nil,
+                blend_weight = nil,
+            },
+            right = {
+                smooth_target_y = nil,
+                blend_weight = nil,
+            },
+        },
     },
     player = { x = 0.0, y = 0.0, z = 0.0, vy = 0.0 },
 }
@@ -72,6 +82,20 @@ RegisterEvent('stairs:state', function(payload)
         stairs_state.ik.sampled_this_frame = payload.ik.sampled_this_frame == true
         stairs_state.ik.left_foot_y = tonumber(payload.ik.left_foot_y) or 0.0
         stairs_state.ik.right_foot_y = tonumber(payload.ik.right_foot_y) or 0.0
+
+        if type(payload.ik.runtime) == 'table' then
+            local left = type(payload.ik.runtime.left) == 'table' and payload.ik.runtime.left or nil
+            local right = type(payload.ik.runtime.right) == 'table' and payload.ik.runtime.right or nil
+            stairs_state.ik.runtime.left.smooth_target_y = left and tonumber(left.smooth_target_y) or nil
+            stairs_state.ik.runtime.left.blend_weight = left and tonumber(left.blend_weight) or nil
+            stairs_state.ik.runtime.right.smooth_target_y = right and tonumber(right.smooth_target_y) or nil
+            stairs_state.ik.runtime.right.blend_weight = right and tonumber(right.blend_weight) or nil
+        else
+            stairs_state.ik.runtime.left.smooth_target_y = nil
+            stairs_state.ik.runtime.left.blend_weight = nil
+            stairs_state.ik.runtime.right.smooth_target_y = nil
+            stairs_state.ik.runtime.right.blend_weight = nil
+        end
     end
 
     if type(payload.player) == 'table' then
@@ -150,6 +174,8 @@ CreateThread(function()
         Gui.DrawText(string.format('IK mode: %s  %.1f Hz  sampled=%s', stairs_state.ik.quality, stairs_state.ik.sample_hz, tostring(stairs_state.ik.sampled_this_frame)), 0.03, 0.210, 0.32, 180, 220, 255, 220)
         Gui.DrawText(string.format('foot_y L/R: %.3f / %.3f', stairs_state.ik.left_foot_y, stairs_state.ik.right_foot_y), 0.03, 0.230, 0.32, 180, 220, 255, 220)
         Gui.DrawText(string.format('IK enabled: %s   handle: %s', tostring(ik_enabled), tostring(local_player_handle)), 0.03, 0.250, 0.30, 180, 255, 180, 220)
+        Gui.DrawText(string.format('IK runtime target L/R: %s / %s', tostring(stairs_state.ik.runtime.left.smooth_target_y), tostring(stairs_state.ik.runtime.right.smooth_target_y)), 0.03, 0.270, 0.29, 180, 255, 220, 220)
+        Gui.DrawText(string.format('IK runtime blend L/R: %s / %s', tostring(stairs_state.ik.runtime.left.blend_weight), tostring(stairs_state.ik.runtime.right.blend_weight)), 0.03, 0.290, 0.29, 180, 255, 220, 220)
 
         local marker = ensure_hit_marker()
         if stairs_state.hit_pos then

@@ -2,7 +2,7 @@
 # Fyzikální a pohybový profil pro levitující monstrum
 
 [identity]
-model = "monster"
+model = "mutant"
 display_name = "Levitující Monstrum"
 
 [animations]

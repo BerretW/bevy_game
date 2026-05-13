@@ -62,6 +62,7 @@ pub use resolver::{resolve_load_order, ResolveError};
 pub use sandbox::{
     AuthBridge, PendingAuthCredentials, PendingAuthResult,
     CameraAttachment, CameraBridge, CameraRig,
+    clear_drawable_shader_override, get_drawable_shader_override, set_drawable_shader_override,
     ConnectionBridge, ConnectionInfo,
     EngineStateBridge,
     GameBridges,

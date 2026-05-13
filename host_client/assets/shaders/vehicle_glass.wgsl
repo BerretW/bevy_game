@@ -17,6 +17,7 @@ struct DrawableParams {
     weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
     tiling:  vec4<f32>,
     flags:   vec4<f32>,
+    profile: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var shatter_map_texture: texture_2d<f32>;

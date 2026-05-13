@@ -73,6 +73,12 @@ pub enum LuaCommand {
         handle: u64,
         scale: [f32; 3],
     },
+    /// Nastaví per-entitní shader profile na drawable materiálu.
+    /// Profile jsou interpretované samotným shaderem (např. "debug_stripes").
+    SetEntityShaderProfile {
+        handle: u64,
+        profile: String,
+    },
     /// Změní jméno modelu entity (Phase 4: swap meshe).
     SetModel {
         handle: u64,
@@ -596,6 +602,9 @@ pub struct LuaMaterialOverride {
     /// World-space Y cutoff pro vlhkost — nad touto hranicí vlhkost mizí (`flags.w`).
     /// 0.0 = bez omezení výšky (vlhkost všude kde je wetness > 0).
     pub wet_height: Option<f32>,
+    /// Volitelný shader profile pro konkrétní entitu.
+    /// Prázdný string = explicitní reset na default profil.
+    pub shader_profile: Option<String>,
 }
 
 /// Mapa socketů dostupných na root entitě modelu.
@@ -3109,6 +3118,11 @@ pub fn process_lua_commands(
                     other => warn!("[cmd_queue] SetMaterialParam: unknown param '{}'", other),
                 }
             }
+
+            LuaCommand::SetEntityShaderProfile { handle, profile } => {
+                let entry = pending_mat.entry(handle).or_default();
+                entry.shader_profile = Some(profile);
+            }
         }
     }
 
@@ -3126,6 +3140,7 @@ pub fn process_lua_commands(
             if let Some(v) = new_params.wetness     { existing.wetness     = Some(v); }
             if let Some(v) = new_params.snow_height { existing.snow_height = Some(v); }
             if let Some(v) = new_params.wet_height  { existing.wet_height  = Some(v); }
+            if let Some(v) = new_params.shader_profile { existing.shader_profile = Some(v); }
         } else {
             commands.entity(entity).insert(new_params);
         }

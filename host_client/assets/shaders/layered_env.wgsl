@@ -20,6 +20,7 @@ struct DrawableParams {
     weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
     tiling:  vec4<f32>,  // x=tiling, y=l0_tiling, z=l1_tiling, w=mb_alpha_threshold
     flags:   vec4<f32>,  // x=has_ma, y=has_snow_tex, z=snow_height_cutoff_y, w=wet_height_cutoff_y
+    profile: vec4<f32>,  // x=shader profile id
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var layer1_albedo_texture: texture_2d<f32>;

@@ -1,7 +1,19 @@
+use std::path::PathBuf;
+
+use bevy::asset::AssetPath;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
+use core_resources::get_drawable_shader_override;
+
+fn shader_ref_for(template: &str, fallback: &'static str) -> ShaderRef {
+    if let Some(path) = get_drawable_shader_override(template) {
+        AssetPath::from_path_buf(PathBuf::from(path)).into()
+    } else {
+        fallback.into()
+    }
+}
 
 /// Shader parametry sdílené mezi všemi drawable šablonami.
 ///
@@ -15,6 +27,7 @@ pub struct DrawableParams {
     pub weather: Vec4,
     pub tiling:  Vec4,
     pub flags:   Vec4,
+    pub profile: Vec4,
 }
 
 impl Default for DrawableParams {
@@ -24,6 +37,7 @@ impl Default for DrawableParams {
             weather: Vec4::ZERO,
             tiling:  Vec4::new(1.0, 1.0, 1.0, 0.0),
             flags:   Vec4::ZERO,
+            profile: Vec4::ZERO,
         }
     }
 }
@@ -82,10 +96,10 @@ pub type StandardPbrMaterial = ExtendedMaterial<StandardMaterial, StandardPbrExt
 
 impl MaterialExtension for StandardPbrExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/standard_pbr.wgsl".into()
+        shader_ref_for("standard_pbr", "shaders/standard_pbr.wgsl")
     }
     fn deferred_fragment_shader() -> ShaderRef {
-        "shaders/standard_pbr.wgsl".into()
+        shader_ref_for("standard_pbr", "shaders/standard_pbr.wgsl")
     }
 }
 
@@ -149,10 +163,10 @@ pub type LayeredEnvMaterial = ExtendedMaterial<StandardMaterial, LayeredEnvExten
 
 impl MaterialExtension for LayeredEnvExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/layered_env.wgsl".into()
+        shader_ref_for("layered_env", "shaders/layered_env.wgsl")
     }
     fn deferred_fragment_shader() -> ShaderRef {
-        "shaders/layered_env.wgsl".into()
+        shader_ref_for("layered_env", "shaders/layered_env.wgsl")
     }
 }
 
@@ -179,10 +193,10 @@ pub type VehicleGlassMaterial = ExtendedMaterial<StandardMaterial, VehicleGlassE
 
 impl MaterialExtension for VehicleGlassExtension {
     fn fragment_shader() -> ShaderRef {
-        "shaders/vehicle_glass.wgsl".into()
+        shader_ref_for("vehicle_glass", "shaders/vehicle_glass.wgsl")
     }
     fn deferred_fragment_shader() -> ShaderRef {
-        "shaders/vehicle_glass.wgsl".into()
+        shader_ref_for("vehicle_glass", "shaders/vehicle_glass.wgsl")
     }
 }
 

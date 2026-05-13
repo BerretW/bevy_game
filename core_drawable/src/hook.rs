@@ -700,6 +700,7 @@ pub(crate) fn build_params(p: &MaterialParams, mb_alpha_threshold: f32) -> Drawa
             mb_alpha_threshold,
         ),
         flags: Vec4::ZERO,
+        profile: Vec4::ZERO,
     }
 }
 
@@ -915,6 +916,22 @@ pub fn apply_material_overrides(
     }
 }
 
+fn shader_profile_value(profile: Option<&str>) -> f32 {
+    match profile.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if value.is_empty() => 0.0,
+        Some(value) if value == "default" => 0.0,
+        Some(value) if value == "debug_stripes" => 1.0,
+        Some(value) if value == "hologram" => 2.0,
+        Some(value) if value == "heat" => 3.0,
+        Some(value) if value == "dissolve" => 4.0,
+        Some(value) => {
+            warn!("[drawable] unknown shader profile '{}' — using default", value);
+            0.0
+        }
+        None => 0.0,
+    }
+}
+
 fn apply_override_to_subtree(
     entity: Entity,
     ov: &LuaMaterialOverride,
@@ -933,6 +950,9 @@ fn apply_override_to_subtree(
             let f = &mut mat.extension.params.flags;
             if let Some(v) = ov.snow_height { f.z = v; }
             if let Some(v) = ov.wet_height  { f.w = v; }
+            if let Some(profile) = ov.shader_profile.as_deref() {
+                mat.extension.params.profile.x = shader_profile_value(Some(profile));
+            }
         }
     }
     if let Ok(mat_comp) = layered_q.get(entity) {
@@ -944,6 +964,9 @@ fn apply_override_to_subtree(
             let f = &mut mat.extension.params.flags;
             if let Some(v) = ov.snow_height { f.z = v; }
             if let Some(v) = ov.wet_height  { f.w = v; }
+            if let Some(profile) = ov.shader_profile.as_deref() {
+                mat.extension.params.profile.x = shader_profile_value(Some(profile));
+            }
         }
     }
     if let Ok(children) = children_q.get(entity) {

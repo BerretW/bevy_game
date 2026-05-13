@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use bevy::prelude::*;
 use mlua::{Lua, LuaOptions, MultiValue, RegistryKey, StdLib, ThreadStatus};
@@ -609,6 +609,34 @@ pub struct LuaSandbox {
     elapsed_ms: u64,
 }
 
+static DRAWABLE_SHADER_OVERRIDES: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+
+fn drawable_shader_overrides() -> &'static RwLock<HashMap<String, String>> {
+    DRAWABLE_SHADER_OVERRIDES.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub fn set_drawable_shader_override(template: &str, abs_path: String) {
+    drawable_shader_overrides()
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(template.to_ascii_lowercase(), abs_path);
+}
+
+pub fn clear_drawable_shader_override(template: &str) {
+    drawable_shader_overrides()
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&template.to_ascii_lowercase());
+}
+
+pub fn get_drawable_shader_override(template: &str) -> Option<String> {
+    drawable_shader_overrides()
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&template.to_ascii_lowercase())
+        .cloned()
+}
+
 impl LuaSandbox {
     pub fn create(
         manifest: &Manifest,
@@ -653,6 +681,7 @@ impl LuaSandbox {
         install_runtime_api(
             &lua,
             &manifest.id,
+            &manifest.root,
             side,
             &outgoing,
             &handlers,
@@ -1413,6 +1442,7 @@ fn db_result_to_lua(lua: &Lua, result: DbQueryResult) -> mlua::Value {
 fn install_runtime_api(
     lua: &Lua,
     id: &ResourceId,
+    resource_root: &Path,
     side: Side,
     outgoing: &Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
@@ -1441,7 +1471,7 @@ fn install_runtime_api(
     anim_set_cmds: &AnimSetCommandQueue,
     anim_set_registry: &AnimSetRegistry,
 ) -> Result<(), SandboxError> {
-    install_runtime_api_inner(lua, id, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge, anim_set_cmds, anim_set_registry)
+    install_runtime_api_inner(lua, id, resource_root, side, outgoing, handlers, command_handlers, cmd_queue, local_bus, model_cmds, model_registry, model_anims, raycast, engine_state, input_bridge, connection, stats_cache, entity_cache, db_bridge, db_callbacks, db_counter, local_stats, thread_pool, draw_buffer, ace_registry, auth_bridge, crosshair, camera_bridge, anim_set_cmds, anim_set_registry)
         .map_err(|e| SandboxError::Api { id: id.clone(), source: e })
 }
 
@@ -1449,6 +1479,7 @@ fn install_runtime_api(
 fn install_runtime_api_inner(
     lua: &Lua,
     id: &ResourceId,
+    resource_root: &Path,
     side: Side,
     outgoing: &Rc<RefCell<Vec<LuaEventOut>>>,
     handlers: &Rc<RefCell<HashMap<String, Vec<RegistryKey>>>>,
@@ -2539,6 +2570,21 @@ fn install_runtime_api_inner(
         Ok(())
     })?)?;
 
+    let cq = cmd_queue.clone();
+    world.set("SetEntityShaderProfile", lua.create_function(move |_, (handle, profile): (u64, String)| {
+        cq.push(LuaCommand::SetEntityShaderProfile { handle, profile });
+        Ok(())
+    })?)?;
+
+    let cq = cmd_queue.clone();
+    world.set("ClearEntityShaderProfile", lua.create_function(move |_, handle: u64| {
+        cq.push(LuaCommand::SetEntityShaderProfile {
+            handle,
+            profile: String::new(),
+        });
+        Ok(())
+    })?)?;
+
     // World.Attach(child_handle, child_socket, parent_handle, parent_socket)
     let cq = cmd_queue.clone();
     world.set("Attach", lua.create_function(
@@ -2723,6 +2769,41 @@ fn install_runtime_api_inner(
     engine.set("Disconnect", lua.create_function(move |_, ()| {
         esb.0.lock().unwrap_or_else(|p| p.into_inner()).disconnect_requested = true;
         Ok(())
+    })?)?;
+
+    {
+        let root = resource_root.to_path_buf();
+        engine.set("SetDrawableShaderOverride", lua.create_function(move |_, (template, rel_path): (String, String)| -> mlua::Result<String> {
+            if side != Side::Client {
+                return Err(mlua::Error::RuntimeError("Engine.SetDrawableShaderOverride is client-only".into()));
+            }
+            let abs = root.join(rel_path);
+            if !abs.is_file() {
+                return Err(mlua::Error::RuntimeError(format!("shader file not found: {}", abs.display())));
+            }
+            let abs = abs.canonicalize().unwrap_or(abs);
+            let abs_str = abs.to_string_lossy().replace('\\', "/");
+            set_drawable_shader_override(&template, abs_str.clone());
+            Ok(abs_str)
+        })?)?;
+    }
+
+    engine.set("ClearDrawableShaderOverride", lua.create_function(move |_, template: String| {
+        if side != Side::Client {
+            return Err(mlua::Error::RuntimeError("Engine.ClearDrawableShaderOverride is client-only".into()));
+        }
+        clear_drawable_shader_override(&template);
+        Ok(())
+    })?)?;
+
+    engine.set("GetDrawableShaderOverride", lua.create_function(move |lua, template: String| -> mlua::Result<mlua::Value> {
+        if side != Side::Client {
+            return Ok(mlua::Value::Nil);
+        }
+        match get_drawable_shader_override(&template) {
+            Some(path) => Ok(mlua::Value::String(lua.create_string(path.as_bytes())?)),
+            None => Ok(mlua::Value::Nil),
+        }
     })?)?;
 
     globals.set("Engine", engine)?;

@@ -24,6 +24,7 @@ struct DrawableParams {
     weather: vec4<f32>,  // x=snow_level, y=dirt_level, z=wetness, w=porosity
     tiling:  vec4<f32>,  // x=tiling, y=debug_viewer_mode, z=l1_tiling, w=mb_alpha_threshold
     flags:   vec4<f32>,  // x=has_ma, y=has_snow_tex, z=snow_height_cutoff_y, w=wet_height_cutoff_y
+    profile: vec4<f32>,  // x=shader profile id
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var palette_texture: texture_2d<f32>;
@@ -49,6 +50,29 @@ fn value_noise(p: vec2<f32>) -> f32 {
         mix(hash2(i + vec2<f32>(0.0, 1.0)), hash2(i + vec2<f32>(1.0, 1.0)), u.x),
         u.y,
     );
+}
+
+fn profile_stripes(world_pos: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
+    let stripe = step(0.5, fract((world_pos.x + world_pos.z) * 0.85));
+    let height_band = 0.5 + 0.5 * sin(world_pos.y * 5.5);
+    let warm = vec3<f32>(1.00, 0.36, 0.12);
+    let cold = vec3<f32>(0.05, 0.82, 1.00);
+    let accent = mix(cold, warm, stripe);
+    return mix(accent * 0.78, accent * 1.18, height_band) * tint;
+}
+
+fn profile_hologram(world_pos: vec3<f32>, normal: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
+    let scan = 0.45 + 0.55 * sin(world_pos.y * 18.0 + world_pos.x * 3.0);
+    let fresnel = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.4);
+    let base = vec3<f32>(0.06, 0.95, 1.00);
+    return (base * (0.45 + scan * 0.35) + vec3<f32>(0.20, 0.55, 0.95) * fresnel) * tint;
+}
+
+fn profile_heat(world_pos: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
+    let pulse = 0.5 + 0.5 * sin(world_pos.y * 7.5 + world_pos.x * 4.0 + world_pos.z * 3.0);
+    let ember = vec3<f32>(1.00, 0.22, 0.05);
+    let hot = vec3<f32>(1.00, 0.78, 0.10);
+    return mix(ember, hot, pulse) * tint;
 }
 
 @fragment
@@ -79,6 +103,49 @@ fn fragment(
     pbr_in.color = vec4<f32>(1.0);
 
     var pbr_input = pbr_input_from_standard_material(pbr_in, is_front);
+
+    if params.profile.x > 0.5 {
+        let profile_id = params.profile.x;
+        let tint_rgb = params.tint.rgb;
+        var final_rgb = profile_stripes(in.world_position.xyz, tint_rgb);
+        var emissive_rgb = final_rgb * 0.20;
+        var roughness = 0.24;
+        var metallic = 0.02;
+
+        if profile_id > 1.5 && profile_id < 2.5 {
+            final_rgb = profile_hologram(in.world_position.xyz, normalize(pbr_input.world_normal), tint_rgb);
+            emissive_rgb = final_rgb * 0.55;
+            roughness = 0.08;
+            metallic = 0.0;
+        } else if profile_id > 2.5 && profile_id < 3.5 {
+            final_rgb = profile_heat(in.world_position.xyz, tint_rgb);
+            emissive_rgb = final_rgb * 0.35;
+            roughness = 0.12;
+            metallic = 0.01;
+        } else if profile_id > 3.5 {
+            let dissolve_noise = value_noise(in.world_position.xz * 2.2 + vec2<f32>(in.world_position.y * 0.7, in.world_position.x * 0.3));
+            let dissolve_cut = 0.42 + 0.18 * sin(in.world_position.y * 6.0);
+            if dissolve_noise < dissolve_cut {
+                discard;
+            }
+            let edge = smoothstep(dissolve_cut, dissolve_cut + 0.08, dissolve_noise);
+            let edge_color = mix(vec3<f32>(1.00, 0.20, 0.05), vec3<f32>(1.00, 0.92, 0.40), edge);
+            final_rgb = edge_color * tint_rgb;
+            emissive_rgb = edge_color * 0.75;
+            roughness = 0.16;
+            metallic = 0.0;
+        }
+
+        pbr_input.material.base_color = vec4<f32>(final_rgb, pbr_input.material.base_color.a);
+        pbr_input.material.emissive = vec4<f32>(emissive_rgb, 0.0);
+        pbr_input.material.perceptual_roughness = roughness;
+        pbr_input.material.metallic = metallic;
+
+        var profile_out: FragmentOutput;
+        profile_out.color = apply_pbr_lighting(pbr_input);
+        profile_out.color = main_pass_post_lighting_processing(pbr_input, profile_out.color);
+        return profile_out;
+    }
 
     let base_albedo = pbr_input.material.base_color;
 

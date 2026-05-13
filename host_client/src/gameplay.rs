@@ -1922,16 +1922,20 @@ fn publish_stairs_state_to_lua(
     local_bus: Res<LocalEventBus>,
     mut ik_cache: ResMut<AdaptiveIkSampleCache>,
     local_client_id: Option<Res<LocalClientId>>,
-    players: Query<(&PlayerMarker, &Transform, Option<&LinearVelocity>, Option<&ShapeHits>), With<Predicted>>,
+    players: Query<(Entity, &PlayerMarker, &Transform, Option<&LinearVelocity>, Option<&ShapeHits>), With<Predicted>>,
+    model_roots: Query<(Entity, &bevy::ecs::hierarchy::ChildOf), With<AdmSceneRoot>>,
     player_q: Query<Has<PlayerMarker>>,
     stairs_q: Query<(), With<StairsCollider>>,
     ik_surface_q: Query<(), With<crate::physics::DummyStairsIkSurface>>,
     child_of_q: Query<&bevy::ecs::hierarchy::ChildOf>,
+    children_q: Query<&Children>,
+    name_q: Query<&Name>,
+    foot_bone_state_q: Query<&FootIkBoneState>,
     spatial_query: SpatialQuery,
 ) {
     let Some(lid) = local_client_id.as_ref() else { return; };
 
-    let Some((_, tf, vel, shape_hits)) = players.iter().find(|(marker, _, _, _)| marker.client_id == lid.0) else {
+    let Some((player_entity, _, tf, vel, shape_hits)) = players.iter().find(|(_, marker, _, _, _)| marker.client_id == lid.0) else {
         return;
     };
 
@@ -2041,6 +2045,31 @@ fn publish_stairs_state_to_lua(
         (1.0 / (time.delta_secs() * IK_OFF_STAIRS_DECIMATION_FRAMES as f32)).max(1.0)
     };
     let ik_quality = if on_stairs { "high" } else { "low" };
+    let ik_runtime = model_roots
+        .iter()
+        .find(|(_, child_of)| child_of.parent() == player_entity)
+        .map(|(model_root, _)| {
+            let left_thigh = ["DEF_thigh_l", "DEF-thigh_l", "DEF_thigh.L"]
+                .iter()
+                .find_map(|bone| find_bone_entity(model_root, bone, &children_q, &name_q, 10));
+            let right_thigh = ["DEF_thigh_r", "DEF-thigh_r", "DEF_thigh.R"]
+                .iter()
+                .find_map(|bone| find_bone_entity(model_root, bone, &children_q, &name_q, 10));
+
+            let left_state = left_thigh.and_then(|entity| foot_bone_state_q.get(entity).ok());
+            let right_state = right_thigh.and_then(|entity| foot_bone_state_q.get(entity).ok());
+
+            serde_json::json!({
+                "left": {
+                    "smooth_target_y": left_state.map(|state| state.smooth_target_y),
+                    "blend_weight": left_state.map(|state| state.blend_weight),
+                },
+                "right": {
+                    "smooth_target_y": right_state.map(|state| state.smooth_target_y),
+                    "blend_weight": right_state.map(|state| state.blend_weight),
+                }
+            })
+        });
 
     let payload = serde_json::to_vec(&serde_json::json!({
         "on_stairs": on_stairs,
@@ -2058,6 +2087,7 @@ fn publish_stairs_state_to_lua(
             "sampled_this_frame": ik_cache.sampled_this_frame,
             "left_foot_y": ik_cache.left_foot_y,
             "right_foot_y": ik_cache.right_foot_y,
+            "runtime": ik_runtime,
         },
         "player": {
             "x": tf.translation.x,
