@@ -55,7 +55,6 @@ use crate::AppState;
 use crate::drawable::{GltfHandleCache, PedPhysicsDef, PedPhysicsRegistry};
 
 const THIRD_PERSON_DISTANCE: f32 = 5.5;
-const FIRST_PERSON_EYE_HEIGHT: f32 = 1.7;
 const MAX_PITCH_RAD: f32 = 1.25;
 const MOUSE_SENS_SCALE: f32 = 0.0025;
 const POSITION_SMOOTHING_RATE: f32 = 14.0;
@@ -1320,9 +1319,11 @@ fn attach_model_to_new_npcs(
 
 fn sync_npc_net_transform(
     local_client_id: Option<Res<LocalClientId>>,
+    spatial_query: SpatialQuery,
     mut q: Query<(&mut Transform, &NetTransform, Option<&NpcOwner>), (With<NpcPedMarker>, With<NpcVisualAttached>)>,
 ) {
     let local_id = local_client_id.map(|v| v.0);
+    let filter = SpatialQueryFilter::from_mask(LayerMask::DEFAULT);
     for (mut transform, net_tf, owner) in &mut q {
         if let (Some(local_id), Some(owner)) = (local_id, owner) {
             if owner.0 == Some(local_id) {
@@ -1331,6 +1332,19 @@ fn sync_npc_net_transform(
         }
         transform.translation = net_tf.translation;
         transform.rotation = net_tf.rotation;
+
+        let origin = transform.translation + Vec3::new(0.0, 0.6, 0.0);
+        let Some(hit) = spatial_query.cast_ray(origin, Dir3::NEG_Y, 2.5, true, &filter) else {
+            continue;
+        };
+
+        let target_y = origin.y - hit.distance;
+        if target_y.is_finite() {
+            let diff = target_y - transform.translation.y;
+            if diff.abs() <= 0.75 {
+                transform.translation.y = target_y;
+            }
+        }
     }
 }
 
@@ -1683,6 +1697,8 @@ fn update_camera_follow(
     look: Res<CameraLookState>,
     bridges: Res<GameBridges>,
     world_state: Res<LuaWorldState>,
+    ped_reg: Res<PedPhysicsRegistry>,
+    ped_assets: Res<Assets<PedPhysicsDef>>,
     predicted_players: Query<
         (&Transform, &PlayerMarker),
         (With<Predicted>, Without<MainGameplayCamera>),
@@ -1754,13 +1770,16 @@ fn update_camera_follow(
     let mut player_pos: Option<Vec3> = None;
     for (tfm, marker) in predicted_players.iter() {
         if marker.client_id == local_client_id.0 {
-            player_pos = Some(Vec3::new(tfm.translation.x, 0.0, tfm.translation.z));
+            player_pos = Some(tfm.translation);
             break;
         }
     }
     let Some(player_pos) = player_pos else { return };
 
-    let focus = player_pos + Vec3::new(0.0, FIRST_PERSON_EYE_HEIGHT, 0.0);
+    let eye_height = resolve_default_ped_profile(&ped_reg, &ped_assets)
+        .map(|ped| ped.capsule.eye_height)
+        .unwrap_or(1.65);
+    let focus = player_pos + Vec3::new(0.0, eye_height, 0.0);
 
     if bridges.camera.is_first_person() {
         cam_transform.translation = focus;

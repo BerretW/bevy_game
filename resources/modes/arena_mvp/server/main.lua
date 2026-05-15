@@ -214,14 +214,14 @@ local function equip_player(player_id)
         ammo_in_mag = 30,
         ammo_type_id = 'arena_556',
         fire_mode = 'full',
-        attachments = {},
+        attachments = nil,
     })
     Weapon.SetEquipped(player_id, 1, {
         weapon_id = 'arena_pistol',
         ammo_in_mag = 12,
         ammo_type_id = 'arena_9mm',
         fire_mode = 'semi',
-        attachments = {},
+        attachments = nil,
     })
     Weapon.SetEquipped(player_id, 2, nil)
     Weapon.SetEquipped(player_id, 3, nil)

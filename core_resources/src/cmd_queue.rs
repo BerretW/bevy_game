@@ -2113,6 +2113,7 @@ pub struct EquippedWeapon {
     pub ammo_in_mag: u32,
     pub ammo_type_id: String,
     pub fire_mode: String,
+    #[serde(default)]
     pub attachments: Vec<String>,
 }
 
