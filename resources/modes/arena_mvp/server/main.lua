@@ -46,6 +46,13 @@ local function count_team(team)
     return count
 end
 
+local function extract_player_id(value)
+    if type(value) == 'table' then
+        return ArenaNormalizePlayerId(value.id or value.player_id or value.client_id)
+    end
+    return ArenaNormalizePlayerId(value)
+end
+
 local function count_humans()
     local count = 0
     for _ in pairs(players) do
@@ -724,8 +731,8 @@ update_zombie_targets_loop()
 update_zombie_contact_loop()
 update_ammo_station_loop()
 
-RegisterEvent('onPlayerJoin', function(player_id)
-    local id = ArenaNormalizePlayerId(player_id)
+RegisterEvent('onPlayerJoin', function(payload)
+    local id = extract_player_id(payload)
     if not id then
         return
     end
