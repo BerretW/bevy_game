@@ -6,23 +6,39 @@
 //!   a actions bitfield, cooldown management.
 //! * Lua eventy: `playerConnecting`, `playerDropped`, `onPlayerHit`, `onPlayerDeath`.
 
-use std::collections::VecDeque;
-
 use bevy::prelude::*;
 use core_resources::{
-    ActiveWeaponSlot, AmmoRegistry, AmmoReserve, ArmorClass, ArmorComponent, ArmorPiece, FireState, GameBridges, Inventory, LocalEventBus,
+    ActiveWeaponSlot, AmmoRegistry, AmmoReserve, ArmorClass, ArmorComponent, ArmorPiece, FireState, Inventory, LocalEventBus,
     HitboxBoneDef, HitboxDef, HitboxRegistry, LuaWorldState, NpcLastClientUpdate, NpcOwner,
     NpcPathWaypoint, NpcPedMarker, PlayerEntityMap, PlayerHitbox, PlayerStatsCache,
     ReloadState, ReplicatedNpcSteering, Stats, StatsSnapshot, WeaponRegistry, WeaponSlots,
     WeaponSwapState,
     apply_replicated_npc_steering,
 };
-use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
+use core_shared::{Health, NetTransform, PlayerMarker};
 use lightyear::prelude::*;
-use lightyear::prelude::server::LinkOf;
 
 use crate::net_plugin::StatsChannel;
-use crate::protocol::{NpcTransformUpdate, player_action, PlayerInput, PlayerStatsUpdate};
+use crate::protocol::{NpcTransformUpdate, player_action, PlayerStatsUpdate};
+
+mod players;
+mod lifecycle;
+mod weapons;
+
+use lifecycle::{
+    attach_replication_sender, attach_replication_to_networked_object,
+    emit_player_disconnect, spawn_player_on_connect,
+};
+pub use players::{collect_last_inputs, LastPlayerInputs};
+use players::{
+    PositionHistory, ServerSimulationTick, emit_player_positions,
+    increment_server_simulation_tick, record_position_history, trust_client_position,
+};
+use weapons::{
+    is_reload_active, is_weapon_swap_active, reload_duration_for_slot,
+    requested_weapon_slot, tick_fire_states, tick_reload_states, tick_weapon_swap_states,
+    weapon_swap_duration,
+};
 
 pub const PLAYER_MOVE_SPEED: f32 = 5.0;
 pub const PLAYER_SPRINT_MULTIPLIER: f32 = 1.35;
@@ -33,56 +49,11 @@ pub const GROUND_Y: f32 = 0.0;
 const DEFAULT_WEAPON_SWAP_SECS: f32 = 0.25;
 const MIN_WEAPON_ACTION_SECS: f32 = 0.05;
 const PLAYER_EYE_HEIGHT: f32 = 1.55;
-const POSITION_HISTORY_MAX_SAMPLES: usize = 48;
 const LAG_COMPENSATION_REWIND_TICKS: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Komponenty
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy)]
-struct PositionSample {
-    tick: u32,
-    translation: Vec3,
-}
-
-#[derive(Component, Debug, Default, Clone)]
-pub struct PositionHistory {
-    samples: VecDeque<PositionSample>,
-}
-
-impl PositionHistory {
-    fn push(&mut self, tick: u32, translation: Vec3) {
-        if self
-            .samples
-            .back()
-            .map(|sample| sample.tick == tick)
-            .unwrap_or(false)
-        {
-            if let Some(last) = self.samples.back_mut() {
-                last.translation = translation;
-            }
-            return;
-        }
-
-        self.samples.push_back(PositionSample { tick, translation });
-        while self.samples.len() > POSITION_HISTORY_MAX_SAMPLES {
-            self.samples.pop_front();
-        }
-    }
-
-    fn position_at_or_before(&self, tick: u32) -> Option<Vec3> {
-        self.samples
-            .iter()
-            .rev()
-            .find(|sample| sample.tick <= tick)
-            .map(|sample| sample.translation)
-            .or_else(|| self.samples.front().map(|sample| sample.translation))
-    }
-}
-
-#[derive(Resource, Debug, Default, Clone, Copy)]
-struct ServerSimulationTick(pub u32);
 
 // ---------------------------------------------------------------------------
 // WeaponConfig — Bevy Resource (Lua resource mu muze pridat vlastni konfiguraci)
@@ -158,325 +129,6 @@ impl Plugin for ServerSimPlugin {
                 .chain(),
         );
     }
-}
-
-// ---------------------------------------------------------------------------
-// Observers
-// ---------------------------------------------------------------------------
-
-fn attach_replication_sender(trigger: On<Add, LinkOf>, mut commands: Commands) {
-    commands
-        .entity(trigger.entity)
-        .insert(ReplicationSender::default());
-    trace!(
-        "[sim/server] ReplicationSender attached to link {:?}",
-        trigger.entity
-    );
-}
-
-fn spawn_player_on_connect(
-    trigger: On<Add, Connected>,
-    remote_ids: Query<&RemoteId>,
-    mut commands: Commands,
-    local_bus: Res<LocalEventBus>,
-) {
-    let entity = trigger.entity;
-    let Ok(remote_id) = remote_ids.get(entity) else {
-        warn!(
-            "[sim/server] connected entity {:?} has no RemoteId — skipping player spawn",
-            entity
-        );
-        return;
-    };
-
-    let client_id = match remote_id.0 {
-        PeerId::Netcode(id) => id,
-        _ => 0,
-    };
-
-    let player = commands
-        .spawn((
-            NetTransform::default(),
-            NetVelocity::default(),
-            PlayerMarker { client_id },
-            Health::default(),
-            Stats::default(),
-            Inventory::default(),
-            ArmorComponent::default(),
-            WeaponSlots::default(),
-            AmmoReserve::default(),
-            ActiveWeaponSlot::default(),
-            PlayerHitbox::default(),
-            PositionHistory::default(),
-            FireState::default(),
-            ReloadState::default(),
-            WeaponSwapState::default(),
-        ))
-        .id();
-    commands.entity(player).insert((
-        Replicate::to_clients(NetworkTarget::All),
-        PredictionTarget::to_clients(NetworkTarget::All),
-    ));
-
-    info!(
-        "[sim/server] spawned player {:?} for client_id={}",
-        player, client_id
-    );
-
-    // Keep both join aliases for resource compatibility.
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "id": client_id.to_string(),
-        "entity": format!("{:?}", player)
-    }))
-    .unwrap_or_default();
-    local_bus.push("playerConnecting".to_string(), payload.clone());
-    local_bus.push("onPlayerJoin".to_string(), payload);
-}
-
-fn emit_player_disconnect(
-    trigger: On<Remove, Connected>,
-    remote_ids: Query<&RemoteId>,
-    bridges: Res<GameBridges>,
-    local_bus: Res<LocalEventBus>,
-) {
-    let entity = trigger.entity;
-    let client_id = remote_ids
-        .get(entity)
-        .ok()
-        .and_then(|r| match r.0 { PeerId::Netcode(id) => Some(id), _ => None })
-        .unwrap_or(0);
-
-    info!("[sim/server] client {} disconnected", client_id);
-
-    // FiveM-style ACE cleanup: remove player principals/identifiers on leave.
-    bridges.ace.remove_player(client_id);
-
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "id": client_id.to_string(),
-        "reason": "disconnect"
-    }))
-    .unwrap_or_default();
-    local_bus.push("playerDropped".to_string(), payload);
-}
-
-/// Phase 3.5 — kdyz se spawne NetworkedObjectMarker entita,
-/// pridame Replicate aby ji lightyear zacal replikovat klientum.
-fn attach_replication_to_networked_object(
-    trigger: On<Add, core_resources::NetworkedObjectMarker>,
-    mut commands: Commands,
-) {
-    commands
-        .entity(trigger.entity)
-        .insert(Replicate::to_clients(NetworkTarget::All));
-    debug!(
-        "[sim/server] Replicate attached to networked object {:?}",
-        trigger.entity
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Pohyb
-// ---------------------------------------------------------------------------
-
-/// FiveM-style: server přijme klientem poslanou fyzikální pozici a přímo ji
-/// zapíše do NetTransform. Žádná server-side simulace pohybu ani gravitace.
-/// Sanitizace: NaN/Inf hodnoty se ignorují (klient zůstane na posledním místě).
-fn trust_client_position(
-    last_inputs: Res<LastPlayerInputs>,
-    mut players: Query<(&PlayerMarker, &mut NetTransform)>,
-) {
-    for (marker, mut transform) in players.iter_mut() {
-        let Some(input) = last_inputs.get(marker.client_id) else { continue };
-
-        let [px, py, pz] = input.position;
-        if px.is_finite() && py.is_finite() && pz.is_finite() {
-            transform.translation = Vec3::new(px, py, pz);
-        }
-
-        // Yaw rotace — stále přenášíme z look[0]
-        let yaw_rad = input.look[0].to_radians();
-        if yaw_rad.is_finite() {
-            transform.rotation = Quat::from_rotation_y(yaw_rad);
-        }
-    }
-}
-
-fn increment_server_simulation_tick(mut tick: ResMut<ServerSimulationTick>) {
-    tick.0 = tick.0.wrapping_add(1);
-}
-
-fn record_position_history(
-    tick: Res<ServerSimulationTick>,
-    mut players: Query<(&NetTransform, &mut PositionHistory), With<PlayerMarker>>,
-) {
-    for (transform, mut history) in players.iter_mut() {
-        history.push(tick.0, transform.translation);
-    }
-}
-
-fn tick_fire_states(mut q: Query<&mut FireState>, time: Res<Time<Fixed>>) {
-    let dt = time.delta_secs();
-    for mut fire_state in q.iter_mut() {
-        fire_state.cooldown_remaining = (fire_state.cooldown_remaining - dt).max(0.0);
-    }
-}
-
-fn tick_weapon_swap_states(
-    mut players: Query<(&mut ActiveWeaponSlot, &mut WeaponSwapState)>,
-    time: Res<Time<Fixed>>,
-) {
-    let dt = time.delta_secs();
-    for (mut active_slot, mut swap_state) in players.iter_mut() {
-        if swap_state.remaining <= 0.0 {
-            continue;
-        }
-
-        swap_state.remaining = (swap_state.remaining - dt).max(0.0);
-        if swap_state.remaining > 0.0 {
-            continue;
-        }
-
-        if swap_state.target_slot < 4 {
-            active_slot.0 = swap_state.target_slot;
-        }
-        *swap_state = WeaponSwapState::default();
-    }
-}
-
-fn tick_reload_states(
-    weapon_registry: Res<WeaponRegistry>,
-    mut players: Query<(&mut WeaponSlots, &mut AmmoReserve, &mut ReloadState)>,
-    time: Res<Time<Fixed>>,
-) {
-    let dt = time.delta_secs();
-    for (mut slots, mut reserve, mut reload_state) in players.iter_mut() {
-        if reload_state.remaining <= 0.0 {
-            continue;
-        }
-
-        reload_state.remaining = (reload_state.remaining - dt).max(0.0);
-        if reload_state.remaining > 0.0 {
-            continue;
-        }
-
-        reload_active_weapon(&weapon_registry, &mut slots, &mut reserve, reload_state.slot);
-        *reload_state = ReloadState::default();
-    }
-}
-
-fn reload_active_weapon(
-    weapon_registry: &WeaponRegistry,
-    slots: &mut WeaponSlots,
-    reserve: &mut AmmoReserve,
-    active_slot: u8,
-) -> u32 {
-    let Some(equipped) = slots.get_mut(active_slot) else {
-        return 0;
-    };
-    let Some(weapon_def) = weapon_registry.get(&equipped.weapon_id) else {
-        return 0;
-    };
-    let mag_capacity = weapon_def.mag_capacity;
-    if mag_capacity == 0 || equipped.ammo_in_mag >= mag_capacity {
-        return 0;
-    }
-
-    let ammo_id = if equipped.ammo_type_id.trim().is_empty() {
-        weapon_def.default_ammo.clone()
-    } else {
-        equipped.ammo_type_id.clone()
-    };
-    if ammo_id.trim().is_empty() {
-        return 0;
-    }
-
-    let reserve_entry = reserve.0.entry(ammo_id.clone()).or_insert(0);
-    let needed = mag_capacity.saturating_sub(equipped.ammo_in_mag);
-    let loaded = (*reserve_entry).min(needed);
-    *reserve_entry = reserve_entry.saturating_sub(loaded);
-    equipped.ammo_in_mag = equipped.ammo_in_mag.saturating_add(loaded);
-    if equipped.ammo_type_id.trim().is_empty() {
-        equipped.ammo_type_id = ammo_id;
-    }
-    loaded
-}
-
-fn requested_weapon_slot(actions: u32) -> Option<u8> {
-    if actions & player_action::WEAPON_SLOT_1 != 0 {
-        Some(0)
-    } else if actions & player_action::WEAPON_SLOT_2 != 0 {
-        Some(1)
-    } else if actions & player_action::WEAPON_SLOT_3 != 0 {
-        Some(2)
-    } else if actions & player_action::WEAPON_SLOT_4 != 0 {
-        Some(3)
-    } else {
-        None
-    }
-}
-
-fn weapon_swap_duration(
-    weapon_registry: &WeaponRegistry,
-    slots: &WeaponSlots,
-    active_slot: u8,
-    target_slot: u8,
-) -> f32 {
-    let duration = slots
-        .get(target_slot)
-        .and_then(|weapon| weapon_registry.get(&weapon.weapon_id))
-        .map(|weapon| weapon.ads_time_sec)
-        .filter(|duration| *duration > 0.0)
-        .or_else(|| {
-            slots.get(active_slot)
-                .and_then(|weapon| weapon_registry.get(&weapon.weapon_id))
-                .map(|weapon| weapon.ads_time_sec)
-                .filter(|duration| *duration > 0.0)
-        })
-        .unwrap_or(DEFAULT_WEAPON_SWAP_SECS);
-    duration.max(MIN_WEAPON_ACTION_SECS)
-}
-
-fn reload_duration_for_slot(
-    weapon_registry: &WeaponRegistry,
-    slots: &WeaponSlots,
-    reserve: &AmmoReserve,
-    active_slot: u8,
-) -> Option<f32> {
-    let equipped = slots.get(active_slot)?;
-    let weapon_def = weapon_registry.get(&equipped.weapon_id)?;
-    let mag_capacity = weapon_def.mag_capacity;
-    if mag_capacity == 0 || equipped.ammo_in_mag >= mag_capacity {
-        return None;
-    }
-
-    let ammo_id = if equipped.ammo_type_id.trim().is_empty() {
-        weapon_def.default_ammo.clone()
-    } else {
-        equipped.ammo_type_id.clone()
-    };
-    if ammo_id.trim().is_empty() {
-        return None;
-    }
-
-    if reserve.0.get(&ammo_id).copied().unwrap_or(0) == 0 {
-        return None;
-    }
-
-    let duration = if equipped.ammo_in_mag == 0 {
-        weapon_def.reload_empty_sec
-    } else {
-        weapon_def.reload_tactical_sec
-    };
-
-    Some(duration.max(MIN_WEAPON_ACTION_SECS))
-}
-
-fn is_reload_active(reload_state: &ReloadState) -> bool {
-    reload_state.remaining > 0.0
-}
-
-fn is_weapon_swap_active(weapon_swap: &WeaponSwapState) -> bool {
-    weapon_swap.remaining > 0.0
 }
 
 struct EffectiveCombatWeaponConfig {
@@ -1133,69 +785,6 @@ fn process_combat(
 
 /// Kazdy FixedUpdate tick posle `onPlayerPosition` do LocalEventBus.
 /// Server Lua resource to muze dale poslat klientum pres TriggerClientEvent.
-fn emit_player_positions(
-    players: Query<(&NetTransform, &PlayerMarker)>,
-    local_bus: Res<LocalEventBus>,
-) {
-    let list: Vec<serde_json::Value> = players
-        .iter()
-        .map(|(t, m)| {
-            serde_json::json!({
-                "id": m.client_id.to_string(),
-                "x":  t.translation.x,
-                "z":  t.translation.z,
-            })
-        })
-        .collect();
-
-    if list.is_empty() {
-        return;
-    }
-
-    let payload = serde_json::to_vec(&serde_json::json!({ "players": list }))
-        .unwrap_or_default();
-    local_bus.push("onPlayerPosition".to_string(), payload);
-}
-
-// ---------------------------------------------------------------------------
-// LastPlayerInputs — pomocny Resource pro sdileni inputu mezi systemy
-// ---------------------------------------------------------------------------
-
-/// Posledni znamy PlayerInput pro kazdeho klienta. Naplnuje se v
-/// collect_last_inputs (Update), cte se v process_combat (FixedUpdate
-/// behem stejneho framu).
-#[derive(Resource, Default)]
-pub struct LastPlayerInputs(std::collections::HashMap<u64, PlayerInput>);
-
-impl LastPlayerInputs {
-    pub fn update(&mut self, client_id: u64, input: PlayerInput) {
-        self.0.insert(client_id, input);
-    }
-    pub fn get(&self, client_id: u64) -> Option<&PlayerInput> {
-        self.0.get(&client_id)
-    }
-    pub fn remove(&mut self, client_id: u64) {
-        self.0.remove(&client_id);
-    }
-}
-
-/// System, ktery naplnuje LastPlayerInputs z MessageReceiver<PlayerInput>.
-/// Musi bezet v Update PRED apply_inputs_to_velocity ve FixedUpdate.
-pub fn collect_last_inputs(
-    mut receivers: Query<(&mut MessageReceiver<PlayerInput>, &RemoteId)>,
-    mut last: ResMut<LastPlayerInputs>,
-) {
-    for (mut rx, remote_id) in receivers.iter_mut() {
-        let client_id = match remote_id.0 {
-            PeerId::Netcode(id) => id,
-            _ => continue,
-        };
-        for input in rx.receive() {
-            last.update(client_id, input);
-        }
-    }
-}
-
 pub fn receive_npc_transform_updates(
     mut receivers: Query<(&mut MessageReceiver<NpcTransformUpdate>, &RemoteId)>,
     world_state: Res<LuaWorldState>,
