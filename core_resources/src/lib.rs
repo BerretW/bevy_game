@@ -15,6 +15,7 @@ pub mod gui;
 mod manifest;
 mod model_registry;
 mod npc_brain;
+mod npc_runtime;
 mod plugin;
 mod resolver;
 mod sandbox;
@@ -38,9 +39,10 @@ pub use cmd_queue::{
     LuaWorldState, ModelName, LocalPlayerStats, NetworkedObjectMarker, NpcPedMarker, PendingDamageEvent,
     FireState, PlayerEntityMap, PlayerHitbox, PlayerStatsCache, RootMotionState, SocketAttachment, SocketTransformSnapshot, Stats, StatsSnapshot,
     ReloadState, WeaponSlots, WeaponSwapState,
-    advance_npc_scenario_time, apply_replicated_npc_brain, assign_npc_owners, process_lua_commands,
+    advance_npc_scenario_time, apply_replicated_npc_brain, process_lua_commands,
     run_npc_population_director, sync_entity_state_cache, sync_npc_scenario_runtime,
 };
+pub use npc_runtime::assign_npc_owners;
 pub use npc_brain::{
     CORE_ANIMAL_BRAIN_ID, CORE_BIRD_BRAIN_ID, CORE_FISH_BRAIN_ID, CORE_HUMAN_BRAIN_ID,
     CORE_VEHICLE_BRAIN_ID, NpcBrainDef, NpcBrainKind, NpcBrainRegistry, NpcBrainState,
