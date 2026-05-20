@@ -9,7 +9,7 @@
 //!   změny, až je doplníme.
 
 use std::net::SocketAddr;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -18,22 +18,6 @@ use serde::Deserialize;
 /// teprve potom v CWD (viz [`resolve_path_relative_to_exe`]).
 pub const DEFAULT_CONFIG_FILE: &str = "server.toml";
 
-fn is_dev_target_exe(exe: &Path) -> bool {
-    let mut components = exe.components().peekable();
-    while let Some(component) = components.next() {
-        let Component::Normal(part) = component else { continue };
-        if part != "target" {
-            continue;
-        }
-
-        let Some(Component::Normal(profile)) = components.next() else {
-            return false;
-        };
-        return profile == "debug" || profile == "release";
-    }
-
-    false
-}
 
 /// Vrátí absolutní cestu pro daný (typicky relativní) path s fallback mechanismem:
 ///

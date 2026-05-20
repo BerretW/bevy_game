@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 use avian3d::prelude::{LinearVelocity, ShapeHits};
 use bevy::prelude::*;
@@ -517,9 +516,6 @@ pub(super) fn apply_lua_animation_state(
                 }
             }
 
-            if state.blend_time > 0.0 {
-                let _ = Duration::from_secs_f32(state.blend_time);
-            }
         }
     }
 }

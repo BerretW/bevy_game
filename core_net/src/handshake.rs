@@ -401,7 +401,7 @@ fn download_all_blocking(
             // a všechno se nascanuje.
             let rel_native = digest.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR);
             let local = cache_root
-                .join(manifest.id.replace('/', std::path::MAIN_SEPARATOR_STR.into()))
+                .join(manifest.id.replace('/', std::path::MAIN_SEPARATOR_STR))
                 .join(&rel_native);
 
             // Cache hit: file exists with matching blake3 hash.
