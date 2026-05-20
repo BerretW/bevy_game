@@ -7,12 +7,13 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::cmd_queue::{
-    advance_npc_scenario_time, assign_npc_owners, process_lua_commands, run_npc_population_director,
+    advance_npc_scenario_time, process_lua_commands, run_npc_population_director,
     sync_entity_state_cache, CommandQueue, EntityStateCache, sync_npc_brains_to_agents,
-    sync_npc_scenario_runtime, tick_npc_agents, NpcAiLodConfig, NpcScenarioClockConfig,
+    sync_npc_scenario_runtime, NpcAiLodConfig, NpcScenarioClockConfig,
     NpcPopulationDirectorConfig, NpcScenarioRegistry, NpcScenarioTime, EnvironmentLightConfig,
     LocalPlayerStats, LuaWorldState, PendingDamageEvent, PlayerEntityMap, PlayerStatsCache,
 };
+use crate::npc_runtime::{assign_npc_owners, tick_npc_agents};
 use crate::db_bridge::{DatabaseBridgeResource, DbBridge, DbCallbackQueue};
 use crate::model_registry::{
     process_anim_set_commands, process_model_commands, refresh_anim_set_load_states,

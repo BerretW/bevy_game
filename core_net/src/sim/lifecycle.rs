@@ -7,7 +7,7 @@ use core_shared::{Health, NetTransform, NetVelocity, PlayerMarker};
 use lightyear::prelude::*;
 use lightyear::prelude::server::LinkOf;
 
-use super::PositionHistory;
+use super::players::PositionHistory;
 
 pub(super) fn attach_replication_sender(trigger: On<Add, LinkOf>, mut commands: Commands) {
     commands
