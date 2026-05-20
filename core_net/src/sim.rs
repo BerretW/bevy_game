@@ -444,14 +444,16 @@ fn resolve_hitbox_hit(
     let mut best: Option<ResolvedHitboxHit> = None;
 
     for (bone_name, bone) in &hitbox.bones {
-        let candidate = resolve_hitbox_bone_hit(
+        let Some(candidate) = resolve_hitbox_bone_hit(
             bone_name,
             bone,
             armor_zone_for_bone(hitbox, bone_name),
             target_base,
             ray_origin,
             ray_end,
-        )?;
+        ) else {
+            continue;
+        };
         let replace = best
             .as_ref()
             .map(|current| candidate.distance_m < current.distance_m)

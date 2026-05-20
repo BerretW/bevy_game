@@ -170,38 +170,23 @@ pub fn update_hlod_visibility(
 }
 
 /// System to build/update instance buffers for mid-tier HLOD rendering
+#[allow(dead_code)]
 pub fn update_hlod_instance_buffers(
     mut hlod_q: Query<&mut HLODState, Changed<HLODState>>,
 ) {
-    // This is a placeholder for actual GPU buffer management
-    // In production, would use bevy's render API to create/update GPU buffers
-    // and set up GPU-driven rendering pass
-
     for mut hlod_state in hlod_q.iter_mut() {
-        // TODO: Create/update GPU instance buffer based on HLOD state
-        // This requires direct render command submission, which is a complex
-        // integration with Bevy's render graph
         hlod_state.instance_count = hlod_state.instances.len() as u32;
     }
 }
 
 /// Culling decision for HLOD mesh simplification
-/// Returns simplified mesh if distance warrants it
+/// Returns true if the mesh should be simplified at the given distance.
+#[allow(dead_code)]
 pub fn should_simplify_mesh(distance: f32, max_distance: f32, simplification_factor: f32) -> bool {
     if simplification_factor >= 0.99 {
         return false;
     }
-
-    // Simplify meshes beyond half of max distance
     distance > (max_distance * 0.5)
-}
-
-/// Create simplified mesh by reducing vertex count
-/// (Placeholder — real implementation would use mesh decimation algorithm)
-pub fn simplify_mesh(mesh: &Mesh, _factor: f32) -> Mesh {
-    // For now, return mesh as-is
-    // Production would implement Lloyd relaxation, edge collapse, or other decimation
-    mesh.clone()
 }
 
 #[cfg(test)]

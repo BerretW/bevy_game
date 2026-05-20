@@ -96,11 +96,7 @@ pub fn resolve_default_config_path() -> PathBuf {
     if let Ok(cwd) = std::env::current_dir() {
         let cwd_candidate = cwd.join(DEFAULT_CONFIG_FILE);
         if cwd_candidate.exists() {
-            if let Ok(exe) = std::env::current_exe() {
-                if is_dev_target_exe(&exe) {
-                    return cwd_candidate;
-                }
-            }
+            return cwd_candidate;
         }
     }
 

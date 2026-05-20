@@ -455,15 +455,8 @@ fn parse_anim_set_debug(cur: &mut Cursor<&[u8]>, total_len: usize) -> Result<Vec
 
 #[derive(Debug)]
 enum AnimDiagError {
-    Io,
     Utf8,
     UnexpectedEof,
-}
-
-fn read_u8_local(cur: &mut Cursor<&[u8]>) -> Result<u8, AnimDiagError> {
-    let mut buf = [0u8; 1];
-    cur.read_exact(&mut buf).map_err(|_| AnimDiagError::UnexpectedEof)?;
-    Ok(buf[0])
 }
 
 fn read_u32_local(cur: &mut Cursor<&[u8]>) -> Result<u32, AnimDiagError> {
