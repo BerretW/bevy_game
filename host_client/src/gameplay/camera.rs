@@ -93,7 +93,7 @@ impl Default for CameraLookState {
     fn default() -> Self {
         Self {
             yaw: 0.0,
-            pitch: -0.2,
+            pitch: 0.0,
         }
     }
 }
@@ -502,20 +502,23 @@ pub(super) fn update_fov_and_lean(
     fov_lean.current_lean +=
         (fov_lean.target_lean - fov_lean.current_lean) * (LEAN_LERP_SPEED * dt).min(1.0);
 
-    // Compose final camera rotation from authoritative CameraLookState + shake + lean.
-    // This avoids euler decomposition drift from operating on an already-modified quaternion.
+    // Apply shake and lean on top of update_camera_follow's rotation.
     let no_active_rig = bridges.camera.get_active_rig().is_none();
     if no_active_rig && bridges.camera.is_first_person() {
-        // First-person free camera: compose directly from look state so mouse feel is crisp.
-        cam_transform.rotation = Quat::from_euler(
-            EulerRot::YXZ,
-            look.yaw + shake.shake_offset.x,
-            look.pitch + shake.shake_offset.y,
-            fov_lean.current_lean,
-        );
+        // First-person: recompute forward the same way update_camera_follow does, plus shake.
+        // look_to uses the same +Z forward convention as look_at — avoids the 180° offset
+        // that Quat::from_euler(YXZ, yaw, pitch, 0) would introduce.
+        let yaw_s = look.yaw + shake.shake_offset.x;
+        let pitch_s = (look.pitch + shake.shake_offset.y).clamp(-MAX_PITCH_RAD, MAX_PITCH_RAD);
+        let cp = pitch_s.cos();
+        let forward = Vec3::new(yaw_s.sin() * cp, pitch_s.sin(), yaw_s.cos() * cp);
+        cam_transform.look_to(forward, Vec3::Y);
+        if fov_lean.current_lean.abs() > 0.0001 {
+            cam_transform.rotate_local_z(fov_lean.current_lean);
+        }
     } else if fov_lean.current_lean.abs() > 0.0001 || shake.shake_offset.length_squared() > 1e-6 {
-        // Third-person / Lua rig: camera direction set by update_camera_follow; just add shake
-        // and lean on top without overriding the look-at direction entirely.
+        // Third-person / Lua rig: update_camera_follow set the look-at rotation already;
+        // extract angles and add shake + lean on top.
         let (yaw, pitch, _) = cam_transform.rotation.to_euler(EulerRot::YXZ);
         cam_transform.rotation = Quat::from_euler(
             EulerRot::YXZ,

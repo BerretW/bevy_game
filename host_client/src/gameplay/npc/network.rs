@@ -28,14 +28,14 @@ pub(crate) fn sync_npc_net_transform(
         transform.rotation = net_transform.rotation;
 
         let origin = transform.translation + Vec3::new(0.0, 0.6, 0.0);
-        let Some(hit) = spatial_query.cast_ray(origin, Dir3::NEG_Y, 2.5, true, &filter) else {
+        let Some(hit) = spatial_query.cast_ray(origin, Dir3::NEG_Y, 25.0, true, &filter) else {
             continue;
         };
 
         let target_y = origin.y - hit.distance;
         if target_y.is_finite() {
             let diff = target_y - transform.translation.y;
-            if diff.abs() <= 0.75 {
+            if diff.abs() >= 0.001 && diff.abs() <= 20.0 {
                 transform.translation.y = target_y;
             }
         }
