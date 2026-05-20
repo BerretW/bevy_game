@@ -15,6 +15,7 @@ use lightyear::prelude::{Confirmed, Predicted};
 use super::{resolve_default_ped_profile, resolve_ped_profile_for_model, LocalClientId};
 use crate::drawable::{AdmSceneRoot, PedPhysicsDef, PedPhysicsRegistry};
 use crate::gameplay::animation::AutoPlayerAnimMemory;
+use crate::gameplay::movement::PlayerMovementState;
 use crate::native_assets::{AdmHandleCache, PedAdsAnimIndex};
 
 const POSITION_SMOOTHING_RATE: f32 = 14.0;
@@ -73,6 +74,7 @@ pub(super) fn attach_player_model_to_new_players(
                 AutoPlayerAnimMemory::default(),
                 OnStairs::default(),
                 IkEnabledComponent::default(),
+                PlayerMovementState::default(),
                 RigidBody::Dynamic,
                 GravityScale(0.0),
                 LockedAxes::new()
