@@ -194,12 +194,23 @@ pub(super) fn apply_player_movement(
         // Ground detection with coyote time
         // ----------------------------------------------------------------
         let raw_grounded = has_ground_contact(shape_hits);
+        let prev_grounded = mv.ground_contact;
         if raw_grounded {
             ground_state.last_grounded_time = now;
         }
         let grounded = raw_grounded || (now - ground_state.last_grounded_time) < COYOTE_TIME_SECS;
         let ground_normal = get_ground_normal(shape_hits);
         mv.ground_contact = grounded;
+
+        if prev_grounded && !grounded {
+            info!("[movement] grounded LOST (coyote started)");
+        }
+        if !prev_grounded && grounded {
+            info!("[movement] grounded GAINED");
+        }
+
+        let coyote_remaining = (COYOTE_TIME_SECS - (now - ground_state.last_grounded_time)).max(0.0);
+        debug!("[movement] vel=({:.3},{:.3},{:.3}) grounded={} coyote={:.3}s", vel.x, vel.y, vel.z, grounded, coyote_remaining);
 
         // ----------------------------------------------------------------
         // Gravity
@@ -225,6 +236,7 @@ pub(super) fn apply_player_movement(
         };
         if jump_just && can_jump {
             vel.y = jump_impulse;
+            info!("[movement] state -> JUMP vel_y={:.2}", vel.y);
             // Cancel slide on jump
             mv.is_sliding = false;
             mv.slide_timer = 0.0;
@@ -278,6 +290,7 @@ pub(super) fn apply_player_movement(
                             mv.dodge_cooldown = DODGE_COOLDOWN;
                             mv.is_sliding = false;
                             mv.slide_timer = 0.0;
+                            info!("[movement] state -> DODGE");
                         }
                     }
                     mv.last_dir_press_time[i] = now;
@@ -315,6 +328,7 @@ pub(super) fn apply_player_movement(
                 mv.slide_timer = SLIDE_DURATION;
                 mv.is_sliding = true;
                 mv.is_crouching = true;
+                info!("[movement] state -> SLIDE duration={:.2}s", SLIDE_DURATION);
                 // Initial boost
                 let boost_speed = speed_xz * SLIDE_BOOST_MULT;
                 vel.x = mv.slide_dir.x * boost_speed;
@@ -334,10 +348,18 @@ pub(super) fn apply_player_movement(
         }
 
         // Update crouch state (not sliding)
+        let was_crouching = mv.is_crouching;
+        let was_sprinting = mv.is_sprinting;
         if !mv.is_sliding {
             mv.is_crouching = crouch_held;
         }
         mv.is_sprinting = sprint_held && !mv.is_crouching && !mv.is_sliding;
+        if !was_sprinting && mv.is_sprinting {
+            info!("[movement] state -> SPRINT");
+        }
+        if !was_crouching && mv.is_crouching {
+            info!("[movement] state -> CROUCH");
+        }
 
         // ----------------------------------------------------------------
         // Horizontal velocity — Cyberpunk smooth lerp
@@ -457,7 +479,9 @@ pub(super) fn post_physics_vel_y_damp(
         let ground_normal = get_ground_normal(shape_hits);
         let on_slope = ground_normal.y < 0.997;
         if recently_grounded && !on_slope && vel.y > 0.05 && vel.y < jump_impulse * 0.90 {
+            let before = vel.y;
             vel.y = 0.0;
+            debug!("[movement] vel_y damp: {:.3} -> {:.3}", before, vel.y);
         }
     }
 }
@@ -478,6 +502,17 @@ pub(super) fn collect_and_send_input(
     let mouse_b = &cfg.0.input.mouse;
     let input = normalized_move_input(bindings, &keys);
     let (world_move_x, world_move_z) = rotate_input_by_yaw(input, look.yaw);
+
+    debug!(
+        "[movement] input keys: forward={} back={} left={} right={} sprint={} crouch={} jump={}",
+        keys.pressed(bindings.move_forward),
+        keys.pressed(bindings.move_backward),
+        keys.pressed(bindings.move_left),
+        keys.pressed(bindings.move_right),
+        keys.pressed(bindings.sprint),
+        keys.pressed(bindings.crouch),
+        keys.pressed(bindings.jump),
+    );
 
     let mut actions = 0u32;
     if mouse.pressed(mouse_b.attack_primary) {
@@ -537,6 +572,15 @@ pub(super) fn collect_and_send_input(
         client_tick: *tick,
         position: [physics_pos.x, physics_pos.y, physics_pos.z],
     };
+
+    debug!(
+        "[movement] input sent: wish_dir=({:.3},{:.3}) sprint={} crouch={} jump={}",
+        world_move_x,
+        world_move_z,
+        actions & player_action::SPRINT != 0,
+        actions & player_action::CROUCH != 0,
+        actions & player_action::JUMP != 0,
+    );
 
     for mut sender in senders.iter_mut() {
         let _ = sender.send::<InputChannel>(input.clone());

@@ -330,16 +330,23 @@ pub(super) fn apply_local_stairs_foot_ik(
         if ik_cache.on_stairs {
             if state.blend_weight < 0.01 {
                 state.smooth_target_y = foot_pos.y;
+                info!("[stairs] foot_ik ACTIVATED entity={:?}", thigh_entity);
             }
             state.smooth_target_y += (target_world_y - state.smooth_target_y) * 0.20;
             state.blend_weight = (state.blend_weight + 0.15).min(1.0);
         } else {
+            let prev = state.blend_weight;
             state.blend_weight = (state.blend_weight - 0.06).max(0.0);
+            if prev >= 0.01 && state.blend_weight < 0.01 {
+                info!("[stairs] foot_ik DEACTIVATED entity={:?}", thigh_entity);
+            }
         }
 
         if state.blend_weight < 0.01 {
             return;
         }
+
+        debug!("[stairs] foot_ik entity={:?} left_offset={:.3} right_offset={:.3}", thigh_entity, ik_cache.left_foot_y, ik_cache.right_foot_y);
 
         let ik_target = Vec3::new(foot_pos.x, state.smooth_target_y, foot_pos.z);
         let midpoint = (thigh_pos + foot_pos) * 0.5;
@@ -446,6 +453,7 @@ pub(super) fn terrain_snap_kinematic(
     local_client_id: Option<Res<LocalClientId>>,
     mut players: Query<
         (
+            Entity,
             &PlayerMarker,
             &GlobalTransform,
             &OnStairs,
@@ -460,7 +468,7 @@ pub(super) fn terrain_snap_kinematic(
         return;
     };
 
-    for (marker, global_tf, stairs, ik_enabled, mut vel, shape_hits) in players.iter_mut() {
+    for (entity, marker, global_tf, stairs, ik_enabled, mut vel, shape_hits) in players.iter_mut() {
         if marker.client_id != lid.0 {
             continue;
         }
@@ -477,6 +485,7 @@ pub(super) fn terrain_snap_kinematic(
         let left_h = stairs.left_foot_height;
         let right_h = stairs.right_foot_height;
         if left_h < 0.01 && right_h < 0.01 {
+            debug!("[stairs] terrain_snap NO HIT entity={:?}", entity);
             continue;
         }
 
@@ -500,6 +509,7 @@ pub(super) fn terrain_snap_kinematic(
 
         const SNAP_SPRING_K: f32 = 12.0;
         let snap_vel = (diff.abs() * SNAP_SPRING_K).min(SNAP_SPEED_MAX) * blend;
+        debug!("[stairs] terrain_snap entity={:?} snap_delta={:.4}", entity, diff);
         if vel.y > -1.5 {
             vel.y = -snap_vel;
         }

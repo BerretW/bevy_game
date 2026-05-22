@@ -12,20 +12,26 @@ pub(crate) fn sync_npc_net_transform(
     local_client_id: Option<Res<LocalClientId>>,
     spatial_query: SpatialQuery,
     mut query: Query<
-        (&mut Transform, &NetTransform, Option<&NpcOwner>),
+        (Entity, &mut Transform, &NetTransform, Option<&NpcOwner>),
         (With<NpcPedMarker>, With<NpcVisualAttached>),
     >,
 ) {
     let local_id = local_client_id.map(|value| value.0);
     let filter = SpatialQueryFilter::from_mask(LayerMask::DEFAULT);
-    for (mut transform, net_transform, owner) in &mut query {
+    for (entity, mut transform, net_transform, owner) in &mut query {
         if let (Some(local_id), Some(owner)) = (local_id, owner) {
             if owner.0 == Some(local_id) {
                 continue;
             }
         }
+        let prev_translation = transform.translation;
         transform.translation = net_transform.translation;
         transform.rotation = net_transform.rotation;
+        if prev_translation == Vec3::ZERO && net_transform.translation != Vec3::ZERO {
+            info!("[npc] transform sync STARTED for entity={:?}", entity);
+        }
+        let t = transform.translation;
+        debug!("[npc] transform recv entity={:?} pos=({:.2},{:.2},{:.2})", entity, t.x, t.y, t.z);
 
         let origin = transform.translation + Vec3::new(0.0, 0.6, 0.0);
         let Some(hit) = spatial_query.cast_ray(origin, Dir3::NEG_Y, 25.0, true, &filter) else {
@@ -63,6 +69,11 @@ pub(crate) fn send_owned_npc_transforms(
         if !(translation.x.is_finite() && translation.y.is_finite() && translation.z.is_finite()) {
             continue;
         }
+        let yaw = rotation.to_euler(EulerRot::YXZ).0;
+        debug!(
+            "[npc] transform send entity={:?} pos=({:.2},{:.2},{:.2}) yaw={:.3}",
+            handle.0, translation.x, translation.y, translation.z, yaw
+        );
         let msg = NpcTransformUpdate {
             handle: handle.0,
             translation: [translation.x, translation.y, translation.z],

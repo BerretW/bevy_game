@@ -132,10 +132,7 @@ pub(super) fn attach_player_model_to_new_players(
                 }
             });
 
-        info!(
-            "[gameplay/client] ADM model attached to player {:?} (client_id={})",
-            entity, marker.client_id
-        );
+        info!("[visuals] player model attached entity={:?} model={:?}", entity, model_name);
     }
 }
 
@@ -169,6 +166,10 @@ pub(super) fn sync_net_transform_to_render(
 
         local.translation = local.translation.lerp(target_pos, pos_alpha);
         local.rotation = local.rotation.slerp(src.rotation, rot_alpha);
+        debug!(
+            "[visuals] net_transform sync client_id={} pos=({:.2},{:.2},{:.2})",
+            marker.client_id, local.translation.x, local.translation.y, local.translation.z
+        );
     }
 }
 
@@ -184,6 +185,8 @@ pub(super) fn prefer_predicted_player_visuals(
         } else {
             Visibility::Visible
         };
+        let visible = *visibility == Visibility::Visible;
+        debug!("[visuals] predicted player visible={} client_id={}", visible, marker.client_id);
     }
 }
 
@@ -249,9 +252,15 @@ pub(super) fn update_crosshair_entity(
     };
 
     match root_with_handle {
-        Some(handle) => bridges
-            .crosshair
-            .set(Some(CrosshairHit { handle, distance: hit.distance })),
+        Some(handle) => {
+            debug!(
+                "[visuals] crosshair pos=({:.1},{:.1},{:.1}) distance={:.1} visible=true",
+                origin.x, origin.y, origin.z, hit.distance
+            );
+            bridges
+                .crosshair
+                .set(Some(CrosshairHit { handle, distance: hit.distance }));
+        }
         None => bridges.crosshair.set(None),
     }
 }

@@ -43,6 +43,7 @@ pub(crate) fn bootstrap_owned_npc_agents(
         );
         apply_replicated_npc_steering(&mut agent, steering);
         commands.entity(entity).insert((agent, local_state));
+        info!("[npc] ownership: agent BOOTSTRAPPED entity={:?} npc_id={:?}", entity, handle.0);
     }
 }
 
@@ -55,10 +56,14 @@ pub(crate) fn cleanup_unowned_npc_agents(
         return;
     };
 
+    let mut count = 0u32;
     for (entity, owner) in &npcs {
         if owner.0 == Some(local_id) {
+            count += 1;
             continue;
         }
         commands.entity(entity).remove::<NpcAgent>();
+        info!("[npc] ownership: agent CLEANUP entity={:?}", entity);
     }
+    debug!("[npc] owned npc count={}", count);
 }

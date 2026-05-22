@@ -185,8 +185,17 @@ pub(super) fn update_camera_look_from_mouse(
     let sens = cfg.0.input.mouse_sensitivity * MOUSE_SENS_SCALE;
     let invert_y = if cfg.0.input.invert_y { 1.0 } else { -1.0 };
 
-    look.yaw = (look.yaw - delta.x * sens).rem_euclid(std::f32::consts::TAU);
-    look.pitch = (look.pitch + delta.y * sens * invert_y).clamp(-MAX_PITCH_RAD, MAX_PITCH_RAD);
+    let delta_yaw = -delta.x * sens;
+    let delta_pitch = delta.y * sens * invert_y;
+    look.yaw = (look.yaw + delta_yaw).rem_euclid(std::f32::consts::TAU);
+    look.pitch = (look.pitch + delta_pitch).clamp(-MAX_PITCH_RAD, MAX_PITCH_RAD);
+    debug!(
+        "[camera] mouse delta yaw={:.4} pitch={:.4} -> total yaw={:.4} pitch={:.4}",
+        delta_yaw,
+        delta_pitch,
+        look.yaw,
+        look.pitch,
+    );
 }
 
 pub(super) fn apply_cursor_mode(
@@ -348,6 +357,13 @@ pub(super) fn update_camera_follow(
         cam_transform.translation = eye;
         cam_transform.look_at(focus, Vec3::Y);
     }
+    debug!(
+        "[camera] follow pos={:?} yaw={:.3} pitch={:.3} dist={:.2}",
+        cam_transform.translation,
+        look.yaw,
+        look.pitch,
+        if bridges.camera.is_first_person() { 0.0 } else { THIRD_PERSON_DISTANCE },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +404,12 @@ pub(super) fn update_camera_shake(
     let offset_pitch = noise_pitch * intensity * SHAKE_MAX_ANGLE;
     // Store only — applied in update_fov_and_lean so shake, lean, and look compose cleanly.
     shake.shake_offset = Vec2::new(offset_yaw, offset_pitch);
+    debug!(
+        "[camera] shake trauma={:.3} offset_yaw={:.4} offset_pitch={:.4}",
+        shake.trauma,
+        offset_yaw,
+        offset_pitch,
+    );
 }
 
 /// Adds a small burst of camera trauma when the primary fire button is pressed.
@@ -403,6 +425,7 @@ pub(super) fn add_fire_trauma(
     }
     if let Ok(mut shake) = cam_q.single_mut() {
         shake.trauma = (shake.trauma + 0.18).min(1.0);
+        info!("[camera] shake triggered trauma={:.3}", shake.trauma);
     }
 }
 
@@ -445,6 +468,12 @@ pub(super) fn update_head_bob(
 
     let vertical_offset = bob.timer.sin() * bob.amplitude;
     cam_transform.translation.y += vertical_offset;
+    debug!(
+        "[camera] head_bob phase={:.3} offset_y={:.4} active={}",
+        bob.timer,
+        vertical_offset,
+        true,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -484,8 +513,16 @@ pub(super) fn update_fov_and_lean(
     } else {
         fov_state.current_fov_rad
     };
+    let prev_fov = fov_lean.current_fov;
     fov_lean.current_fov +=
         (fov_lean.ads_fov_target - fov_lean.current_fov) * (ADS_FOV_LERP_SPEED * dt).min(1.0);
+
+    if (fov_lean.current_fov - prev_fov).abs() > 0.5f32.to_radians() {
+        info!(
+            "[camera] fov transition -> {:.1} deg",
+            fov_lean.current_fov.to_degrees(),
+        );
+    }
 
     if let Projection::Perspective(perspective) = projection.as_mut() {
         perspective.fov = fov_lean.current_fov;
@@ -527,4 +564,9 @@ pub(super) fn update_fov_and_lean(
             fov_lean.current_lean,
         );
     }
+    debug!(
+        "[camera] fov={:.2} lean={:.4}",
+        fov_lean.current_fov.to_degrees(),
+        fov_lean.current_lean,
+    );
 }

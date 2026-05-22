@@ -122,7 +122,7 @@ pub(super) fn update_input_bridge(
         })
         .unwrap_or((0.0, 0.0));
 
-    bridges.input.update(InputSnapshot {
+    let snap = InputSnapshot {
         pressed: keys.get_pressed().map(keycode_name).collect::<HashSet<_>>(),
         just_pressed: keys
             .get_just_pressed()
@@ -146,7 +146,16 @@ pub(super) fn update_input_bridge(
             .collect::<HashSet<_>>(),
         cursor_x,
         cursor_y,
-    });
+    };
+    debug!(
+        "[bridge] input_bridge: cursor=({:.3},{:.3}) pressed={} just_pressed={} mouse_pressed={}",
+        snap.cursor_x,
+        snap.cursor_y,
+        snap.pressed.len(),
+        snap.just_pressed.len(),
+        snap.mouse_pressed.len(),
+    );
+    bridges.input.update(snap);
 }
 
 pub(super) fn update_connection_bridge(
@@ -154,15 +163,21 @@ pub(super) fn update_connection_bridge(
     local_client: Option<Res<LocalClientId>>,
     bridges: Res<GameBridges>,
 ) {
-    bridges.connection.set(ConnectionInfo {
+    let info = ConnectionInfo {
         connected: true,
         server_addr: cfg.server.to_string(),
         ping_ms: 0,
         client_id: local_client.as_deref().map_or(0, |client| client.0),
-    });
+    };
+    debug!(
+        "[bridge] connection_bridge: connected={} peer_id={:?} latency={}ms",
+        info.connected, info.client_id, info.ping_ms,
+    );
+    bridges.connection.set(info);
 }
 
 pub(super) fn reset_connection_bridge(bridges: Res<GameBridges>) {
+    info!("[bridge] connection_bridge RESET");
     bridges.connection.set_disconnected();
 }
 
@@ -174,10 +189,16 @@ pub(super) fn handle_engine_cmds(
     bridges: Res<GameBridges>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    let mut count = 0;
     if bridges.engine.take_disconnect() {
+        info!("[bridge] engine_cmd: disconnect");
+        count += 1;
         next_state.set(AppState::Lobby);
     }
     if bridges.engine.take_quit() {
+        info!("[bridge] engine_cmd: quit");
+        count += 1;
         std::process::exit(0);
     }
+    debug!("[bridge] engine_cmds processed this frame: {}", count);
 }

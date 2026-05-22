@@ -191,6 +191,14 @@ pub(super) fn apply_weapon_recoil(
             }
         }
 
+        if fired_this_frame {
+            info!("[weapons] fire event: recoil applied pitch_kick={:.3}", recoil.recoil_pitch);
+        }
+
+        if recoil.recoil_pitch != 0.0 || recoil.recoil_yaw != 0.0 {
+            debug!("[weapons] recoil pitch={:.4} yaw={:.4} recovery={:.4}", recoil.recoil_pitch, recoil.recoil_yaw, recoil.recovery_speed);
+        }
+
         // Apply accumulated recoil to camera.
         look.pitch += recoil.recoil_pitch;
         look.yaw   += recoil.recoil_yaw;
@@ -260,6 +268,10 @@ pub(super) fn apply_weapon_sway(
         look.pitch += sway.sway_y;
         look.pitch = look.pitch.clamp(-1.25, 1.25);
 
+        if sway.sway_x != 0.0 || sway.sway_y != 0.0 {
+            debug!("[weapons] sway offset=({:.4},{:.4}) velocity=({:.3},{:.3})", sway.sway_x, sway.sway_y, mouse_delta.x, mouse_delta.y);
+        }
+
         // Exponential decay back to neutral.
         let decay = (-8.0_f32 * dt).exp();
         sway.sway_x *= decay;
@@ -312,6 +324,10 @@ pub(super) fn tick_spread_accumulation(
                 .min(spread.max_spread);
         }
 
+        if spread.accumulated > 0.0 {
+            debug!("[weapons] spread acc={:.4} max={:.4}", spread.accumulated, spread.max_spread);
+        }
+
         // Recover toward base.
         let recovery = spread.recovery_rps * dt;
         spread.accumulated = (spread.accumulated - recovery).max(spread.base_spread);
@@ -343,7 +359,7 @@ pub(super) fn spawn_muzzle_flash(
     let forward = cam_transform.forward();
     let spawn_pos = cam_transform.translation() + forward * MUZZLE_FLASH_FORWARD_OFFSET;
 
-    commands.spawn((
+    let entity = commands.spawn((
         PointLight {
             color: Color::srgb(1.0, 0.85, 0.5),
             intensity: MUZZLE_FLASH_INTENSITY,
@@ -357,7 +373,8 @@ pub(super) fn spawn_muzzle_flash(
             MUZZLE_FLASH_DURATION_SECS,
             TimerMode::Once,
         )),
-    ));
+    )).id();
+    info!("[weapons] muzzle flash spawned entity={:?} intensity={:.0} lux", entity, MUZZLE_FLASH_INTENSITY);
 }
 
 /// Ticks `MuzzleFlash` timers and despawns finished flash entities.

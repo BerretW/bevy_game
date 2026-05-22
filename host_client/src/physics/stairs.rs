@@ -119,9 +119,9 @@ pub(super) fn attach_stairs_dummy_colliders(
 
 pub(super) fn raycast_stairs_under_player(
     spatial_query: SpatialQuery,
-    mut on_stairs_q: Query<(&GlobalTransform, &mut core_drawable::OnStairs)>,
+    mut on_stairs_q: Query<(Entity, &GlobalTransform, &mut core_drawable::OnStairs)>,
 ) {
-    for (global_tf, mut stairs) in &mut on_stairs_q {
+    for (entity, global_tf, mut stairs) in &mut on_stairs_q {
         let foot_filter = SpatialQueryFilter::from_mask(LayerMask::DEFAULT);
         let left_foot_origin = global_tf.translation() + Vec3::new(-0.10, 0.05, 0.0);
         if let Some(hit) = spatial_query.cast_ray(
@@ -131,6 +131,7 @@ pub(super) fn raycast_stairs_under_player(
             true,
             &foot_filter,
         ) {
+            debug!("[physics] stair raycast entity={:?} hit={:?} dist={:.3}", entity, hit.entity, hit.distance);
             stairs.left_foot_height = left_foot_origin.y - hit.distance;
         } else {
             stairs.left_foot_height = 0.0;
@@ -144,6 +145,7 @@ pub(super) fn raycast_stairs_under_player(
             true,
             &foot_filter,
         ) {
+            debug!("[physics] stair raycast entity={:?} hit={:?} dist={:.3}", entity, hit.entity, hit.distance);
             stairs.right_foot_height = right_foot_origin.y - hit.distance;
         } else {
             stairs.right_foot_height = 0.0;
