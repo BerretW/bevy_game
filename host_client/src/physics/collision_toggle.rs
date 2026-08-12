@@ -24,8 +24,10 @@ fn toggle_colliders_recursive(
         let mut entity_commands = commands.entity(entity);
         if enabled {
             entity_commands.remove::<ColliderDisabled>();
+            info!("[physics] collision ENABLED entity={:?}", entity);
         } else {
             entity_commands.insert(ColliderDisabled);
+            info!("[physics] collision DISABLED entity={:?}", entity);
         }
     }
 

@@ -29,9 +29,13 @@ pub(crate) fn attach_capsule_to_new_npcs(
         } else {
             resolve_ped_profile_for_model(&model_name.0, &ped_reg, &ped_assets)
         };
+        if ped.is_none() {
+            warn!("[npc] model NOT FOUND entity={:?}", entity);
+        }
         let cap_radius = ped.map(|p| p.capsule.radius).unwrap_or(0.35_f32);
         let cap_height = ped.map(|p| p.capsule.height).unwrap_or(1.80_f32);
         let cap_body = (cap_height - cap_radius * 2.0).max(0.001);
+        info!("[npc] capsule attached entity={:?} height={:.2} radius={:.2}", entity, cap_height, cap_radius);
 
         commands.entity(entity).insert((
             NpcCapsuleAttached,
@@ -89,6 +93,7 @@ pub(crate) fn attach_model_to_new_npcs(
             })
             .unwrap_or_default();
 
+        info!("[npc] model attached entity={:?} model={:?}", entity, model_name.0);
         commands.entity(entity).insert((
             NpcVisualAttached,
             NpcMotionTracker {

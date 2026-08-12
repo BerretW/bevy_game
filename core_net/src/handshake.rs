@@ -281,7 +281,13 @@ fn check_auth_then_download(
     if !bridges.auth.is_client_authenticated() {
         return;
     }
-    let base = state.pending_base.take().unwrap_or_default();
+    let base = match state.pending_base.take() {
+        Some(b) => b,
+        None => {
+            error!("[handshake/client] auth ok but pending_base was not set — download will use empty base URL");
+            String::new()
+        }
+    };
     info!("[handshake/client] auth ok — starting resource download");
     start_download(&mut state, base, config.cache_root.clone());
 }
@@ -395,7 +401,7 @@ fn download_all_blocking(
             // a všechno se nascanuje.
             let rel_native = digest.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR);
             let local = cache_root
-                .join(manifest.id.replace('/', std::path::MAIN_SEPARATOR_STR.into()))
+                .join(manifest.id.replace('/', std::path::MAIN_SEPARATOR_STR))
                 .join(&rel_native);
 
             // Cache hit: file exists with matching blake3 hash.

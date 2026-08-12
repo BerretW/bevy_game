@@ -17,6 +17,71 @@ const THIRD_PERSON_DISTANCE: f32 = 5.5;
 const MAX_PITCH_RAD: f32 = 1.25;
 const MOUSE_SENS_SCALE: f32 = 0.0025;
 const DEFAULT_CAMERA_FOV: f32 = std::f32::consts::FRAC_PI_3;
+/// FOV while aiming down sights (ADS), in radians (~60 degrees).
+const ADS_CAMERA_FOV: f32 = std::f32::consts::FRAC_PI_3 * (60.0 / 60.0) * (60.0 / 90.0);
+/// Speed of FOV interpolation when entering/exiting ADS.
+const ADS_FOV_LERP_SPEED: f32 = 10.0;
+/// Maximum camera lean angle in radians (~8 degrees).
+const MAX_LEAN_ANGLE: f32 = 0.1396;
+/// Speed of lean interpolation.
+const LEAN_LERP_SPEED: f32 = 8.0;
+/// Trauma decay rate per second.
+const TRAUMA_DECAY_RATE: f32 = 2.0;
+/// Maximum shake angle offset in radians for trauma = 1.
+const SHAKE_MAX_ANGLE: f32 = 0.05;
+/// Head bob frequency in radians/second while running.
+const HEAD_BOB_FREQUENCY: f32 = 9.0;
+/// Head bob amplitude in metres while running.
+const HEAD_BOB_AMPLITUDE: f32 = 0.045;
+/// Minimum horizontal speed (m/s) to activate head bob.
+#[allow(dead_code)]
+const HEAD_BOB_MIN_SPEED: f32 = 0.3;
+
+/// Camera shake state. Add trauma (0-1) to trigger shake; it decays automatically.
+#[derive(Component, Default)]
+pub(super) struct CameraShake {
+    /// Current trauma level [0, 1]. Set this to add shake; it decays automatically.
+    pub(super) trauma: f32,
+    /// Current noise-derived yaw/pitch offset applied this frame.
+    pub(super) shake_offset: Vec2,
+    /// Internal phase accumulator for shake noise.
+    shake_time: f32,
+}
+
+/// Head-bob state attached to the gameplay camera.
+#[derive(Component, Default)]
+pub(super) struct HeadBob {
+    /// Phase accumulator (advances while player is moving on ground).
+    pub(super) timer: f32,
+    /// Current vertical bob amplitude [0, HEAD_BOB_AMPLITUDE]. Blends in/out.
+    pub(super) amplitude: f32,
+    /// Bob frequency (rad/s). Defaults to HEAD_BOB_FREQUENCY.
+    pub(super) frequency: f32,
+}
+
+/// Per-camera ADS and lean state.
+#[derive(Component)]
+pub(super) struct CameraFovLean {
+    /// Current interpolated FOV (radians).
+    pub(super) current_fov: f32,
+    /// Target FOV: ADS_CAMERA_FOV when aiming, DEFAULT_CAMERA_FOV otherwise.
+    pub(super) ads_fov_target: f32,
+    /// Current lean roll (radians). Positive = lean right.
+    pub(super) current_lean: f32,
+    /// Target lean roll set from Q/E key input.
+    pub(super) target_lean: f32,
+}
+
+impl Default for CameraFovLean {
+    fn default() -> Self {
+        Self {
+            current_fov: DEFAULT_CAMERA_FOV,
+            ads_fov_target: DEFAULT_CAMERA_FOV,
+            current_lean: 0.0,
+            target_lean: 0.0,
+        }
+    }
+}
 
 #[derive(Resource, Clone, Copy)]
 pub(super) struct CameraLookState {
@@ -28,7 +93,7 @@ impl Default for CameraLookState {
     fn default() -> Self {
         Self {
             yaw: 0.0,
-            pitch: -0.2,
+            pitch: 0.0,
         }
     }
 }
@@ -48,6 +113,13 @@ pub(super) fn setup_scene_and_camera(mut commands: Commands) {
         Transform::from_xyz(-5.0, 6.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
         DistanceFog::default(),
         MainGameplayCamera,
+        CameraShake::default(),
+        HeadBob {
+            timer: 0.0,
+            amplitude: 0.0,
+            frequency: HEAD_BOB_FREQUENCY,
+        },
+        CameraFovLean::default(),
     ));
 
     info!("[gameplay/client] 3D scene ready (camera toggle: F6)");
@@ -113,8 +185,17 @@ pub(super) fn update_camera_look_from_mouse(
     let sens = cfg.0.input.mouse_sensitivity * MOUSE_SENS_SCALE;
     let invert_y = if cfg.0.input.invert_y { 1.0 } else { -1.0 };
 
-    look.yaw = (look.yaw - delta.x * sens).rem_euclid(std::f32::consts::TAU);
-    look.pitch = (look.pitch + delta.y * sens * invert_y).clamp(-MAX_PITCH_RAD, MAX_PITCH_RAD);
+    let delta_yaw = -delta.x * sens;
+    let delta_pitch = delta.y * sens * invert_y;
+    look.yaw = (look.yaw + delta_yaw).rem_euclid(std::f32::consts::TAU);
+    look.pitch = (look.pitch + delta_pitch).clamp(-MAX_PITCH_RAD, MAX_PITCH_RAD);
+    debug!(
+        "[camera] mouse delta yaw={:.4} pitch={:.4} -> total yaw={:.4} pitch={:.4}",
+        delta_yaw,
+        delta_pitch,
+        look.yaw,
+        look.pitch,
+    );
 }
 
 pub(super) fn apply_cursor_mode(
@@ -276,4 +357,216 @@ pub(super) fn update_camera_follow(
         cam_transform.translation = eye;
         cam_transform.look_at(focus, Vec3::Y);
     }
+    debug!(
+        "[camera] follow pos={:?} yaw={:.3} pitch={:.3} dist={:.2}",
+        cam_transform.translation,
+        look.yaw,
+        look.pitch,
+        if bridges.camera.is_first_person() { 0.0 } else { THIRD_PERSON_DISTANCE },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Camera shake system
+// ---------------------------------------------------------------------------
+
+/// Decays trauma and applies a sine-noise shake offset (yaw/pitch) to the
+/// camera. Add trauma to `CameraShake.trauma` from other systems to trigger.
+pub(super) fn update_camera_shake(
+    time: Res<Time>,
+    mut cam_q: Query<&mut CameraShake, With<MainGameplayCamera>>,
+) {
+    let dt = time.delta_secs();
+    let Ok(mut shake) = cam_q.single_mut() else {
+        return;
+    };
+
+    // Decay trauma over time.
+    shake.trauma = (shake.trauma - TRAUMA_DECAY_RATE * dt).max(0.0);
+    shake.shake_time += dt;
+
+    let intensity = shake.trauma * shake.trauma; // trauma^2 for natural rolloff
+    if intensity < 0.0001 {
+        shake.shake_offset = Vec2::ZERO;
+        return;
+    }
+
+    // Pseudo-random noise via fast sine harmonics (no external crate needed).
+    let t = shake.shake_time;
+    let noise_yaw = (t * 37.1).sin() * 0.6
+        + (t * 83.7).sin() * 0.3
+        + (t * 151.3).sin() * 0.1;
+    let noise_pitch = (t * 41.3).sin() * 0.6
+        + (t * 97.1).sin() * 0.3
+        + (t * 173.9).sin() * 0.1;
+
+    let offset_yaw = noise_yaw * intensity * SHAKE_MAX_ANGLE;
+    let offset_pitch = noise_pitch * intensity * SHAKE_MAX_ANGLE;
+    // Store only — applied in update_fov_and_lean so shake, lean, and look compose cleanly.
+    shake.shake_offset = Vec2::new(offset_yaw, offset_pitch);
+    debug!(
+        "[camera] shake trauma={:.3} offset_yaw={:.4} offset_pitch={:.4}",
+        shake.trauma,
+        offset_yaw,
+        offset_pitch,
+    );
+}
+
+/// Adds a small burst of camera trauma when the primary fire button is pressed.
+/// Trauma decays automatically in `update_camera_shake`.
+pub(super) fn add_fire_trauma(
+    mouse: Res<ButtonInput<MouseButton>>,
+    cfg: Res<ClientConfigResource>,
+    mut cam_q: Query<&mut CameraShake, With<MainGameplayCamera>>,
+) {
+    let fire_btn = cfg.0.input.mouse.attack_primary;
+    if !mouse.just_pressed(fire_btn) {
+        return;
+    }
+    if let Ok(mut shake) = cam_q.single_mut() {
+        shake.trauma = (shake.trauma + 0.18).min(1.0);
+        info!("[camera] shake triggered trauma={:.3}", shake.trauma);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Head bob system
+// ---------------------------------------------------------------------------
+
+/// Applies a vertical sine offset to the camera while the local player exists
+/// in the world, blending amplitude smoothly in and out.
+pub(super) fn update_head_bob(
+    time: Res<Time>,
+    local_client_id: Option<Res<LocalClientId>>,
+    players: Query<(&PlayerMarker, &super::movement::PlayerMovementState), With<Predicted>>,
+    mut cam_q: Query<(&mut HeadBob, &mut Transform), With<MainGameplayCamera>>,
+) {
+    let dt = time.delta_secs();
+    let Ok((mut bob, mut cam_transform)) = cam_q.single_mut() else {
+        return;
+    };
+
+    // Gate head bob on actual movement speed — never bobs when standing still.
+    let local_speed = local_client_id.as_ref()
+        .and_then(|lid| {
+            players.iter()
+                .find(|(marker, _)| marker.client_id == lid.0)
+                .map(|(_, mvt)| mvt.velocity_xz.length())
+        })
+        .unwrap_or(0.0);
+
+    let amplitude_target = if local_speed > 0.5 { HEAD_BOB_AMPLITUDE } else { 0.0 };
+    let blend_speed = if amplitude_target > bob.amplitude { 6.0 } else { 3.0 };
+    bob.amplitude += (amplitude_target - bob.amplitude) * (blend_speed * dt).min(1.0);
+
+    if bob.amplitude < 0.001 {
+        return;
+    }
+
+    let freq = if bob.frequency < 0.001 { HEAD_BOB_FREQUENCY } else { bob.frequency };
+    bob.timer += dt * freq;
+
+    let vertical_offset = bob.timer.sin() * bob.amplitude;
+    cam_transform.translation.y += vertical_offset;
+    debug!(
+        "[camera] head_bob phase={:.3} offset_y={:.4} active={}",
+        bob.timer,
+        vertical_offset,
+        true,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ADS FOV + camera lean system
+// ---------------------------------------------------------------------------
+
+/// Smoothly interpolates FOV between default, movement-kick and ADS values,
+/// and applies a lean roll (Q = left, E = right) as a local-Z rotation.
+/// Must run AFTER `update_camera_follow` and `apply_player_movement` so both
+/// the Lua rig FOV and the movement FOV kick are already written.
+pub(super) fn update_fov_and_lean(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    cfg: Res<ClientConfigResource>,
+    fov_state: Res<super::movement::MovementFovState>,
+    look: Res<CameraLookState>,
+    bridges: Res<GameBridges>,
+    mut cam_q: Query<
+        (&mut CameraFovLean, &mut Transform, &mut Projection, &CameraShake),
+        With<MainGameplayCamera>,
+    >,
+) {
+    let dt = time.delta_secs();
+    let Ok((mut fov_lean, mut cam_transform, mut projection, shake)) = cam_q.single_mut() else {
+        return;
+    };
+
+    // ADS: use configured aim key; right mouse button also accepted.
+    let aim_key = cfg.0.input.keys.aim;
+    let is_ads = keys.pressed(aim_key) || mouse.pressed(MouseButton::Right);
+
+    // Base FOV: use the movement-kick value (sprint / slide / default) unless ADS.
+    // ADS always narrows to ADS_CAMERA_FOV regardless of movement state.
+    fov_lean.ads_fov_target = if is_ads {
+        ADS_CAMERA_FOV
+    } else {
+        fov_state.current_fov_rad
+    };
+    let prev_fov = fov_lean.current_fov;
+    fov_lean.current_fov +=
+        (fov_lean.ads_fov_target - fov_lean.current_fov) * (ADS_FOV_LERP_SPEED * dt).min(1.0);
+
+    if (fov_lean.current_fov - prev_fov).abs() > 0.5f32.to_radians() {
+        info!(
+            "[camera] fov transition -> {:.1} deg",
+            fov_lean.current_fov.to_degrees(),
+        );
+    }
+
+    if let Projection::Perspective(perspective) = projection.as_mut() {
+        perspective.fov = fov_lean.current_fov;
+    }
+
+    // Lean: Q = lean left (negative roll), E = lean right (positive roll).
+    let lean_left = keys.pressed(KeyCode::KeyQ);
+    let lean_right = keys.pressed(KeyCode::KeyE);
+    fov_lean.target_lean = match (lean_left, lean_right) {
+        (true, false) => -MAX_LEAN_ANGLE,
+        (false, true) => MAX_LEAN_ANGLE,
+        _ => 0.0,
+    };
+    fov_lean.current_lean +=
+        (fov_lean.target_lean - fov_lean.current_lean) * (LEAN_LERP_SPEED * dt).min(1.0);
+
+    // Apply shake and lean on top of update_camera_follow's rotation.
+    let no_active_rig = bridges.camera.get_active_rig().is_none();
+    if no_active_rig && bridges.camera.is_first_person() {
+        // First-person: recompute forward the same way update_camera_follow does, plus shake.
+        // look_to uses the same +Z forward convention as look_at — avoids the 180° offset
+        // that Quat::from_euler(YXZ, yaw, pitch, 0) would introduce.
+        let yaw_s = look.yaw + shake.shake_offset.x;
+        let pitch_s = (look.pitch + shake.shake_offset.y).clamp(-MAX_PITCH_RAD, MAX_PITCH_RAD);
+        let cp = pitch_s.cos();
+        let forward = Vec3::new(yaw_s.sin() * cp, pitch_s.sin(), yaw_s.cos() * cp);
+        cam_transform.look_to(forward, Vec3::Y);
+        if fov_lean.current_lean.abs() > 0.0001 {
+            cam_transform.rotate_local_z(fov_lean.current_lean);
+        }
+    } else if fov_lean.current_lean.abs() > 0.0001 || shake.shake_offset.length_squared() > 1e-6 {
+        // Third-person / Lua rig: update_camera_follow set the look-at rotation already;
+        // extract angles and add shake + lean on top.
+        let (yaw, pitch, _) = cam_transform.rotation.to_euler(EulerRot::YXZ);
+        cam_transform.rotation = Quat::from_euler(
+            EulerRot::YXZ,
+            yaw + shake.shake_offset.x,
+            pitch + shake.shake_offset.y,
+            fov_lean.current_lean,
+        );
+    }
+    debug!(
+        "[camera] fov={:.2} lean={:.4}",
+        fov_lean.current_fov.to_degrees(),
+        fov_lean.current_lean,
+    );
 }

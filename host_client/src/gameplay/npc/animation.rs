@@ -11,6 +11,7 @@ pub(crate) fn drive_npc_animations(
     ped_assets: Res<Assets<PedPhysicsDef>>,
     mut npcs: Query<
         (
+            Entity,
             &Transform,
             &ModelName,
             Option<&core_resources::PedProfileOverride>,
@@ -23,7 +24,7 @@ pub(crate) fn drive_npc_animations(
 ) {
     let dt = time.delta_secs().max(0.001);
 
-    for (transform, model_name, ped_override, mut tracker, children) in &mut npcs {
+    for (entity, transform, model_name, ped_override, mut tracker, children) in &mut npcs {
         let speed = transform.translation.distance(tracker.prev_pos) / dt;
         tracker.prev_pos = transform.translation;
 
@@ -51,7 +52,9 @@ pub(crate) fn drive_npc_animations(
         if new_state == tracker.current_state {
             continue;
         }
+        let old_state = tracker.current_state;
         tracker.current_state = new_state;
+        info!("[npc] anim state: entity={:?} {:?} -> {:?}", entity, old_state, new_state);
 
         let clip = ped
             .map(|ped| match new_state {
@@ -65,6 +68,7 @@ pub(crate) fn drive_npc_animations(
             if let Ok(mut anim) = adm_roots.get_mut(child) {
                 anim.current = Some(clip.clone());
                 anim.blend_time = 0.15;
+                debug!("[npc] anim sync entity={:?} clip={:?} speed={:.2}", entity, clip, speed);
             }
         }
     }

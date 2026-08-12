@@ -52,6 +52,8 @@ local function apply_spawn(payload)
     pending_spawn = nil
 end
 
+Camera.SetMode("first_person")
+
 RegisterEvent('player:anim_state', function(payload)
     if type(payload) ~= 'table' or payload.is_local ~= true then
         return

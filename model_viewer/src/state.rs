@@ -209,6 +209,7 @@ pub struct AnimDebugState {
 }
 
 pub struct ViewerIkChainDef {
+    #[allow(dead_code)]
     pub name: String,
     pub enabled: bool,
     pub parent_bone: String,

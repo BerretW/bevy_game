@@ -180,17 +180,11 @@ impl TwoBoneIkSolver {
 // ---------------------------------------------------------------------------
 
 /// Detekuje, když se hráč ocitne na schodech (kolize s STAIRS materiálem).
+/// Skutečná detekce se provádí v host_client přes Avian3d collision events.
+/// Tento systém je placeholder — nezasahuje do ECS dokud není integrace hotová.
 pub fn detect_stairs_on_collision(
-    mut commands: Commands,
-    players: Query<(Entity, &Transform), (Added<Transform>, Without<OnStairs>)>,
+    _players: Query<(Entity, &Transform), (Added<Transform>, Without<OnStairs>)>,
 ) {
-    for (entity, _) in &players {
-        // Zatím jen vytvoříme komponent, detekce je zakomentována
-        // dokud nebude řádně integrován avian3d query
-        if let Ok(mut entity_commands) = commands.get_entity(entity) {
-            entity_commands.insert(OnStairs::default());
-        }
-    }
 }
 
 /// Raycast pod nohama pro zjištění výšky podlahy.

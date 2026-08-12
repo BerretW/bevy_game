@@ -51,16 +51,12 @@ impl Plugin for HttpFileServerPlugin {
 }
 
 fn spawn_http_server(runtime: Res<TokioRuntime>, config: Res<HttpServerConfig>) {
-    let canonical_root = match std::fs::canonicalize(&config.vfs_root) {
-        Ok(p) => p,
-        Err(e) => {
-            error!(
-                "[host_server::http] failed to canonicalize vfs_root {:?}: {}",
-                config.vfs_root, e
-            );
-            return;
-        }
-    };
+    let canonical_root = std::fs::canonicalize(&config.vfs_root).unwrap_or_else(|e| {
+        panic!(
+            "[host_server::http] failed to canonicalize vfs_root {:?}: {}",
+            config.vfs_root, e
+        )
+    });
 
     let state = AppState {
         vfs_root: canonical_root,

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
 use avian3d::prelude::{LinearVelocity, ShapeHits};
 use bevy::prelude::*;
@@ -254,7 +253,16 @@ pub(super) fn update_player_state_driven_animations(
             _ => 0.16,
         };
 
+        debug!(
+            "[animation] player blend weights: locomotion={:?} speed={:.2} grounded={} move_intent={}",
+            memory.locomotion, memory.filtered_horiz_speed, grounded, movement_intent_active
+        );
+
         if memory.anim_state != next_anim_state {
+            info!(
+                "[animation] player state: {:?} -> {:?}",
+                memory.anim_state, next_anim_state
+            );
             let payload = serde_json::to_vec(&serde_json::json!({
                 "client_id": marker.client_id,
                 "handle": handle.map(|entity_handle: &EntityHandle| entity_handle.0),
@@ -282,6 +290,7 @@ pub(super) fn update_player_state_driven_animations(
                 }
             }
             None => {
+                debug!("[animation] npc entity={:?} clip={:?}", model_entity, clip);
                 commands.entity(model_entity).insert(AnimationState {
                     current: Some(clip),
                     speed: 1.0,
@@ -492,12 +501,18 @@ pub(super) fn apply_lua_animation_state(
             continue;
         };
 
+        debug!(
+            "[animation] lua anim entity={:?} clip={:?} blend={:.2}",
+            root, clip_name, state.blend_time
+        );
+
         for entity in children_q.iter_descendants(root) {
             let Ok((player_entity, mut player, graph_handle_comp)) = players.get_mut(entity) else {
                 continue;
             };
 
             if graph_handle_comp.map(|handle| handle.0 != graph_handle).unwrap_or(true) {
+                info!("[animation] lua override applied: {:?}", clip_name);
                 commands
                     .entity(player_entity)
                     .insert(AnimationGraphHandle(graph_handle.clone()));
@@ -517,9 +532,6 @@ pub(super) fn apply_lua_animation_state(
                 }
             }
 
-            if state.blend_time > 0.0 {
-                let _ = Duration::from_secs_f32(state.blend_time);
-            }
         }
     }
 }

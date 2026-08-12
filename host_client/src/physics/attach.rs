@@ -26,6 +26,7 @@ pub(super) fn attach_or_update_drawable_colliders(
     rb_q: Query<Has<RigidBody>>,
 ) {
     for (entity, drawable_collision, mesh, is_skinned_collider) in &q {
+        debug!("[physics] collider update entity={:?}", entity);
         let Some(spec) = collider_spec_from_drawable(drawable_collision, mesh.is_some()) else {
             let mut entity_commands = commands.entity(entity);
             entity_commands.remove::<Collider>();
@@ -38,10 +39,12 @@ pub(super) fn attach_or_update_drawable_colliders(
 
         match spec {
             ColliderSpec::Direct(collider) => {
+                info!("[physics] collider attached entity={:?} shape={:?}", entity, collider);
                 commands.entity(entity).insert(collider);
                 commands.entity(entity).remove::<ColliderConstructor>();
             }
             ColliderSpec::Construct(constructor) => {
+                info!("[physics] collider attached entity={:?} shape={:?}", entity, constructor);
                 commands.entity(entity).insert(constructor);
                 commands.entity(entity).remove::<Collider>();
             }
@@ -191,6 +194,7 @@ pub(super) fn attach_or_update_dummy_colliders(
 
         let mut entity_commands = commands.entity(entity);
         entity_commands.insert(collider);
+        info!("[physics] dummy collider attached entity={:?}", entity);
         if marker.collider.is_static {
             entity_commands.insert((RigidBody::Static, StaticWorldCollider));
         } else {

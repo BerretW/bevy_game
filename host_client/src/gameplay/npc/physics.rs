@@ -118,7 +118,7 @@ pub(crate) fn terrain_snap_owned_npcs(
         }
 
         let origin = transform.translation + Vec3::new(0.0, 0.6, 0.0);
-        let Some(hit) = spatial_query.cast_ray(origin, Dir3::NEG_Y, 2.5, true, &filter) else {
+        let Some(hit) = spatial_query.cast_ray(origin, Dir3::NEG_Y, 25.0, true, &filter) else {
             continue;
         };
 
@@ -128,12 +128,10 @@ pub(crate) fn terrain_snap_owned_npcs(
         }
 
         let diff = target_y - transform.translation.y;
-        if diff.abs() < 0.002 {
+        if diff.abs() < 0.002 || diff.abs() > 20.0 {
             continue;
         }
 
-        if diff.abs() <= 0.75 {
-            transform.translation.y = target_y;
-        }
+        transform.translation.y = target_y;
     }
 }

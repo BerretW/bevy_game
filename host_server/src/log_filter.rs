@@ -38,6 +38,6 @@ where
         }
         // ERROR z lightyear_udp targets zahodíme.
         let target = metadata.target();
-        !NOISY_TARGETS.iter().any(|t| target == *t)
+        !NOISY_TARGETS.iter().any(|t| target == *t || target.starts_with(&format!("{}::", t)))
     }
 }

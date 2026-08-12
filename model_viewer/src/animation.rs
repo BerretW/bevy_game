@@ -4,8 +4,7 @@ use bevy::prelude::*;
 use core_drawable::{AdmSceneRoot, AnimationSet};
 use core_resources::{AnimationState, AttachedAnimSets, ModelName};
 
-use crate::loader::canonical_bevy_path;
-use crate::state::{ADM_ANIM_MASK_ALL, ADM_ANIM_MASK_LEFT_UPPER_LIMB, ADM_ANIM_MASK_LOWER_BODY, ADM_ANIM_MASK_RIGHT_UPPER_LIMB, ADM_ANIM_MASK_UPPER_BODY, AdmAnimationBrowser, AnimDebugPanel, AnimDebugState, AnimPanel, GltfHandleCache, UiDiagAnimButton, UiLoadAdmButton, UiLoadAnimButton, ViewerSessionAnimHandles};
+use crate::state::{ADM_ANIM_MASK_ALL, ADM_ANIM_MASK_LEFT_UPPER_LIMB, ADM_ANIM_MASK_LOWER_BODY, ADM_ANIM_MASK_RIGHT_UPPER_LIMB, ADM_ANIM_MASK_UPPER_BODY, AdmAnimationBrowser, AnimDebugPanel, AnimDebugState, AnimPanel, ViewerSessionAnimHandles};
 
 pub(crate) fn handle_animation_keyboard(
     keys: Res<ButtonInput<KeyCode>>,

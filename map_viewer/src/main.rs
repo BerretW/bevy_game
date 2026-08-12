@@ -196,6 +196,7 @@ struct TileOverlayIndex {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct TileOverlayDef {
     id: String,
     map: String,
